@@ -1,0 +1,9 @@
+node_modules/
+artifacts/
+config.json
+*.log
+.env
+.env.*
+.DS_Store
+
+.omo/

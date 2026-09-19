@@ -1,0 +1,144 @@
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import net from 'node:net';
+import test from 'node:test';
+import { classifyProxyTarget, createPolicyProxy } from '../src/policy-proxy.js';
+
+const listen = (server) => new Promise((resolve, reject) => {
+  server.once('error', reject);
+  server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+});
+
+const close = (server) => new Promise((resolve) => server.close(resolve));
+
+test('denies private destinations unless their exact host and port are allowed', async () => {
+  const lookup = async () => [{ address: '127.0.0.1', family: 4 }];
+
+  const denied = await classifyProxyTarget('http://local.test:4123/', { lookup });
+  const allowed = await classifyProxyTarget('http://local.test:4123/', {
+    lookup,
+    grants: [{ host: 'local.test', port: 4123, protocol: 'http:' }],
+  });
+  const wrongScheme = await classifyProxyTarget('https://local.test:4123/', {
+    lookup,
+    grants: [{ host: 'local.test', port: 4123, protocol: 'http:' }],
+  });
+  const websocket = await classifyProxyTarget('ws://local.test:4123/socket', {
+    lookup,
+    grants: [{ host: 'local.test', port: 4123, protocol: 'http:' }],
+  });
+
+  assert.equal(denied.allowed, false);
+  assert.equal(denied.reason, 'Private or loopback address requires an allowed origin');
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.address, '127.0.0.1');
+  assert.equal(wrongScheme.allowed, false);
+  assert.equal(websocket.allowed, true);
+});
+
+test('denies a hostname when any DNS answer is unsafe', async () => {
+  const lookup = async () => [
+    { address: '93.184.216.34', family: 4 },
+    { address: '169.254.169.254', family: 4 },
+  ];
+
+  const decision = await classifyProxyTarget('https://rebinding.test/', { lookup });
+
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.reason, 'IPv4 link-local addresses are denied');
+});
+
+test('closes an HTTP upstream when its browser connection aborts', async (context) => {
+  const upstreamAccepted = Promise.withResolvers();
+  const upstreamClosed = Promise.withResolvers();
+  const upstream = http.createServer(() => {});
+  upstream.on('connection', (socket) => {
+    upstreamAccepted.resolve();
+    socket.once('close', () => upstreamClosed.resolve());
+  });
+  const upstreamPort = await listen(upstream);
+  context.after(() => close(upstream));
+  const proxy = createPolicyProxy({ grants: [{ host: '127.0.0.1', port: upstreamPort, protocol: 'http:' }] });
+  const proxyAddress = await proxy.listen();
+  context.after(() => proxy.close());
+  const proxyPort = Number(proxyAddress.split(':').at(-1));
+  const request = http.request({
+    host: '127.0.0.1', port: proxyPort, method: 'GET',
+    path: `http://127.0.0.1:${upstreamPort}/never-finishes`,
+  });
+  request.on('error', () => {});
+  request.end();
+
+  await upstreamAccepted.promise;
+  request.destroy();
+
+  await upstreamClosed.promise;
+  assert.equal(request.destroyed, true);
+});
+
+test('does not open an upstream after the browser aborts during DNS lookup', async (context) => {
+  const lookupStarted = Promise.withResolvers();
+  const lookupResult = Promise.withResolvers();
+  let upstreamConnections = 0;
+  const upstream = net.createServer((socket) => {
+    upstreamConnections += 1;
+    socket.destroy();
+  });
+  const upstreamPort = await listen(upstream);
+  context.after(() => close(upstream));
+  const proxy = createPolicyProxy({
+    grants: [{ host: 'deferred.test', port: upstreamPort, protocol: 'http:' }],
+    lookup: async () => {
+      lookupStarted.resolve();
+      return lookupResult.promise;
+    },
+  });
+  const proxyAddress = await proxy.listen();
+  context.after(() => proxy.close());
+  const proxyPort = Number(proxyAddress.split(':').at(-1));
+  const request = http.request({
+    host: '127.0.0.1', port: proxyPort, method: 'GET',
+    path: `http://deferred.test:${upstreamPort}/deferred`,
+  });
+  request.on('error', () => {});
+  request.end();
+
+  await lookupStarted.promise;
+  const requestClosed = new Promise((resolve) => request.once('close', resolve));
+  request.destroy();
+  await requestClosed;
+  await new Promise((resolve) => setImmediate(resolve));
+  lookupResult.resolve([{ address: '127.0.0.1', family: 4 }]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(upstreamConnections, 0);
+});
+
+test('closes a CONNECT upstream when its browser socket closes', async (context) => {
+  const upstreamAccepted = Promise.withResolvers();
+  const upstreamClosed = Promise.withResolvers();
+  const upstream = net.createServer((socket) => {
+    upstreamAccepted.resolve();
+    socket.once('close', () => upstreamClosed.resolve());
+  });
+  const upstreamPort = await listen(upstream);
+  context.after(() => close(upstream));
+  const proxy = createPolicyProxy({ grants: [{ host: '127.0.0.1', port: upstreamPort, protocol: 'https:' }] });
+  const proxyAddress = await proxy.listen();
+  context.after(() => proxy.close());
+  const proxyPort = Number(proxyAddress.split(':').at(-1));
+  const client = net.connect({ host: '127.0.0.1', port: proxyPort });
+  const connected = Promise.withResolvers();
+  client.on('data', (chunk) => {
+    if (chunk.toString().includes('200 Connection Established')) connected.resolve();
+  });
+  client.write(`CONNECT 127.0.0.1:${upstreamPort} HTTP/1.1\r\nHost: 127.0.0.1:${upstreamPort}\r\n\r\n`);
+
+  await upstreamAccepted.promise;
+  await connected.promise;
+  client.destroy();
+
+  await upstreamClosed.promise;
+  assert.equal(client.destroyed, true);
+});

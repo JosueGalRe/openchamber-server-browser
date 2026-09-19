@@ -1,0 +1,13 @@
+OpenChamber Server Browser
+
+This extension adapts browser backend code from OpenChamber, MIT licensed:
+https://github.com/openchamber/openchamber
+Copyright (c) 2025 Bohdan Triapitsyn
+
+Browser source reference: PR #3425, commit 362dbc3f305615200d762b721106c64e796b095b.
+SDK reference: main commit 56f33fd59 (full SHA in vendor/README.md).
+
+The SDK tarball in vendor/ was built from that upstream SDK package because the
+published @openchamber/sdk@1.24.2 predates the browser-provider/shared-surface
+exports. It retains the upstream MIT license. The service bundle includes
+@openchamber/sdk, zod and ws under their MIT licenses; see THIRD_PARTY_LICENSES.

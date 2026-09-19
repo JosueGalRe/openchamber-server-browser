@@ -1,0 +1,189 @@
+import { SURFACE_FRAME_MAX_BYTES } from '@openchamber/sdk';
+
+const BUTTON_NAMES = ['left', 'middle', 'right'];
+const KEY_CODES = Object.freeze({ Backspace: 8, Tab: 9, Enter: 13, Escape: 27, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46 });
+
+const modifiersMask = (modifiers) => (
+  (modifiers.alt ? 1 : 0)
+  | (modifiers.ctrl ? 2 : 0)
+  | (modifiers.meta ? 4 : 0)
+  | (modifiers.shift ? 8 : 0)
+);
+
+const mouseButton = (button) => BUTTON_NAMES[button] ?? 'none';
+
+const dispatchInput = async (page, event) => {
+  if (event.type === 'text') {
+    await page.cdp.sendSession(page.sessionId, 'Input.insertText', { text: event.text });
+    return;
+  }
+  if (event.type === 'pointer') {
+    const types = { down: 'mousePressed', up: 'mouseReleased', move: 'mouseMoved' };
+    await page.cdp.sendSession(page.sessionId, 'Input.dispatchMouseEvent', {
+      type: types[event.action],
+      x: event.x,
+      y: event.y,
+      button: mouseButton(event.button),
+      buttons: event.buttons,
+      clickCount: event.action === 'move' ? 0 : 1,
+      modifiers: modifiersMask(event.modifiers),
+    });
+    return;
+  }
+  if (event.type === 'wheel') {
+    await page.cdp.sendSession(page.sessionId, 'Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x: event.x,
+      y: event.y,
+      deltaX: event.deltaX,
+      deltaY: event.deltaY,
+      modifiers: modifiersMask(event.modifiers),
+    });
+    return;
+  }
+  const keyCode = KEY_CODES[event.key] ?? (event.key.length === 1 ? event.key.toUpperCase().charCodeAt(0) : 0);
+  const printable = event.action === 'down' && event.key.length === 1
+    && !event.modifiers.alt && !event.modifiers.ctrl && !event.modifiers.meta;
+  await page.cdp.sendSession(page.sessionId, 'Input.dispatchKeyEvent', {
+    type: event.action === 'down' ? 'keyDown' : 'keyUp',
+    key: event.key,
+    code: event.code,
+    modifiers: modifiersMask(event.modifiers),
+    windowsVirtualKeyCode: keyCode,
+    nativeVirtualKeyCode: keyCode,
+    ...(printable ? { text: event.key, unmodifiedText: event.key } : {}),
+  });
+};
+
+const clipboardExpression = `(() => {
+  var active = document.activeElement;
+  if (active && typeof active.value === 'string' && typeof active.selectionStart === 'number') {
+    return active.value.slice(active.selectionStart, active.selectionEnd);
+  }
+  return String(window.getSelection ? window.getSelection() : '');
+})()`;
+
+export const createSurface = (runtime) => {
+  const waiters = new Set();
+  let page = null;
+  let unsubscribe = null;
+  let latest = null;
+  let sequence = 0;
+  let closed = false;
+  let startPromise = null;
+
+  const finishWaiter = (waiter, value) => {
+    if (!waiters.delete(waiter)) return;
+    clearTimeout(waiter.timer);
+    waiter.signal?.removeEventListener('abort', waiter.onAbort);
+    waiter.resolve(value);
+  };
+
+  const publish = (frame) => {
+    latest = frame;
+    for (const waiter of waiters) {
+      if (frame.sequence > waiter.after) finishWaiter(waiter, frame);
+    }
+  };
+
+  const startSurface = async () => {
+    const current = await runtime.ensurePage();
+    if (closed) throw new Error('Surface is closed');
+    if (page?.sessionId === current.sessionId && unsubscribe) return current;
+    unsubscribe?.();
+    page = current;
+    unsubscribe = page.cdp.onEvent((event) => {
+      if (event.sessionId !== page.sessionId || event.method !== 'Page.screencastFrame') return;
+      void page.cdp.sendSession(page.sessionId, 'Page.screencastFrameAck', {
+        sessionId: event.params.sessionId,
+      }).catch(() => {});
+      const bytes = Buffer.from(String(event.params.data ?? ''), 'base64');
+      if (bytes.length === 0 || bytes.length > SURFACE_FRAME_MAX_BYTES) return;
+      sequence += 1;
+      publish({
+        sequence,
+        bytes,
+        mime: 'image/jpeg',
+        width: Math.round(event.params.metadata?.deviceWidth ?? runtime.viewport?.width ?? 0),
+        height: Math.round(event.params.metadata?.deviceHeight ?? runtime.viewport?.height ?? 0),
+        title: runtime.title,
+      });
+    });
+    await page.cdp.sendSession(page.sessionId, 'Page.startScreencast', {
+      format: 'jpeg',
+      quality: 72,
+      everyNthFrame: 1,
+    });
+    if (closed) {
+      await page.cdp.sendSession(page.sessionId, 'Page.stopScreencast').catch(() => {});
+      throw new Error('Surface is closed');
+    }
+    return page;
+  };
+
+  const start = () => {
+    if (closed) return Promise.reject(new Error('Surface is closed'));
+    if (!startPromise) startPromise = startSurface().catch((error) => {
+      unsubscribe?.();
+      unsubscribe = null;
+      page = null;
+      throw error;
+    }).finally(() => { startPromise = null; });
+    return startPromise;
+  };
+
+  return {
+    async frame({ after, wait, signal }) {
+      if (closed) return null;
+      signal?.throwIfAborted();
+      await start();
+      signal?.throwIfAborted();
+      if (latest && latest.sequence > after) return latest;
+      if (wait === 0) return null;
+      return new Promise((resolve, reject) => {
+        const waiter = { after, signal, resolve, reject, timer: null, onAbort: null };
+        waiter.onAbort = () => {
+          if (!waiters.delete(waiter)) return;
+          clearTimeout(waiter.timer);
+          reject(signal.reason ?? new DOMException('Frame request cancelled', 'AbortError'));
+        };
+        waiter.timer = setTimeout(() => finishWaiter(waiter, null), wait);
+        waiter.timer.unref?.();
+        signal?.addEventListener('abort', waiter.onAbort, { once: true });
+        waiters.add(waiter);
+      });
+    },
+    async input(events) {
+      const current = await start();
+      for (const event of events) await dispatchInput(current, event);
+    },
+    control(controller) {
+      runtime.controller = controller;
+    },
+    async resize({ width, height }) {
+      await runtime.ensurePage();
+      await runtime.setViewport({ width, height, mobile: false });
+      return { width, height };
+    },
+    async clipboard() {
+      const current = await start();
+      const response = await current.cdp.sendSession(current.sessionId, 'Runtime.evaluate', {
+        expression: clipboardExpression,
+        returnByValue: true,
+      });
+      return typeof response.result?.value === 'string' ? response.result.value : '';
+    },
+    async close() {
+      if (closed) return;
+      closed = true;
+      for (const waiter of waiters) finishWaiter(waiter, null);
+      await startPromise?.catch(() => {});
+      unsubscribe?.();
+      unsubscribe = null;
+      if (page?.cdp.isOpen) {
+        await page.cdp.sendSession(page.sessionId, 'Page.stopScreencast').catch(() => {});
+      }
+      page = null;
+    },
+  };
+};

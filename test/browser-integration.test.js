@@ -1,0 +1,114 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import http from 'node:http';
+import test from 'node:test';
+import { createBrowserRuntime } from '../src/browser-runtime.js';
+import { createChromeProcess, resolveChromePath } from '../src/chrome-process.js';
+
+const modifiers = Object.freeze({ alt: false, ctrl: false, meta: false, shift: false });
+
+const listen = (server) => new Promise((resolve, reject) => {
+  server.once('error', reject);
+  server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+});
+
+const close = (server) => new Promise((resolve) => server.close(resolve));
+
+const html = (body, title) => `<!doctype html>
+<html><head><title>${title}</title><style>
+body { margin: 0; font-family: sans-serif; min-height: 2400px; }
+#surface { position: absolute; left: 10px; top: 10px; width: 130px; height: 44px; }
+#name { position: absolute; left: 10px; top: 70px; }
+#mark { position: absolute; left: 10px; top: 120px; }
+#output { position: absolute; left: 10px; top: 180px; }
+</style></head><body>${body}</body></html>`;
+
+const startWebFixture = async () => {
+  const server = http.createServer((request, response) => {
+    response.setHeader('content-type', 'text/html; charset=utf-8');
+    if (request.url === '/next') {
+      response.end(html('<h1>Next page</h1><a href="/">Home</a>', 'Next'));
+      return;
+    }
+    response.end(html(`
+      <button id="surface" onclick="this.textContent='Surface clicked'">Surface</button>
+      <input id="name" aria-label="Name" value="initial">
+      <button id="mark" onclick="document.querySelector('#output').textContent=document.querySelector('#name').value">Mark</button>
+      <div id="output">Waiting</div>
+      <h1 style="margin-top:220px">Browser fixture</h1>
+    `, 'Fixture'));
+  });
+  const port = await listen(server);
+  return { server, origin: `http://127.0.0.1:${port}` };
+};
+
+let chromePath = null;
+try {
+  chromePath = resolveChromePath();
+} catch {}
+
+test('runs every browser action and the shared surface against real Chrome', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+
+  const opened = await runtime.perform('browser.open', { url: `${web.origin}/`, viewport: 'desktop' });
+  const initial = await runtime.perform('browser.snapshot', {});
+  const inspected = await runtime.perform('browser.inspect', { selector: '#name' });
+  await runtime.perform('browser.type', { selector: '#name', value: 'Ada', submit: false });
+  await runtime.perform('browser.click', { selector: '#mark' });
+  const marked = await runtime.perform('browser.snapshot', {});
+  const scrolled = await runtime.perform('browser.scroll', { direction: 'bottom' });
+  const capture = await runtime.perform('browser.capture', { label: 'fixture' });
+  const resized = await runtime.perform('browser.resize', { viewport: 'mobile' });
+  await runtime.perform('browser.open', { url: `${web.origin}/next` });
+  const back = await runtime.perform('browser.back', {});
+  const forward = await runtime.perform('browser.forward', {});
+
+  assert.equal(opened.opened, true);
+  assert.equal(opened.url, `${web.origin}/`);
+  assert.match(initial.text, /Browser fixture/);
+  assert.equal(inspected.tag, 'input');
+  assert.match(marked.text, /Ada/);
+  assert.equal(scrolled.atBottom, true);
+  assert.equal(Buffer.from(capture.base64, 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  assert.deepEqual(resized.viewport, { mode: 'mobile', width: 390, height: 844 });
+  assert.equal(back.title, 'Fixture');
+  assert.equal(forward.title, 'Next');
+
+  await runtime.perform('browser.back', {});
+  await runtime.perform('browser.scroll', { direction: 'top' });
+  const frame = await runtime.surfaceFrame({ after: 0, wait: 10_000 });
+  await runtime.surfaceInput([
+    { type: 'pointer', action: 'down', x: 30, y: 30, button: 0, buttons: 1, modifiers },
+    { type: 'pointer', action: 'up', x: 30, y: 30, button: 0, buttons: 0, modifiers },
+  ]);
+  const afterPointer = await runtime.perform('browser.snapshot', {});
+  await runtime.surfaceResize({ width: 700, height: 500 });
+  const afterSurfaceResize = await runtime.perform('browser.snapshot', {});
+
+  assert.equal(frame.mime, 'image/jpeg');
+  assert.ok(frame.bytes.length > 100);
+  assert.match(afterPointer.text, /Surface clicked/);
+  assert.deepEqual(afterSurfaceResize.viewport, { mode: 'custom', width: 700, height: 500 });
+
+  runtime.surfaceControl('user');
+  await assert.rejects(
+    runtime.perform('browser.snapshot', {}),
+    /user controls the browser/i,
+  );
+  runtime.surfaceControl('agent');
+  assert.match((await runtime.perform('browser.snapshot', {})).text, /Browser fixture/);
+});
+
+test('removes the temporary Chrome profile on shutdown', { skip: chromePath ? false : 'Chrome is unavailable' }, async () => {
+  const chrome = createChromeProcess({ chromePath });
+  const running = await chrome.ensure();
+  const profileDir = running.profileDir;
+
+  await chrome.close();
+
+  assert.equal(fs.existsSync(profileDir), false);
+  assert.notEqual(running.process.exitCode === null && running.process.signalCode === null, true);
+});
