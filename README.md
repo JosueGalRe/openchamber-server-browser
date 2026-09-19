@@ -108,6 +108,37 @@ Missing functionality is not automatically a limitation of the SDK. The table se
 
 The next implementation work should recover capabilities that fit the existing contracts and produce small reproductions for any remaining host blockers. Those findings can then be discussed upstream with concrete requests. We should call this a replacement for the original only after the parity gaps have been closed or explicitly documented as agreed differences, with evidence from the actual user flows.
 
+## What we still need from the SDK
+
+This assessment is based on the [official service contracts at the pinned host commit](https://github.com/openchamber/openchamber/blob/56f33fd59a3225c28be4ba25b91aae958d4374f5/packages/sdk/GUEST_SERVICES.md). It records what this migration needs, not a claim that newer SDK versions cannot address it. These are discussion points for upstream, not agreed API changes.
+
+The SDK already provides the two foundations requested during the original discussion: unattended browser-provider actions and a shared image/input panel with host-owned user/agent control. We do not need to request those again.
+
+### Confirmed contract gaps for parity
+
+| Need | Current contract | What would let us complete the migration |
+| --- | --- | --- |
+| Authoritative project/chat scope | `/browser-control` carries `requestId`, `action`, and `parameters`. It does not identify the originating project or chat. A request id identifies an action, not a persistent browser session. | A host-issued scope identity on provider actions, with defined behavior for actions outside a chat. The same scope must be available when attaching a viewer, so the person and agent select the same isolated Chrome context. |
+| Scoped viewing and control | The shared surface has one session and controller per extension service. It cannot distinguish our proposed independent project/chat browser contexts. | A supported way to address scoped surface sessions and bind control, frames, input, and cleanup to that identity. Multiple OS processes are not required; the needed guarantee is unambiguous routing and isolation. |
+| Browser UI alongside the shared surface | `service.surface: true` excludes `panel.entry`; the host renders the generic canvas. The extension cannot put its original toolbar or tab strip in that panel through `panel.entry`. | A supported composition mechanism for browser controls around or beside the shared surface, or another documented extension UI pattern that preserves the same target and host control authority. |
+
+### Capabilities to investigate with upstream
+
+These requirements are concrete, but we have not established that each requires a new API. Existing extension mechanisms should be evaluated first.
+
+| Need | What needs clarification or support | Evidence that would close the question |
+| --- | --- | --- |
+| Agent tab selection | The ten browser actions do not define a tab-management contract. We need a supported way for agent requests to identify the intended target and agree with the viewer's selection. Additional extension tools may provide part of this. | A two-tab workflow where the agent lists/selects a target, the person sees that target, and concurrent viewers cannot silently redirect another action. |
+| Embedded DevTools and live inspection | The shared surface transports images and input. `serviceRequest` is request/response, not a general CDP stream. We need a supported way to host the DevTools frontend and assets and carry authenticated, target-scoped bidirectional messages with cancellation and backpressure. | A small extension demonstration that inspects its own Chrome target through the host, including disconnect, permission revocation, and supported remote transports. If existing mechanisms cannot do this, use that reproduction to propose a transport/UI extension. |
+| Live local-server discovery and grants | Static configuration does not reproduce the original host's live dev-server discovery or session-scoped authorization. We need to establish whether extensions can consume those authoritative host capabilities through a supported API. | A workflow that discovers an eligible listener, grants access only to its scope, and revokes access when it stops or approval is withdrawn. Reading internal files or calling undocumented host endpoints is not the intended integration. |
+| Supported SDK release and runtime behavior | The initial implementation uses a pinned SDK build. Compatible published exports, a reliable minimum host version, and the supported runtime/transport matrix need confirmation. | A reproducible install against a released host/SDK combination, followed by validation on each runtime and transport we advertise. This is a release/compatibility requirement, not a request for a new browser feature. |
+
+### Work that remains ours
+
+Chrome target tracking, browser actions, selection traversal, editing-key handling, clipboard improvements, proxy cleanup, and regression tests belong in the extension. A missing implementation is not evidence that the SDK needs to change. Persistent profiles are also a separate product decision, not a prerequisite for reproducing the original temporary-profile behavior.
+
+For any upstream API request, first provide the user workflow, the current contract that prevents it, a minimal reproduction, and the smallest proposed capability. Prioritize shared scope identity and viewer routing because they determine whether subsequent tabs, permissions, and DevTools attach to the correct browser session.
+
 ## Build and test
 
 ```sh
