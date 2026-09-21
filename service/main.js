@@ -3643,6 +3643,233 @@ var require_websocket_server = __commonJS({
 import path3 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
+// src/browser-manager.js
+var DEFAULT_MAX_SCOPES = 4;
+var scopeId = ({ directory, sessionId }) => JSON.stringify([directory, sessionId]);
+var knownScope = (context) => context && typeof context.directory === "string" && context.directory.length > 0 && typeof context.sessionId === "string" && context.sessionId.length > 0;
+var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) => {
+  if (typeof createRuntime !== "function") throw new Error("createBrowserManager requires a runtime factory");
+  if (!Number.isInteger(maxScopes) || maxScopes < 1) throw new Error("maxScopes must be a positive integer");
+  const scopes = /* @__PURE__ */ new Map();
+  let selectedScopeId = null;
+  let controller = "none";
+  let operationQueue = Promise.resolve();
+  let frameState = null;
+  let frameSequence = 0;
+  let viewGeneration = 0;
+  const frameControllers = /* @__PURE__ */ new Set();
+  const selectionWaiters = /* @__PURE__ */ new Set();
+  let surfaceViewport = null;
+  let closed = false;
+  const enqueue = (operation) => {
+    const pending = operationQueue.catch(() => {
+    }).then(operation);
+    operationQueue = pending;
+    return pending;
+  };
+  const selected = () => selectedScopeId ? scopes.get(selectedScopeId) ?? null : null;
+  const finishSelectionWaiter = (waiter, error = null) => {
+    if (!selectionWaiters.delete(waiter)) return;
+    clearTimeout(waiter.timer);
+    waiter.signal?.removeEventListener("abort", waiter.onAbort);
+    if (error) waiter.reject(error);
+    else waiter.resolve(null);
+  };
+  const select = (entry) => {
+    if (selectedScopeId === entry.id) return;
+    for (const pending of frameControllers) pending.abort();
+    selectedScopeId = entry.id;
+    frameState = null;
+    viewGeneration += 1;
+    for (const waiter of selectionWaiters) finishSelectionWaiter(waiter);
+  };
+  const ensureScope = async (context) => {
+    if (!knownScope(context)) {
+      throw new Error("Browser actions require both project and chat context; this host did not provide them");
+    }
+    const id = scopeId(context);
+    const existing = scopes.get(id);
+    if (existing) {
+      return existing;
+    }
+    if (scopes.size >= maxScopes) {
+      throw new Error(`The browser scope limit (${maxScopes}) is already in use; restart the service to clear inactive scopes`);
+    }
+    const entry = {
+      id,
+      directory: context.directory,
+      sessionId: context.sessionId,
+      runtime: createRuntime(context)
+    };
+    scopes.set(id, entry);
+    if (!selectedScopeId) select(entry);
+    return entry;
+  };
+  const requireSelected = () => {
+    const entry = selected();
+    if (!entry) throw new Error("No browser scope is available yet");
+    return entry;
+  };
+  const requireIdleSurface = () => {
+    if (controller !== "none") {
+      throw new Error("Dock controls are available only while the shared surface is idle");
+    }
+  };
+  const requireGeneration = (expectedGeneration) => {
+    if (expectedGeneration !== viewGeneration) {
+      throw new Error("The browser view changed before the dock command ran");
+    }
+  };
+  const dockAction = (action, parameters, expectedGeneration) => enqueue(async () => {
+    requireIdleSurface();
+    requireGeneration(expectedGeneration);
+    const entry = requireSelected();
+    const result = await entry.runtime.perform(action, parameters);
+    return result;
+  });
+  return {
+    get agentActive() {
+      return selected()?.runtime.agentActive === true;
+    },
+    perform(action, parameters, signal, context) {
+      return enqueue(async () => {
+        if (closed) throw new Error("Browser manager is closed");
+        if (controller === "user") {
+          throw new Error("The user controls the browser. Wait for them to hand control back.");
+        }
+        const entry = await ensureScope(context);
+        return entry.runtime.perform(action, parameters, signal);
+      });
+    },
+    state() {
+      return {
+        controller,
+        selectedScopeId,
+        generation: viewGeneration,
+        scopes: Array.from(scopes.values(), (entry) => ({
+          id: entry.id,
+          directory: entry.directory,
+          sessionId: entry.sessionId,
+          selected: entry.id === selectedScopeId,
+          url: entry.runtime.url ?? "about:blank",
+          title: entry.runtime.title ?? ""
+        }))
+      };
+    },
+    selectScope(id, expectedGeneration) {
+      return enqueue(async () => {
+        requireIdleSurface();
+        requireGeneration(expectedGeneration);
+        const entry = scopes.get(id);
+        if (!entry) throw new Error("The selected browser scope no longer exists");
+        if (surfaceViewport) await entry.runtime.surfaceResize(surfaceViewport);
+        requireIdleSurface();
+        requireGeneration(expectedGeneration);
+        select(entry);
+      });
+    },
+    navigate(url, expectedGeneration) {
+      return dockAction("browser.open", { url }, expectedGeneration);
+    },
+    reload(expectedGeneration) {
+      return dockAction("browser.reload", {}, expectedGeneration);
+    },
+    back(expectedGeneration) {
+      return dockAction("browser.back", {}, expectedGeneration);
+    },
+    forward(expectedGeneration) {
+      return dockAction("browser.forward", {}, expectedGeneration);
+    },
+    async surfaceFrame({ after, wait: wait2, signal }) {
+      const entry = selected();
+      if (closed) return null;
+      signal?.throwIfAborted();
+      if (!entry) {
+        if (wait2 === 0) return null;
+        return new Promise((resolve, reject) => {
+          const waiter = { signal, resolve, reject, timer: null, onAbort: null };
+          waiter.onAbort = () => finishSelectionWaiter(
+            waiter,
+            signal.reason ?? new DOMException("Frame request cancelled", "AbortError")
+          );
+          waiter.timer = setTimeout(() => finishSelectionWaiter(waiter), wait2);
+          waiter.timer.unref?.();
+          signal?.addEventListener("abort", waiter.onAbort, { once: true });
+          selectionWaiters.add(waiter);
+          if (signal?.aborted) waiter.onAbort();
+        });
+      }
+      const generation = viewGeneration;
+      const current = frameState?.scopeId === entry.id ? frameState : null;
+      if (current?.frame && current.sequence > after) return current.frame;
+      const switchController = new AbortController();
+      frameControllers.add(switchController);
+      const combinedSignal = signal ? AbortSignal.any([signal, switchController.signal]) : switchController.signal;
+      let frame;
+      try {
+        frame = await entry.runtime.surfaceFrame({
+          after: current?.sourceSequence ?? 0,
+          wait: wait2,
+          signal: combinedSignal
+        });
+      } catch (error) {
+        if (switchController.signal.aborted) return null;
+        throw error;
+      } finally {
+        frameControllers.delete(switchController);
+      }
+      if (!frame || selectedScopeId !== entry.id || viewGeneration !== generation) return null;
+      const published = frameState?.scopeId === entry.id ? frameState : null;
+      if (published && frame.sequence <= published.sourceSequence) return null;
+      frameSequence = Math.max(frameSequence + 1, after + 1);
+      const wrapped = { ...frame, sequence: frameSequence };
+      frameState = {
+        scopeId: entry.id,
+        sourceSequence: frame.sequence,
+        sequence: frameSequence,
+        frame: wrapped
+      };
+      return wrapped;
+    },
+    surfaceInput(events) {
+      controller = "user";
+      return enqueue(async () => {
+        const runtime = requireSelected().runtime;
+        await runtime.surfaceControl("user");
+        return runtime.surfaceInput(events);
+      });
+    },
+    surfaceControl(nextController) {
+      return enqueue(() => {
+        controller = nextController;
+        return selected()?.runtime.surfaceControl(nextController);
+      });
+    },
+    surfaceResize(size) {
+      return enqueue(async () => {
+        const result = await requireSelected().runtime.surfaceResize(size);
+        surfaceViewport = size;
+        return result;
+      });
+    },
+    surfaceClipboard() {
+      return enqueue(() => requireSelected().runtime.surfaceClipboard());
+    },
+    close() {
+      if (closed) return operationQueue;
+      closed = true;
+      for (const pending of frameControllers) pending.abort();
+      for (const waiter of selectionWaiters) finishSelectionWaiter(waiter);
+      return enqueue(async () => {
+        await Promise.all(Array.from(scopes.values(), (entry) => entry.runtime.close()));
+        scopes.clear();
+        selectedScopeId = null;
+        frameState = null;
+      });
+    }
+  };
+};
+
 // src/page-scripts.js
 var MAX_TEXT_CHARS = 6e3;
 var MAX_ELEMENTS = 120;
@@ -4044,6 +4271,18 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
     return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport) };
   }
   const page = await runtime.ensurePage();
+  if (action === "browser.reload") {
+    runtime.clearConsoleProblems();
+    const load = startLoadWait(page, OPEN_SETTLE_MS, signal);
+    try {
+      await withAbort(signal, page.cdp.sendSession(page.sessionId, "Page.reload"));
+    } catch (error) {
+      await load.cancel();
+      throw error;
+    }
+    await load.promise;
+    return readPageInfo(page, signal);
+  }
   if (action === "browser.snapshot") {
     const data = await runPageScript(page, buildSnapshotScript(parameters), signal);
     const problems = runtime.consoleProblems;
@@ -4758,6 +4997,14 @@ var BROWSER_CONTROL_ACTIONS = [
 var BROWSER_PROVIDER_IDLE_MS = 10 * 6e4;
 var CONTROL_ACTIONS = new Set(BROWSER_CONTROL_ACTIONS);
 var isBrowserControlAction = (value) => CONTROL_ACTIONS.has(value);
+var readContext = (wire) => {
+  const directory = wire?.directory;
+  const sessionId = wire?.sessionId;
+  return {
+    directory: String(directory) === directory && directory.length > 0 ? directory : null,
+    sessionId: String(sessionId) === sessionId && sessionId.length > 0 ? sessionId : null
+  };
+};
 var readBrowserProviderRequest = (body) => {
   let wire;
   try {
@@ -4768,14 +5015,14 @@ var readBrowserProviderRequest = (body) => {
   } catch {
     return null;
   }
-  const { requestId, action, parameters } = wire;
+  const { requestId, action, parameters, context } = wire;
   if (String(requestId) !== requestId || requestId.length === 0)
     return null;
   if (String(action) !== action || !isBrowserControlAction(action))
     return null;
   if (Object(parameters) !== parameters)
     return null;
-  return { requestId, action, parameters };
+  return { requestId, action, parameters, context: readContext(context) };
 };
 
 // node_modules/@openchamber/sdk/dist/service-surface.js
@@ -5081,6 +5328,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => 
   let contextId = null;
   let targetId = null;
   let sessionId = null;
+  let mainFrameId = null;
   let eventCleanup = null;
   let startupPromise = null;
   let pagePromise = null;
@@ -5091,6 +5339,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => 
     controller: "none",
     agentActive: false,
     title: "",
+    url: "about:blank",
     get consoleProblems() {
       return problems.map((problem) => ({ ...problem }));
     },
@@ -5105,6 +5354,13 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => 
   };
   const observeCdp = () => cdp.onEvent((event) => {
     if (event.sessionId !== sessionId) return;
+    if (event.method === "Page.frameNavigated" && !event.params.frame?.parentId) {
+      mainFrameId = event.params.frame.id;
+      runtime.url = event.params.frame.url;
+    }
+    if (event.method === "Page.navigatedWithinDocument" && event.params.frameId === mainFrameId) {
+      runtime.url = event.params.url;
+    }
     if (event.method === "Runtime.consoleAPICalled") {
       if (event.params.type !== "warning" && event.params.type !== "error") return;
       const message = event.params.args?.map((arg) => arg.value ?? arg.description).filter(Boolean).join(" ");
@@ -5204,6 +5460,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => 
       try {
         const data = await execute(action, parameters, signal);
         if (typeof data?.title === "string") runtime.title = data.title;
+        if (typeof data?.url === "string") runtime.url = data.url;
         return data;
       } finally {
         runtime.agentActive = false;
@@ -5237,6 +5494,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => 
     contextId = null;
     targetId = null;
     sessionId = null;
+    mainFrameId = null;
   };
   return runtime;
 };
@@ -5294,6 +5552,22 @@ var surfaceTitleHeader = (value) => Array.from(String(value ?? ""), (character) 
   if (codePoint > 255) return "?";
   return character;
 }).join("").trim().slice(0, SURFACE_TITLE_MAX);
+var readObjectBody = async (request) => {
+  try {
+    const parsed = JSON.parse(await readBody(request));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+var stringProperty = (value, name) => typeof value?.[name] === "string" && value[name].length > 0 ? value[name] : null;
+var generationProperty = (value) => Number.isInteger(value?.generation) && value.generation >= 0 ? value.generation : null;
+var dockErrorStatus = (error) => {
+  const message = errorMessage(error);
+  if (/surface is idle|browser view changed/i.test(message)) return 409;
+  if (/no browser scope|no longer exists/i.test(message)) return 404;
+  return 400;
+};
 var createService = ({ runtime, token, port = 0 }) => {
   if (!runtime?.perform || !runtime?.close) throw new Error("createService requires a browser runtime");
   if (typeof token !== "string" || token.length === 0) throw new Error("createService requires a bearer token");
@@ -5309,10 +5583,50 @@ var createService = ({ runtime, token, port = 0 }) => {
       const parsed = readBrowserProviderRequest(await readBody(request));
       if (!parsed) return text(response, 400, "Invalid browser provider request\n");
       try {
-        const data = await runtime.perform(parsed.action, parsed.parameters, signal);
+        const data = await runtime.perform(parsed.action, parsed.parameters, signal, parsed.context);
         return json(response, 200, { ok: true, data });
       } catch (error) {
         return json(response, 200, { ok: false, error: errorMessage(error) });
+      }
+    }
+    if (request.method === "GET" && url.pathname === "/browser/state") {
+      return json(response, 200, runtime.state());
+    }
+    if (request.method === "POST" && url.pathname === "/browser/select") {
+      const body = await readObjectBody(request);
+      const id = stringProperty(body, "scopeId");
+      const generation = generationProperty(body);
+      if (!id || generation === null) return text(response, 400, "scopeId and generation are required\n");
+      try {
+        await runtime.selectScope(id, generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/browser/navigate") {
+      const body = await readObjectBody(request);
+      const target = stringProperty(body, "url");
+      const generation = generationProperty(body);
+      if (!target || generation === null) return text(response, 400, "url and generation are required\n");
+      try {
+        await runtime.navigate(target, generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+    if (request.method === "POST" && (url.pathname === "/browser/back" || url.pathname === "/browser/forward" || url.pathname === "/browser/reload")) {
+      const body = await readObjectBody(request);
+      const generation = generationProperty(body);
+      if (generation === null) return text(response, 400, "generation is required\n");
+      try {
+        if (url.pathname === "/browser/back") await runtime.back(generation);
+        else if (url.pathname === "/browser/forward") await runtime.forward(generation);
+        else await runtime.reload(generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
     }
     if (request.method === "GET" && url.pathname === SURFACE_FRAME_PATH) {
@@ -5426,7 +5740,9 @@ var startService = async ({
     throw new Error("OPENCHAMBER_SERVICE_TOKEN is required");
   }
   const config = loadConfig({ entryUrl: import.meta.url, configPath });
-  const browserRuntime = runtime ?? createBrowserRuntime(config);
+  const browserRuntime = runtime ?? createBrowserManager({
+    createRuntime: () => createBrowserRuntime(config)
+  });
   const service = createService({
     runtime: browserRuntime,
     token,
@@ -5452,6 +5768,7 @@ if (isMain) {
   });
 }
 export {
+  createBrowserManager,
   createBrowserRuntime,
   createService,
   startService

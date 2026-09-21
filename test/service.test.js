@@ -10,10 +10,26 @@ const createRuntime = () => {
   return {
     calls,
     agentActive: true,
-    async perform(action, parameters) {
-      calls.push(['perform', action, parameters]);
+    async perform(action, parameters, signal, context) {
+      calls.push(['perform', action, parameters, context]);
       return { url: 'https://example.test', title: 'Example' };
     },
+    state() {
+      return {
+        controller: 'none',
+        selectedScopeId: '["/repo","ses_1"]',
+        generation: 1,
+        scopes: [{
+          id: '["/repo","ses_1"]', directory: '/repo', sessionId: 'ses_1', selected: true,
+          url: 'https://example.test', title: 'Example',
+        }],
+      };
+    },
+    async selectScope(id, generation) { calls.push(['select', id, generation]); },
+    async navigate(url, generation) { calls.push(['navigate', url, generation]); },
+    async reload(generation) { calls.push(['reload', generation]); },
+    async back(generation) { calls.push(['back', generation]); },
+    async forward(generation) { calls.push(['forward', generation]); },
     async surfaceFrame(request) {
       calls.push(['frame', request.after, request.wait]);
       return { sequence: 4, bytes: Buffer.from('jpeg'), mime: 'image/jpeg', width: 800, height: 600, title: 'Frame 😀\nTitle' };
@@ -58,7 +74,12 @@ test('dispatches SDK browser and surface protocol requests', async (context) => 
   const health = await fetch(`${fixture.origin}/health`, { headers: authorization });
   const browser = await fetch(`${fixture.origin}/browser-control`, {
     method: 'POST', headers: authorization,
-    body: JSON.stringify({ requestId: 'browser-1', action: 'browser.back', parameters: {} }),
+    body: JSON.stringify({
+      requestId: 'browser-1',
+      action: 'browser.back',
+      parameters: {},
+      context: { directory: '/repo', sessionId: 'ses_1' },
+    }),
   });
   const input = await fetch(`${fixture.origin}/surface/input`, {
     method: 'POST', headers: authorization,
@@ -86,6 +107,53 @@ test('dispatches SDK browser and surface protocol requests', async (context) => 
   assert.deepEqual(fixture.runtime.calls.slice(0, 6).map((call) => call[0]), [
     'perform', 'input', 'control', 'resize', 'clipboard', 'frame',
   ]);
+  assert.deepEqual(fixture.runtime.calls[0][3], { directory: '/repo', sessionId: 'ses_1' });
+});
+
+test('serves dock state and serializes scope and navigation commands', async (context) => {
+  // Given a running service with one browser scope.
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+
+  // When the dock reads state, selects the scope, and navigates history.
+  const state = await fetch(`${fixture.origin}/browser/state`, { headers: authorization });
+  const select = await fetch(`${fixture.origin}/browser/select`, {
+    method: 'POST', headers: authorization, body: JSON.stringify({ scopeId: '["/repo","ses_1"]', generation: 1 }),
+  });
+  const navigate = await fetch(`${fixture.origin}/browser/navigate`, {
+    method: 'POST', headers: authorization, body: JSON.stringify({ url: 'https://next.test', generation: 1 }),
+  });
+  const back = await fetch(`${fixture.origin}/browser/back`, {
+    method: 'POST', headers: authorization, body: JSON.stringify({ generation: 1 }),
+  });
+  const forward = await fetch(`${fixture.origin}/browser/forward`, {
+    method: 'POST', headers: authorization, body: JSON.stringify({ generation: 1 }),
+  });
+
+  // Then each official service route returns state and invokes the matching manager operation.
+  assert.equal(state.status, 200);
+  assert.equal((await state.json()).selectedScopeId, '["/repo","ses_1"]');
+  assert.deepEqual([select.status, navigate.status, back.status, forward.status], [200, 200, 200, 200]);
+  assert.deepEqual(fixture.runtime.calls.slice(0, 4), [
+    ['select', '["/repo","ses_1"]', 1],
+    ['navigate', 'https://next.test', 1],
+    ['back', 1],
+    ['forward', 1],
+  ]);
+});
+
+test('rejects malformed dock requests before invoking the manager', async (context) => {
+  // Given a running service.
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+
+  // When dock commands omit their required string, then the service refuses both.
+  const responses = await Promise.all([
+    fetch(`${fixture.origin}/browser/select`, { method: 'POST', headers: authorization, body: '{}' }),
+    fetch(`${fixture.origin}/browser/navigate`, { method: 'POST', headers: authorization, body: '{"url":7}' }),
+  ]);
+  assert.deepEqual(responses.map((response) => response.status), [400, 400]);
+  assert.deepEqual(fixture.runtime.calls, []);
 });
 
 test('rejects malformed protocol bodies before invoking the runtime', async (context) => {
@@ -124,4 +192,19 @@ test('aborts a bounded frame wait when the service closes', async () => {
   const response = await pending.catch(() => null);
   if (response) assert.equal(response.status, 500);
   assert.equal(runtime.calls.at(-1)[0], 'close');
+});
+
+
+test('dock reload requires a generation and invokes the reload operation', async (context) => {
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+  const invalid = await fetch(`${fixture.origin}/browser/reload`, {
+    method: 'POST', headers: authorization, body: '{}',
+  });
+  assert.equal(invalid.status, 400);
+  const response = await fetch(`${fixture.origin}/browser/reload`, {
+    method: 'POST', headers: authorization, body: JSON.stringify({ generation: 1 }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(fixture.runtime.calls, [['reload', 1]]);
 });

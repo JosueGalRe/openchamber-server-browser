@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Server Browser controls</title>
+    <style>
+      :root { color-scheme: light dark; font-family: var(--oc-font, ui-sans-serif, system-ui, sans-serif); }
+      * { box-sizing: border-box; }
+      html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      button, input { font: inherit; }
+      #root { display: grid; grid-template-rows: 28px 40px; padding: 4px 8px; background: var(--oc-bg, transparent); color: var(--oc-fg, inherit); }
+      .row { display: flex; align-items: center; min-width: 0; }
+      .scope-row { gap: 8px; border-bottom: 1px solid var(--oc-subtle, var(--oc-border, currentColor)); }
+      .session-tabs { flex: 1; min-width: 0; margin: 0; padding: 0; border: 0; }
+      .session-tabs .oc-sdk-tabs { display: flex; width: 100%; height: 28px; gap: 0; padding: 0; overflow: auto hidden; border-radius: 0; background: transparent; }
+      .session-tabs .oc-sdk-tabs[data-track="true"] { background: transparent; }
+      .session-tabs .oc-sdk-tab { position: relative; flex: 0 1 220px; min-width: 80px; height: 28px; padding: 0 12px; border: 0; border-radius: 0; background: transparent; color: var(--oc-muted, currentColor); font-size: 12px; font-weight: 500; }
+      .session-tabs .oc-sdk-tab:hover { background: var(--oc-hover, transparent); color: var(--oc-fg, inherit); }
+      .session-tabs .oc-sdk-tab[aria-selected="true"] { border: 0; background: transparent; color: var(--oc-fg, inherit); }
+      .session-tabs .oc-sdk-tab[aria-selected="true"]::after { position: absolute; right: 8px; bottom: 0; left: 8px; height: 2px; border-radius: 999px 999px 0 0; background: var(--oc-selection, currentColor); content: ""; }
+      .session-tabs .oc-sdk-tab span { overflow: hidden; text-overflow: ellipsis; }
+      .status { display: flex; min-width: 8px; max-width: 40%; align-items: center; gap: 6px; overflow: hidden; color: var(--oc-muted, currentColor); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .status::before { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--oc-muted, currentColor); content: ""; opacity: .65; }
+      .status[data-state="ready"]::before { background: var(--oc-success, var(--oc-muted, currentColor)); }
+      .status[data-state="user"]::before { background: var(--oc-primary, var(--oc-focus, currentColor)); opacity: 1; }
+      .status[data-state="agent"]::before, .status[data-state="waiting"]::before { background: var(--oc-warning, var(--oc-muted, currentColor)); opacity: 1; }
+      .status[data-state="error"]::before { background: var(--oc-error, currentColor); opacity: 1; }
+      .navigation-row { gap: 2px; }
+      .navigation-row button, input { color: inherit; }
+      .navigation-row button { display: inline-flex; width: 28px; height: 28px; flex: 0 0 28px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: var(--oc-radius, 6px); background: transparent; color: var(--oc-muted, currentColor); cursor: pointer; }
+      .navigation-row button:hover:not(:disabled) { background: var(--oc-hover, transparent); color: var(--oc-fg, inherit); }
+      .navigation-row button:active:not(:disabled) { background: var(--oc-active, var(--oc-hover, transparent)); }
+      .navigation-row button svg { width: 16px; height: 16px; pointer-events: none; }
+      button:disabled, input:disabled, fieldset:disabled button { cursor: default; opacity: .55; }
+      input { height: 28px; min-width: 0; flex: 1; margin-left: 4px; padding: 0 12px; border: 1px solid var(--oc-border, currentColor); border-radius: 999px; background: var(--oc-elevated, transparent); color: var(--oc-elevated-fg, var(--oc-fg, inherit)); font-size: 12px; }
+      input::placeholder { color: var(--oc-muted, currentColor); opacity: .8; }
+      input:focus, button:focus-visible { outline: 2px solid var(--oc-focus, currentColor); outline-offset: 1px; }
+      @media (forced-colors: active) {
+        .status::before, .session-tabs .oc-sdk-tab[aria-selected="true"]::after { forced-color-adjust: none; background: Highlight; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="main.js"></script>
+  </body>
+</html>

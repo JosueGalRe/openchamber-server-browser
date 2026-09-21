@@ -1,6 +1,6 @@
 {
   "name": "@josuegalre/openchamber-server-browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Server-owned Chrome browser provider and shared surface for OpenChamber",
   "type": "module",
@@ -11,14 +11,14 @@
   },
   "openchamber": {
     "apiVersion": 1,
-    "engines": {
-      "openchamber": ">=1.24.2"
-    },
     "contributes": {
       "panel": {
         "id": "server-browser",
         "name": "Server Browser",
-        "icon": "global"
+        "icon": "computer",
+        "entry": "panel/index.html",
+        "dock": "top",
+        "size": 76
       },
       "service": {
         "entry": "service/main.js",
@@ -44,7 +44,7 @@
     "package": "node scripts/package.mjs"
   },
   "dependencies": {
-    "@openchamber/sdk": "file:vendor/openchamber-sdk-56f33fd59.tgz",
+    "@openchamber/sdk": "file:vendor/openchamber-sdk-959d179c6.tgz",
     "ws": "8.18.3"
   },
   "devDependencies": {

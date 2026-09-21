@@ -6,7 +6,7 @@ This is the extension extraction of [OpenChamber PR #3425](https://github.com/op
 
 ## Status and goal
 
-**Experimental. This extension does not yet replace the original Server Browser implementation.** Version 0.1.0 delivers the shared browser and agent/user handoff, with substantial gaps in debugging, tab management, and session isolation.
+**Experimental. This extension does not yet replace the original Server Browser implementation.** Version 0.2.0 adds browser isolation by project and chat plus a docked navigation toolbar. Substantial gaps remain in debugging, tab management, and multi-viewer coordination.
 
 The goal is functional parity with the Server Browser in PR #3425 through OpenChamber's official extension APIs. The reference for this extraction is [commit 362dbc3f305615200d762b721106c64e796b095b](https://github.com/JosueGalRe/openchamber/tree/362dbc3f305615200d762b721106c64e796b095b/packages/web/server/lib/browser). It is a feature reference, not a claim that every original runtime or platform was validated.
 
@@ -16,7 +16,7 @@ The original implementation remains the functional reference until those gaps ar
 
 ## Requirements
 
-- An OpenChamber build containing #3734. The version string `1.24.2` alone does not establish compatibility because the SDK published under that version predates these contracts.
+- An OpenChamber build containing [commit `959d179c6`](https://github.com/openchamber/openchamber/commit/959d179c6aa06af6d8102461c8fea166e0433445). No released version contained the required scoped-provider and dock contracts when version 0.2.0 was prepared, so the manifest does not claim a minimum released version yet.
 - Chrome or Chromium 109 or newer installed on the machine running OpenChamber.
 - A supported host service runtime. Development uses Node.js 22 or newer and Bun for installing locked dependencies.
 
@@ -27,7 +27,7 @@ The extension includes its built service. Installing it in OpenChamber does not 
 1. Open OpenChamber's extension settings and install from `https://github.com/JosueGalRe/openchamber-server-browser`.
 2. Review and approve its service permission. The service launches Chrome on the OpenChamber host.
 3. Select **Server Browser** under **Settings → General → OpenChamber Tools → Browser provider**.
-4. Ask the agent to open a page. Open **Server Browser** from the panel rail to view that same page.
+4. Ask the agent to open a page from a chat. Open **Server Browser** from the panel rail to view that same page.
 
 The service starts on the first browser action, even if no panel is open. Interacting with the panel takes control from the agent. Use the panel's release control action to hand the page back. OpenChamber owns this control handoff and rejects agent actions while you hold control.
 
@@ -54,29 +54,40 @@ For a folder installation, clone this repository, configure it, and install its 
 
 The provider implements `browser.open`, `snapshot`, `click`, `type`, `scroll`, `back`, `forward`, `inspect`, `capture`, and `resize`. It starts without an open viewer. The shared panel sends pointer, keyboard, wheel, text, and resize events to the same Chrome target used by the agent.
 
+Each authoritative `{ directory, sessionId }` pair gets its own browser runtime, cookies, local storage, form state, and history. Calls with either field missing fail closed instead of reusing a private chat's browser. The service keeps at most four live scopes and refuses a fifth rather than silently deleting browser state.
+
+The first scope stays visible until the person picks another one. Agent work in another chat continues in that chat's browser without redirecting the shared viewer. The dock above the viewer lists live scopes and provides an address field plus back, forward, and reload controls through the official `serviceRequest` bridge.
+
 OpenChamber owns the control handoff. A person can take over the page, the host refuses agent actions while that person holds control, and the agent can continue after control is released. This same-page workflow has been tested through the host and its panel.
 
 ## Known limitations and parity gaps
 
-| Area | Original Server Browser reference | Extension 0.1.0 |
+| Area | Original Server Browser reference | Extension 0.2.0 |
 | --- | --- | --- |
 | Chrome DevTools | Embedded Chrome DevTools with authenticated transport and frontend asset handling. | No embedded DevTools. `browser.inspect` returns element details; it does not replace DevTools. |
 | Console and network inspection | Dedicated inspector with console capture, network rows, and request details. | Bounded console warnings/errors in snapshots. No interactive console, network inspector, or request-detail panel. |
-| Tabs and popups | Tab listing, creation, switching, closing, and tracking targets opened by pages or CDP clients. | One controlled target. No tab manager or selection/routing for new windows and popups. A workflow that opens another target may become inaccessible through the extension. |
-| Project and chat isolation | Browser contexts scoped by directory and agent session, with separate cookies/storage. | One shared context per extension service. No project/chat isolation or independent agent session ownership. |
-| Browser controls | Browser-specific navigation, tab, viewport, and inspection controls. | Generic SDK shared panel. Navigation actions exist for the agent, but the original browser toolbar and tab UI have not been migrated. |
+| Tabs and popups | Tab listing, creation, switching, closing, and tracking targets opened by pages or CDP clients. | One controlled target per project/chat scope. No tab manager or selection/routing for new windows and popups. A workflow that opens another target may become inaccessible through the extension. |
+| Project and chat isolation | Browser contexts scoped by directory and agent session, with separate cookies/storage. | One isolated runtime per authoritative project/chat pair, bounded to four live scopes. Unknown context fails closed. The selected viewer remains service-global. |
+| Browser controls | Browser-specific navigation, tab, viewport, and inspection controls. | Docked session tabs, address field, back, forward, and reload. No browser-tab management, viewport picker, stop, or inspector controls yet. |
 | Local-server access | Grants derived from live development-server discovery and checked against active destinations. | Manual `allowedOrigins` in `config.json`, applied on restart. No live discovery, automatic revocation when a dev server stops, or in-app origin editor. |
 | Viewports | Coordination between the viewer, agent presets, and external DevTools emulation. | Agent presets and panel resizing work. The original viewport coordination and DevTools emulation behavior have not been ported. |
 | Context menus and clipboard | Page-menu handling and selection reads through open shadow roots and same-origin frames. | Basic input and plain-text copy/paste. Selection reads the top document or its focused input; it does not traverse frames or shadow roots. No original viewer context menu or rich clipboard support. |
 | Keyboard and pointer details | Dedicated editing-key and cross-platform shortcut handling. | Basic keys, pointer input, wheel, and pasted text. Full shortcut/IME parity is unverified; pointer events currently use a single-click count, without dedicated double-click handling. |
+| Native popups | Not revalidated with the same native `select` fixture; prior behavior is user-reported. | A native HTML `select` accepts keyboard input, but its popup was not visible in the screencast during testing. In the same live viewer, opting the test page into `appearance: base-select` made the options visible and clickable; restoring native appearance reproduced the problem. This is a page-level workaround, not a shipped compatibility fix. The original build still needs a matched runtime comparison. |
 | Chrome/CDP configuration | Managed Chrome discovery and CDP configuration integrated with the original host workflow. | Standard executable discovery or a manual `chromePath`. No migrated CDP settings UI or supported attachment to an arbitrary existing Chrome session. |
 | Runtime integration | Browser behavior integrated into OpenChamber's runtime contracts. | Linux web-host path validated. Mobile and VS Code integration have not been implemented. Electron, Windows/macOS, and private relay remain unverified. |
 
-### Shared state and lifetime
+### Scope, viewing, and lifetime
 
-Everyone authorized to use this OpenChamber instance can share the extension's browser. Two chats or projects can therefore navigate or change the same page. The user/agent control handoff prevents conflicting user input; it does not create separate sessions for different agents or users. This extension is not an isolation boundary between mutually untrusted users.
+Agent browser state is isolated by the project directory and chat session id supplied by OpenChamber. The shared viewer is still one service-global selection. It is a convenience view, not an authorization boundary between mutually untrusted viewers.
 
-Chrome uses a temporary profile. Stopping or restarting the service closes Chrome and removes its profile, including cookies and login state. OpenChamber stops an unattended browser provider after ten minutes without actions; an open shared panel keeps it running. The next start creates a fresh browser. There is no session restore or persistent-profile option. Preserving state during a live handoff is supported; preserving it across process restarts is not. The original implementation also used temporary Chrome profiles, so durable profiles are not presented here as an existing original feature.
+Only the first newly created scope becomes visible automatically. Later agent actions stay in their own background scope. A person can switch the visible scope while the shared surface is idle. Every dock command carries the view generation it was created for, so a delayed address or history command cannot mutate a scope selected afterward. Switching also cancels the old frame wait and rebases frame sequence numbers so the host requests the new image immediately.
+
+When the visible scope changes, the service applies the current panel dimensions before publishing its first frame. This avoids showing a desktop-sized background browser as a tiny letterboxed image. Viewing a scope can therefore replace its last agent-selected viewport with the current panel size.
+
+The SDK does not identify which panel viewer sent `serviceRequest`, and surface input does not carry the frame or scope generation the viewer saw. Dock mutations are therefore disabled while any user or agent controller owns the surface. This prevents the dock from bypassing the host lease, but one residual race remains: input generated from an old image can arrive after an idle scope switch and target the newly selected view. Full multi-viewer fencing needs host-issued viewer identity or a view generation on input.
+
+Each scope currently uses a separate Chrome process and temporary profile. Stopping or restarting the service closes every process and removes its profiles, including cookies and login state. OpenChamber stops an unattended browser provider after ten minutes without actions; an open shared panel keeps it running. The next start creates fresh browsers. There is no session restore or persistent-profile option. Preserving state during a live handoff is supported; preserving it across process restarts is not. The original implementation also used temporary Chrome profiles, so durable profiles are not presented here as an existing original feature.
 
 ### Configuration and security boundaries
 
@@ -86,7 +97,7 @@ The service uses OpenChamber's authenticated loopback protocol and applies brows
 
 ### Compatibility and validation limits
 
-The extension requires the browser-provider and shared-surface contracts from #3734. The initial build vendors an official SDK snapshot because the published package inspected during development lacked those exports. That pin needs to be replaced with a compatible published SDK and a verified host version requirement. The manifest's version floor alone does not prove that a host contains the required contracts.
+The extension vendors the official SDK snapshot from `959d179c6` because the latest published SDK inspected during development did not contain scoped provider calls or docked surface controls. Replace that pin with a compatible published SDK and add a verified host version requirement when the release exists. The package version inside the snapshot still reads `1.24.2`; that string does not establish host compatibility.
 
 The shared panel displays image frames. It does not expose the remote page's DOM as local controls, and accessibility or responsiveness parity with the original viewer has not been established. No performance or frame-rate equivalence is claimed.
 
@@ -100,27 +111,28 @@ Missing functionality is not automatically a limitation of the SDK. The table se
 | --- | --- | --- |
 | Recover interaction details | Primarily extension implementation work. | Port selection traversal, editing keys, click behavior, and clipboard handling; verify them on real pages through the shared panel. |
 | Recover tab management and browser controls | Chrome target management can live in the service. User controls and agent target selection need a design compatible with the host contracts. | Create, list, select, and close tabs; track popups; route agent and user input to the intended target without losing state. |
-| Restore project/chat isolation | The current provider request carries `requestId`, `action`, and `parameters`, without authoritative project/chat identity. The shared surface is also one session per service. This needs host/SDK contract work or a supported alternative. | Route both agent actions and viewers to the same scoped context, with isolation tests for cookies, storage, permissions, and concurrent sessions. Do not infer identity from the last visible project. |
+| Harden scoped viewing | Provider actions now carry authoritative project/chat identity and browser state is isolated. The shared viewer still has one service-global selection. | Bind frames and input to a host-issued view generation or viewer lease so stale input cannot cross an idle scope switch. |
 | Restore the inspector and embedded DevTools | Not implemented. The image/input surface does not itself provide a DevTools frontend, asset proxy, or CDP transport. Evaluate supported extension UI/service mechanisms before claiming a new SDK API is required. | Inspect the same selected target, with authenticated assets and transport, bounded buffering, proper cleanup, and no raw debugger exposure to viewers. |
 | Restore the local-server workflow | Manual grants work. Access to authoritative host discovery and scoped authorization needs investigation. | Discover eligible live dev servers, handle stopped/replaced listeners, and keep private destinations blocked without a valid grant. |
 | Match session lifecycle behavior | Cleanup is implemented; original scoping and recovery behavior are not fully migrated. | Define idle, disconnect, crash, and restart behavior; test that failed or stale work cannot affect another session or revive a stopped service. |
 | Establish runtime and release support | A validation and integration task, not a promise of automatic SDK compatibility. | Verify each supported runtime and transport, test a real agent workflow, use a compatible released SDK, and publish an explicit support matrix. |
 
+The latest [maintainer response](https://github.com/openchamber/openchamber/pull/3425#issuecomment-5752977364) keeps embedded DevTools and development-server discovery/grants outside the SDK for now, while explicitly allowing an extension-owned console in the dock. Console and Network capture/UI have not yet been ported. The dock has a fixed manifest height, so an expandable inspector and hiding the host-owned title/control row require additional host support or a different layout.
+
 The next implementation work should recover capabilities that fit the existing contracts and produce small reproductions for any remaining host blockers. Those findings can then be discussed upstream with concrete requests. We should call this a replacement for the original only after the parity gaps have been closed or explicitly documented as agreed differences, with evidence from the actual user flows.
 
 ## What we still need from the SDK
 
-This assessment is based on the [official service contracts at the pinned host commit](https://github.com/openchamber/openchamber/blob/56f33fd59a3225c28be4ba25b91aae958d4374f5/packages/sdk/GUEST_SERVICES.md). It records what this migration needs, not a claim that newer SDK versions cannot address it. These are discussion points for upstream, not agreed API changes.
+This assessment is based on the [official service contracts at the pinned host commit](https://github.com/openchamber/openchamber/blob/959d179c6aa06af6d8102461c8fea166e0433445/packages/sdk/GUEST_SERVICES.md). It records what remains after adopting scoped provider calls and docked controls. These are discussion points for upstream, not agreed API changes.
 
-The SDK already provides the two foundations requested during the original discussion: unattended browser-provider actions and a shared image/input panel with host-owned user/agent control. We do not need to request those again.
+The SDK now provides unattended browser-provider actions, authoritative project/chat context, a shared image/input viewer with host-owned control, and an extension page docked beside that viewer. We do not need to request those again.
 
 ### Confirmed contract gaps for parity
 
 | Need | Current contract | What would let us complete the migration |
 | --- | --- | --- |
-| Authoritative project/chat scope | `/browser-control` carries `requestId`, `action`, and `parameters`. It does not identify the originating project or chat. A request id identifies an action, not a persistent browser session. | A host-issued scope identity on provider actions, with defined behavior for actions outside a chat. The same scope must be available when attaching a viewer, so the person and agent select the same isolated Chrome context. |
-| Scoped viewing and control | The shared surface has one session and controller per extension service. It cannot distinguish our proposed independent project/chat browser contexts. | A supported way to address scoped surface sessions and bind control, frames, input, and cleanup to that identity. Multiple OS processes are not required; the needed guarantee is unambiguous routing and isolation. |
-| Browser UI alongside the shared surface | `service.surface: true` excludes `panel.entry`; the host renders the generic canvas. The extension cannot put its original toolbar or tab strip in that panel through `panel.entry`. | A supported composition mechanism for browser controls around or beside the shared surface, or another documented extension UI pattern that preserves the same target and host control authority. |
+| Viewer identity and stale-input fencing | The shared surface has one service-global controller. Dock calls have no viewer identity, and input events have no view generation. | Bind dock calls and surface input to the viewer lease and the selected view generation. The service could then reject input produced from an old frame or by another viewer. |
+| Released compatibility floor | The needed contracts exist at `959d179c6`, while the SDK snapshot still identifies itself as `1.24.2` and no compatible release was available during this work. | Publish the contracts in a release and document the first compatible OpenChamber version so the extension can restore `openchamber.engines.openchamber`. |
 
 ### Capabilities to investigate with upstream
 
@@ -131,13 +143,13 @@ These requirements are concrete, but we have not established that each requires 
 | Agent tab selection | The ten browser actions do not define a tab-management contract. We need a supported way for agent requests to identify the intended target and agree with the viewer's selection. Additional extension tools may provide part of this. | A two-tab workflow where the agent lists/selects a target, the person sees that target, and concurrent viewers cannot silently redirect another action. |
 | Embedded DevTools and live inspection | The shared surface transports images and input. `serviceRequest` is request/response, not a general CDP stream. We need a supported way to host the DevTools frontend and assets and carry authenticated, target-scoped bidirectional messages with cancellation and backpressure. | A small extension demonstration that inspects its own Chrome target through the host, including disconnect, permission revocation, and supported remote transports. If existing mechanisms cannot do this, use that reproduction to propose a transport/UI extension. |
 | Live local-server discovery and grants | Static configuration does not reproduce the original host's live dev-server discovery or session-scoped authorization. We need to establish whether extensions can consume those authoritative host capabilities through a supported API. | A workflow that discovers an eligible listener, grants access only to its scope, and revokes access when it stops or approval is withdrawn. Reading internal files or calling undocumented host endpoints is not the intended integration. |
-| Supported SDK release and runtime behavior | The initial implementation uses a pinned SDK build. Compatible published exports, a reliable minimum host version, and the supported runtime/transport matrix need confirmation. | A reproducible install against a released host/SDK combination, followed by validation on each runtime and transport we advertise. This is a release/compatibility requirement, not a request for a new browser feature. |
+| Supported runtime behavior | The implementation uses a pinned SDK build and only the Linux web host has been exercised so far. | A reproducible install against a released host/SDK combination, followed by validation on every runtime and transport we advertise. |
 
 ### Work that remains ours
 
 Chrome target tracking, browser actions, selection traversal, editing-key handling, clipboard improvements, proxy cleanup, and regression tests belong in the extension. A missing implementation is not evidence that the SDK needs to change. Persistent profiles are also a separate product decision, not a prerequisite for reproducing the original temporary-profile behavior.
 
-For any upstream API request, first provide the user workflow, the current contract that prevents it, a minimal reproduction, and the smallest proposed capability. Prioritize shared scope identity and viewer routing because they determine whether subsequent tabs, permissions, and DevTools attach to the correct browser session.
+For any upstream API request, first provide the user workflow, the current contract that prevents it, a minimal reproduction, and the smallest proposed capability. Viewer identity and stale-input fencing are the remaining correctness issue for scoped viewing. DevTools and local-server discovery remain separate product discussions.
 
 ## Build and test
 
@@ -149,17 +161,19 @@ bun run check
 bun run package
 ```
 
-`service/main.js` is the committed, bundled service used by Git installations. `artifacts/openchamber-server-browser-0.1.0.zip` contains the installable package. Rebuild the service after changing source files.
+`service/main.js` and `panel/main.js` are the committed bundles used by Git installations. `artifacts/openchamber-server-browser-0.2.0.zip` contains the installable package. Rebuild both after changing source files.
 
 The SDK dependency is a vendored package built from a pinned OpenChamber commit because the registry package does not yet expose these contracts. See [vendor/README.md](vendor/README.md) for its source and replacement plan.
 
 ## Validation
 
-Initial validation used Linux with OpenChamber web host at `56f33fd59a3225c28be4ba25b91aae958d4374f5`, using an isolated data directory and a temporary local website. The OpenCode backend was a test fixture; no model or real chat session was used.
+Initial validation used Linux with OpenChamber web host at `56f33fd59a3225c28be4ba25b91aae958d4374f5`, using an isolated data directory and a temporary local website. The OpenCode backend was a test fixture; no model or real chat session was used. For 0.2.0, validation used the unmodified web host at `959d179c6`, a real managed OpenCode process, two test project/chat contexts, and real Chrome. No model conversation was run.
 
 The host routed all ten browser actions to real Chrome, saved a capture to the test project, rendered the shared panel, and preserved a form value across user/agent handoff. Manual panel checks covered clicking, typing keys, pasting, resizing, taking control, and handing control back. An unapproved loopback port was blocked. Disabling the extension stopped its service and Chrome processes.
 
-The automated suite covers service authentication and protocol validation, private-address policy, cancellation, real Chrome actions and shared input, and temporary-profile cleanup. Chrome-dependent tests report a skip when Chrome is unavailable. Windows, macOS, Electron, private relay, and mobile have not been validated.
+The automated suite covers service authentication and protocol validation, private-address policy, cancellation, real Chrome actions and shared input, temporary-profile cleanup, context isolation, fail-closed unknown context, pinned viewing, stale frame cancellation, dock generation checks, and the four-scope bound. Chrome-dependent tests report a skip when Chrome is unavailable. Windows, macOS, Electron, private relay, and mobile have not been validated.
+
+The 0.2.0 pre-push run passed 34 tests with no skips. Live host checks verified isolated cookies and storage across two scopes, same-page user/agent handoff, the host's 409 during human control, keyboard session switching, Enter-only navigation, back/forward, reload with a URL fragment, and invalid-URL recovery. Narrow and wide toolbar layouts were visually checked.
 
 ## Attribution
 

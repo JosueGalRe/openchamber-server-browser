@@ -1,5 +1,5 @@
 # Pinned SDK build
 
-Source: https://github.com/openchamber/openchamber/tree/56f33fd59a3225c28be4ba25b91aae958d4374f5/packages/sdk
+Source: https://github.com/openchamber/openchamber/tree/959d179c6aa06af6d8102461c8fea166e0433445/packages/sdk
 
-Built with the upstream SDK build script and packed with bun pm pack. This package contains the #3734 provider and shared-surface contracts, which were not yet in the registry package named 1.24.2 when this extension was prepared. It is bundled into service/main.js; end users do not install dependencies. Replace this pin with a published SDK once that release includes these contracts.
+Built with the upstream SDK build script and packed with `bun pm pack`. This snapshot adds authoritative browser-provider context and docked panel controls beside a shared surface. No released OpenChamber version contained those contracts when version 0.2.0 was prepared, so the extension does not declare a guessed host-version floor. The package is bundled into `service/main.js` and `panel/main.js`; end users do not install dependencies. Replace this pin and restore `openchamber.engines.openchamber` after a compatible release is verified.

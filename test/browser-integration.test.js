@@ -21,6 +21,7 @@ body { margin: 0; font-family: sans-serif; min-height: 2400px; }
 #name { position: absolute; left: 10px; top: 70px; }
 #mark { position: absolute; left: 10px; top: 120px; }
 #output { position: absolute; left: 10px; top: 180px; }
+#hash { position: absolute; left: 10px; top: 230px; }
 </style></head><body>${body}</body></html>`;
 
 const startWebFixture = async () => {
@@ -35,7 +36,8 @@ const startWebFixture = async () => {
       <input id="name" aria-label="Name" value="initial">
       <button id="mark" onclick="document.querySelector('#output').textContent=document.querySelector('#name').value">Mark</button>
       <div id="output">Waiting</div>
-      <h1 style="margin-top:220px">Browser fixture</h1>
+      <a id="hash" href="#section">Section</a>
+      <h1 id="section" style="margin-top:320px">Browser fixture</h1>
     `, 'Fixture'));
   });
   const port = await listen(server);
@@ -85,6 +87,18 @@ test('runs every browser action and the shared surface against real Chrome', { s
     { type: 'pointer', action: 'up', x: 30, y: 30, button: 0, buttons: 0, modifiers },
   ]);
   const afterPointer = await runtime.perform('browser.snapshot', {});
+  const page = await runtime.ensurePage();
+  const withinDocument = Promise.withResolvers();
+  const stopWatchingNavigation = page.cdp.onEvent((event) => {
+    if (event.sessionId === page.sessionId && event.method === 'Page.navigatedWithinDocument') withinDocument.resolve();
+  });
+  await runtime.surfaceInput([
+    { type: 'pointer', action: 'down', x: 30, y: 240, button: 0, buttons: 1, modifiers },
+    { type: 'pointer', action: 'up', x: 30, y: 240, button: 0, buttons: 0, modifiers },
+  ]);
+  await withinDocument.promise;
+  stopWatchingNavigation();
+  assert.equal(runtime.url, `${web.origin}/#section`);
   await runtime.surfaceResize({ width: 700, height: 500 });
   const afterSurfaceResize = await runtime.perform('browser.snapshot', {});
 
@@ -111,4 +125,21 @@ test('removes the temporary Chrome profile on shutdown', { skip: chromePath ? fa
 
   assert.equal(fs.existsSync(profileDir), false);
   assert.notEqual(running.process.exitCode === null && running.process.signalCode === null, true);
+});
+
+
+test('reload reloads the document even when its URL contains a fragment', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/#section` });
+  await runtime.perform('browser.type', { selector: '#name', value: 'Before reload', submit: false });
+  await runtime.perform('browser.click', { selector: '#mark' });
+  assert.match((await runtime.perform('browser.snapshot', {})).text, /Before reload/);
+  const reloaded = await runtime.perform('browser.reload', {});
+  assert.equal(reloaded.url, `${web.origin}/#section`);
+  const snapshot = await runtime.perform('browser.snapshot', {});
+  assert.match(snapshot.text, /Waiting/);
+  assert.doesNotMatch(snapshot.text, /Before reload/);
 });

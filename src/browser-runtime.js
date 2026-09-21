@@ -17,6 +17,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } 
   let contextId = null;
   let targetId = null;
   let sessionId = null;
+  let mainFrameId = null;
   let eventCleanup = null;
   let startupPromise = null;
   let pagePromise = null;
@@ -28,6 +29,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } 
     controller: 'none',
     agentActive: false,
     title: '',
+    url: 'about:blank',
     get consoleProblems() {
       return problems.map((problem) => ({ ...problem }));
     },
@@ -44,6 +46,13 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } 
 
   const observeCdp = () => cdp.onEvent((event) => {
     if (event.sessionId !== sessionId) return;
+    if (event.method === 'Page.frameNavigated' && !event.params.frame?.parentId) {
+      mainFrameId = event.params.frame.id;
+      runtime.url = event.params.frame.url;
+    }
+    if (event.method === 'Page.navigatedWithinDocument' && event.params.frameId === mainFrameId) {
+      runtime.url = event.params.url;
+    }
     if (event.method === 'Runtime.consoleAPICalled') {
       if (event.params.type !== 'warning' && event.params.type !== 'error') return;
       const message = event.params.args?.map((arg) => arg.value ?? arg.description).filter(Boolean).join(' ');
@@ -148,6 +157,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } 
       try {
         const data = await execute(action, parameters, signal);
         if (typeof data?.title === 'string') runtime.title = data.title;
+        if (typeof data?.url === 'string') runtime.url = data.url;
         return data;
       } finally {
         runtime.agentActive = false;
@@ -179,6 +189,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } 
     contextId = null;
     targetId = null;
     sessionId = null;
+    mainFrameId = null;
   };
 
   return runtime;

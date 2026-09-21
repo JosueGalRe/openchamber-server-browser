@@ -124,6 +124,18 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
   }
 
   const page = await runtime.ensurePage();
+  if (action === 'browser.reload') {
+    runtime.clearConsoleProblems();
+    const load = startLoadWait(page, OPEN_SETTLE_MS, signal);
+    try {
+      await withAbort(signal, page.cdp.sendSession(page.sessionId, 'Page.reload'));
+    } catch (error) {
+      await load.cancel();
+      throw error;
+    }
+    await load.promise;
+    return readPageInfo(page, signal);
+  }
   if (action === 'browser.snapshot') {
     const data = await runPageScript(page, buildSnapshotScript(parameters), signal);
     const problems = runtime.consoleProblems;

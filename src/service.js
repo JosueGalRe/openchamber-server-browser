@@ -78,6 +78,30 @@ const surfaceTitleHeader = (value) => Array.from(String(value ?? ''), (character
   return character;
 }).join('').trim().slice(0, SURFACE_TITLE_MAX);
 
+const readObjectBody = async (request) => {
+  try {
+    const parsed = JSON.parse(await readBody(request));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const stringProperty = (value, name) => (
+  typeof value?.[name] === 'string' && value[name].length > 0 ? value[name] : null
+);
+
+const generationProperty = (value) => (
+  Number.isInteger(value?.generation) && value.generation >= 0 ? value.generation : null
+);
+
+const dockErrorStatus = (error) => {
+  const message = errorMessage(error);
+  if (/surface is idle|browser view changed/i.test(message)) return 409;
+  if (/no browser scope|no longer exists/i.test(message)) return 404;
+  return 400;
+};
+
 export const createService = ({ runtime, token, port = 0 }) => {
   if (!runtime?.perform || !runtime?.close) throw new Error('createService requires a browser runtime');
   if (typeof token !== 'string' || token.length === 0) throw new Error('createService requires a bearer token');
@@ -96,10 +120,54 @@ export const createService = ({ runtime, token, port = 0 }) => {
       const parsed = readBrowserProviderRequest(await readBody(request));
       if (!parsed) return text(response, 400, 'Invalid browser provider request\n');
       try {
-        const data = await runtime.perform(parsed.action, parsed.parameters, signal);
+        const data = await runtime.perform(parsed.action, parsed.parameters, signal, parsed.context);
         return json(response, 200, { ok: true, data });
       } catch (error) {
         return json(response, 200, { ok: false, error: errorMessage(error) });
+      }
+    }
+
+    if (request.method === 'GET' && url.pathname === '/browser/state') {
+      return json(response, 200, runtime.state());
+    }
+
+    if (request.method === 'POST' && url.pathname === '/browser/select') {
+      const body = await readObjectBody(request);
+      const id = stringProperty(body, 'scopeId');
+      const generation = generationProperty(body);
+      if (!id || generation === null) return text(response, 400, 'scopeId and generation are required\n');
+      try {
+        await runtime.selectScope(id, generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+
+    if (request.method === 'POST' && url.pathname === '/browser/navigate') {
+      const body = await readObjectBody(request);
+      const target = stringProperty(body, 'url');
+      const generation = generationProperty(body);
+      if (!target || generation === null) return text(response, 400, 'url and generation are required\n');
+      try {
+        await runtime.navigate(target, generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+
+    if (request.method === 'POST' && (url.pathname === '/browser/back' || url.pathname === '/browser/forward' || url.pathname === '/browser/reload')) {
+      const body = await readObjectBody(request);
+      const generation = generationProperty(body);
+      if (generation === null) return text(response, 400, 'generation is required\n');
+      try {
+        if (url.pathname === '/browser/back') await runtime.back(generation);
+        else if (url.pathname === '/browser/forward') await runtime.forward(generation);
+        else await runtime.reload(generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
     }
 

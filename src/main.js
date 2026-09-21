@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createBrowserManager } from './browser-manager.js';
 import { createBrowserRuntime } from './browser-runtime.js';
 import { loadConfig } from './config.js';
 import { createService } from './service.js';
@@ -12,7 +13,7 @@ const readPort = (value) => {
   return port;
 };
 
-export { createBrowserRuntime, createService };
+export { createBrowserManager, createBrowserRuntime, createService };
 
 export const startService = async ({
   env = process.env,
@@ -24,7 +25,9 @@ export const startService = async ({
     throw new Error('OPENCHAMBER_SERVICE_TOKEN is required');
   }
   const config = loadConfig({ entryUrl: import.meta.url, configPath });
-  const browserRuntime = runtime ?? createBrowserRuntime(config);
+  const browserRuntime = runtime ?? createBrowserManager({
+    createRuntime: () => createBrowserRuntime(config),
+  });
   const service = createService({
     runtime: browserRuntime,
     token,
