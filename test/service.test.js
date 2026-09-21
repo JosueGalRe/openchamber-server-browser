@@ -22,6 +22,7 @@ const createRuntime = () => {
         scopes: [{
           id: '["/repo","ses_1"]', directory: '/repo', sessionId: 'ses_1', selected: true,
           url: 'https://example.test', title: 'Example',
+          nativeSelectCompatibility: false, nativeSelectCompatibilityError: '',
         }],
       };
     },
@@ -30,6 +31,7 @@ const createRuntime = () => {
     async reload(generation) { calls.push(['reload', generation]); },
     async back(generation) { calls.push(['back', generation]); },
     async forward(generation) { calls.push(['forward', generation]); },
+    async setNativeSelectCompatibility(enabled, generation) { calls.push(['select-compatibility', enabled, generation]); },
     async surfaceFrame(request) {
       calls.push(['frame', request.after, request.wait]);
       return { sequence: 4, bytes: Buffer.from('jpeg'), mime: 'image/jpeg', width: 800, height: 600, title: 'Frame 😀\nTitle' };
@@ -207,4 +209,23 @@ test('dock reload requires a generation and invokes the reload operation', async
   });
   assert.equal(response.status, 200);
   assert.deepEqual(fixture.runtime.calls, [['reload', 1]]);
+});
+
+test('native select compatibility route parses a boolean and uses dock generation', async (context) => {
+  // Given a running service and the selected browser generation.
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+
+  // When invalid and valid compatibility requests arrive.
+  const invalid = await fetch(`${fixture.origin}/browser/select-compatibility`, {
+    method: 'POST', headers: authorization, body: JSON.stringify({ enabled: 'yes', generation: 1 }),
+  });
+  const enabled = await fetch(`${fixture.origin}/browser/select-compatibility`, {
+    method: 'POST', headers: authorization, body: JSON.stringify({ enabled: true, generation: 1 }),
+  });
+
+  // Then malformed input is rejected and the valid mutation reaches the manager once.
+  assert.equal(invalid.status, 400);
+  assert.equal(enabled.status, 200);
+  assert.deepEqual(fixture.runtime.calls, [['select-compatibility', true, 1]]);
 });

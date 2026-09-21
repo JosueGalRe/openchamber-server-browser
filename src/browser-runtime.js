@@ -2,6 +2,7 @@ import { createBrowserActions } from './browser-actions.js';
 import { connectCdp } from './cdp-client.js';
 import { createChromeProcess } from './chrome-process.js';
 import { originGrants } from './config.js';
+import { createNativeSelectCompatibility } from './native-select-compatibility.js';
 import { createPolicyProxy } from './policy-proxy.js';
 import { createSurface } from './surface.js';
 import { applyViewport, viewportForMode } from './viewports.js';
@@ -22,6 +23,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } 
   let startupPromise = null;
   let pagePromise = null;
   let actionQueue = Promise.resolve();
+  let nativeSelectCompatibility = null;
   let closed = false;
 
   const runtime = {
@@ -49,6 +51,14 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } 
     if (event.method === 'Page.frameNavigated' && !event.params.frame?.parentId) {
       mainFrameId = event.params.frame.id;
       runtime.url = event.params.frame.url;
+    }
+    const navigatedFrameId = event.params.frame?.id;
+    if (event.method === 'Page.frameNavigated' && navigatedFrameId) {
+      nativeSelectCompatibility?.frameNavigated(navigatedFrameId);
+    }
+    const detachedFrameId = event.params.frameId;
+    if (event.method === 'Page.frameDetached' && detachedFrameId) {
+      nativeSelectCompatibility?.frameDetached(detachedFrameId);
     }
     if (event.method === 'Page.navigatedWithinDocument' && event.params.frameId === mainFrameId) {
       runtime.url = event.params.url;
@@ -131,6 +141,16 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } 
     return pagePromise;
   };
 
+  nativeSelectCompatibility = createNativeSelectCompatibility({
+    ensurePage: runtime.ensurePage,
+    reportError: (message) => addProblem({ level: 'error', message, source: 'browser' }),
+  });
+  Object.defineProperties(runtime, {
+    nativeSelectCompatibility: { get: () => nativeSelectCompatibility.enabled },
+    nativeSelectCompatibilityError: { get: () => nativeSelectCompatibility.error },
+  });
+  runtime.setNativeSelectCompatibility = (enabled) => nativeSelectCompatibility.setEnabled(enabled);
+
   runtime.setViewport = async (viewport) => {
     const page = await runtime.ensurePage();
     await applyViewport(page.cdp, page.sessionId, viewport);
@@ -156,6 +176,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } 
       runtime.agentActive = true;
       try {
         const data = await execute(action, parameters, signal);
+        await nativeSelectCompatibility.whenIdle();
         if (typeof data?.title === 'string') runtime.title = data.title;
         if (typeof data?.url === 'string') runtime.url = data.url;
         return data;
@@ -177,6 +198,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } 
     closed = true;
     shutdownController.abort(new DOMException('Browser runtime stopped', 'AbortError'));
     await surface.close();
+    await nativeSelectCompatibility.close();
     await pagePromise?.catch(() => {});
     await actionQueue.catch(() => {});
     eventCleanup?.();

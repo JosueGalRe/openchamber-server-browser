@@ -73,6 +73,15 @@ setIcon(reload, (svg) => {
   addPath(svg, 'M20 4v7h-7');
 });
 
+const selectCompatibility = document.createElement('button');
+selectCompatibility.type = 'button';
+selectCompatibility.className = 'toolbar-button select-compatibility';
+selectCompatibility.setAttribute('aria-pressed', 'false');
+setIcon(selectCompatibility, (svg) => {
+  addPath(svg, 'M5 6.5h14v11H5z');
+  addPath(svg, 'm9 10 3 3 3-3');
+});
+
 const address = document.createElement('input');
 address.type = 'url';
 address.placeholder = 'https://example.com';
@@ -86,7 +95,7 @@ scopeRow.append(scopeSelect, status);
 
 const navigationRow = document.createElement('div');
 navigationRow.className = 'row navigation-row';
-navigationRow.append(back, forward, reload, address);
+navigationRow.append(back, forward, reload, address, selectCompatibility);
 root.append(scopeRow, navigationRow);
 
 let state = null;
@@ -165,13 +174,21 @@ const render = () => {
   forward.disabled = disabled;
   reload.disabled = disabled;
   address.disabled = disabled;
+  selectCompatibility.disabled = disabled;
+  const compatibilityEnabled = selected?.nativeSelectCompatibility === true;
+  selectCompatibility.setAttribute('aria-pressed', String(compatibilityEnabled));
+  const compatibilityLabel = compatibilityEnabled
+    ? 'Disable visible native select menus'
+    : 'Show native select menus in the shared browser';
+  selectCompatibility.title = compatibilityLabel;
+  selectCompatibility.setAttribute('aria-label', compatibilityLabel);
 
   let statusState = 'ready';
   let statusMessage = '';
   let statusTitle = 'Click or type in the page to take control. Enter an address and press Enter to navigate.';
-  if (commandError || serviceError) {
+  if (commandError || serviceError || selected?.nativeSelectCompatibilityError) {
     statusState = 'error';
-    statusMessage = commandError ?? serviceError;
+    statusMessage = commandError ?? serviceError ?? selected.nativeSelectCompatibilityError;
     statusTitle = statusMessage;
   } else if (!selected) {
     statusState = 'waiting';
@@ -258,6 +275,16 @@ reload.addEventListener('click', () => {
     if (!succeeded) return;
     addressDirty = false;
     render();
+  });
+});
+
+selectCompatibility.addEventListener('click', () => {
+  if (!state) return;
+  const selected = state.scopes.find((scope) => scope.id === state.selectedScopeId);
+  if (!selected) return;
+  void request('/browser/select-compatibility', {
+    enabled: selected.nativeSelectCompatibility !== true,
+    generation: state.generation,
   });
 });
 

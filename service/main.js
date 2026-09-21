@@ -3752,7 +3752,9 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
           sessionId: entry.sessionId,
           selected: entry.id === selectedScopeId,
           url: entry.runtime.url ?? "about:blank",
-          title: entry.runtime.title ?? ""
+          title: entry.runtime.title ?? "",
+          nativeSelectCompatibility: entry.runtime.nativeSelectCompatibility === true,
+          nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? ""
         }))
       };
     },
@@ -3779,6 +3781,22 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
     },
     forward(expectedGeneration) {
       return dockAction("browser.forward", {}, expectedGeneration);
+    },
+    setNativeSelectCompatibility(enabled, expectedGeneration) {
+      return enqueue(async () => {
+        requireIdleSurface();
+        requireGeneration(expectedGeneration);
+        const entry = requireSelected();
+        const previous = entry.runtime.nativeSelectCompatibility === true;
+        await entry.runtime.setNativeSelectCompatibility(enabled);
+        try {
+          requireIdleSurface();
+          requireGeneration(expectedGeneration);
+        } catch (error) {
+          await entry.runtime.setNativeSelectCompatibility(previous);
+          throw error;
+        }
+      });
     },
     async surfaceFrame({ after, wait: wait2, signal }) {
       const entry = selected();
@@ -4689,6 +4707,138 @@ var originGrants = (allowedOrigins) => allowedOrigins.map((origin) => {
   };
 });
 
+// src/native-select-compatibility.js
+var STYLE_TEXT = `
+select:not([multiple]):not([size]),
+select:not([multiple])[size="1"],
+select:not([multiple]):not([size])::picker(select),
+select:not([multiple])[size="1"]::picker(select) {
+  appearance: base-select !important;
+}
+`;
+var frameIds = (node) => [
+  node.frame.id,
+  ...(node.childFrames ?? []).flatMap(frameIds)
+];
+var messageFor = (error) => {
+  const detail = error instanceof Error && error.message.trim() ? ` ${error.message}` : "";
+  return `Native select compatibility is unavailable on this page.${detail}`;
+};
+var createNativeSelectCompatibility = ({ ensurePage, reportError }) => {
+  const styleSheets = /* @__PURE__ */ new Map();
+  let enabled = false;
+  let error = "";
+  let queue = Promise.resolve();
+  const enqueue = (operation) => {
+    const pending = queue.catch(() => {
+    }).then(operation);
+    queue = pending;
+    return pending;
+  };
+  const clearOwnedStyles = async (page) => {
+    let failure = null;
+    for (const [frameId, styleSheetId] of styleSheets) {
+      try {
+        await page.cdp.sendSession(page.sessionId, "CSS.setStyleSheetText", { styleSheetId, text: "" });
+        styleSheets.delete(frameId);
+      } catch (cause) {
+        if (/style.?sheet.*not found/i.test(String(cause))) styleSheets.delete(frameId);
+        else failure ??= cause;
+      }
+    }
+    if (failure) throw failure;
+  };
+  const addFrameStyle = async (page, frameId) => {
+    if (styleSheets.has(frameId)) return;
+    const created = await page.cdp.sendSession(page.sessionId, "CSS.createStyleSheet", { frameId });
+    const styleSheetId = created.styleSheetId;
+    styleSheets.set(frameId, styleSheetId);
+    await page.cdp.sendSession(page.sessionId, "CSS.setStyleSheetText", {
+      styleSheetId,
+      text: STYLE_TEXT
+    });
+  };
+  const fail = async (page, cause) => {
+    enabled = false;
+    error = messageFor(cause);
+    await clearOwnedStyles(page).catch(() => {
+    });
+    reportError(error);
+    throw new Error(error, { cause });
+  };
+  const installCurrentFrames = async (page) => {
+    const support = await page.cdp.sendSession(page.sessionId, "Runtime.evaluate", {
+      expression: `CSS.supports('appearance', 'base-select')`,
+      returnByValue: true
+    });
+    if (support.result?.value !== true) throw new Error("This Chrome version does not support appearance: base-select");
+    await page.cdp.sendSession(page.sessionId, "DOM.enable");
+    await page.cdp.sendSession(page.sessionId, "CSS.enable");
+    const tree = await page.cdp.sendSession(page.sessionId, "Page.getFrameTree");
+    if (!tree.frameTree?.frame?.id) throw new Error("Chrome returned no document frame");
+    for (const frameId of frameIds(tree.frameTree)) await addFrameStyle(page, frameId);
+  };
+  return {
+    get enabled() {
+      return enabled;
+    },
+    get error() {
+      return error;
+    },
+    setEnabled(nextEnabled) {
+      return enqueue(async () => {
+        const page = await ensurePage();
+        if (!nextEnabled) {
+          try {
+            await clearOwnedStyles(page);
+            enabled = false;
+            error = "";
+          } catch (cause) {
+            await fail(page, cause);
+          }
+          return;
+        }
+        enabled = true;
+        try {
+          await installCurrentFrames(page);
+          error = "";
+        } catch (cause) {
+          await fail(page, cause);
+        }
+      });
+    },
+    frameNavigated(frameId) {
+      styleSheets.delete(frameId);
+      if (!enabled) return;
+      void enqueue(async () => {
+        if (!enabled) return;
+        const page = await ensurePage();
+        try {
+          await addFrameStyle(page, frameId);
+          error = "";
+        } catch (cause) {
+          await fail(page, cause);
+        }
+      }).catch(() => {
+      });
+    },
+    frameDetached(frameId) {
+      styleSheets.delete(frameId);
+    },
+    whenIdle() {
+      return queue;
+    },
+    close() {
+      return enqueue(async () => {
+        if (!styleSheets.size) return;
+        const page = await ensurePage();
+        await clearOwnedStyles(page).catch(() => {
+        });
+      });
+    }
+  };
+};
+
 // src/policy-proxy.js
 import dns from "node:dns";
 import http from "node:http";
@@ -5336,6 +5486,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => 
   let startupPromise = null;
   let pagePromise = null;
   let actionQueue = Promise.resolve();
+  let nativeSelectCompatibility = null;
   let closed = false;
   const runtime = {
     viewport: viewportForMode("desktop"),
@@ -5360,6 +5511,14 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => 
     if (event.method === "Page.frameNavigated" && !event.params.frame?.parentId) {
       mainFrameId = event.params.frame.id;
       runtime.url = event.params.frame.url;
+    }
+    const navigatedFrameId = event.params.frame?.id;
+    if (event.method === "Page.frameNavigated" && navigatedFrameId) {
+      nativeSelectCompatibility?.frameNavigated(navigatedFrameId);
+    }
+    const detachedFrameId = event.params.frameId;
+    if (event.method === "Page.frameDetached" && detachedFrameId) {
+      nativeSelectCompatibility?.frameDetached(detachedFrameId);
     }
     if (event.method === "Page.navigatedWithinDocument" && event.params.frameId === mainFrameId) {
       runtime.url = event.params.url;
@@ -5440,6 +5599,15 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => 
     });
     return pagePromise;
   };
+  nativeSelectCompatibility = createNativeSelectCompatibility({
+    ensurePage: runtime.ensurePage,
+    reportError: (message) => addProblem({ level: "error", message, source: "browser" })
+  });
+  Object.defineProperties(runtime, {
+    nativeSelectCompatibility: { get: () => nativeSelectCompatibility.enabled },
+    nativeSelectCompatibilityError: { get: () => nativeSelectCompatibility.error }
+  });
+  runtime.setNativeSelectCompatibility = (enabled) => nativeSelectCompatibility.setEnabled(enabled);
   runtime.setViewport = async (viewport) => {
     const page = await runtime.ensurePage();
     await applyViewport(page.cdp, page.sessionId, viewport);
@@ -5462,6 +5630,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => 
       runtime.agentActive = true;
       try {
         const data = await execute(action, parameters, signal);
+        await nativeSelectCompatibility.whenIdle();
         if (typeof data?.title === "string") runtime.title = data.title;
         if (typeof data?.url === "string") runtime.url = data.url;
         return data;
@@ -5482,6 +5651,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => 
     closed = true;
     shutdownController.abort(new DOMException("Browser runtime stopped", "AbortError"));
     await surface.close();
+    await nativeSelectCompatibility.close();
     await pagePromise?.catch(() => {
     });
     await actionQueue.catch(() => {
@@ -5627,6 +5797,20 @@ var createService = ({ runtime, token, port = 0 }) => {
         if (url.pathname === "/browser/back") await runtime.back(generation);
         else if (url.pathname === "/browser/forward") await runtime.forward(generation);
         else await runtime.reload(generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/browser/select-compatibility") {
+      const body = await readObjectBody(request);
+      const generation = generationProperty(body);
+      const enabled = body?.enabled === true || body?.enabled === false ? body.enabled : null;
+      if (enabled === null || generation === null) {
+        return text(response, 400, "enabled and generation are required\n");
+      }
+      try {
+        await runtime.setNativeSelectCompatibility(enabled, generation);
         return json(response, 200, runtime.state());
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });

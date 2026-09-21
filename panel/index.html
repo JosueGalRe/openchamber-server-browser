@@ -31,13 +31,14 @@
       .navigation-row button { display: inline-flex; width: 28px; height: 28px; flex: 0 0 28px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: var(--oc-radius, 6px); background: transparent; color: var(--oc-muted, currentColor); cursor: pointer; }
       .navigation-row button:hover:not(:disabled) { background: var(--oc-hover, transparent); color: var(--oc-fg, inherit); }
       .navigation-row button:active:not(:disabled) { background: var(--oc-active, var(--oc-hover, transparent)); }
+      .navigation-row .select-compatibility[aria-pressed="true"] { background: var(--oc-selection, var(--oc-hover, transparent)); color: var(--oc-selection-fg, var(--oc-fg, inherit)); }
       .navigation-row button svg { width: 16px; height: 16px; pointer-events: none; }
       button:disabled, input:disabled, fieldset:disabled button { cursor: default; opacity: .55; }
       input { height: 28px; min-width: 0; flex: 1; margin-left: 4px; padding: 0 12px; border: 1px solid var(--oc-border, currentColor); border-radius: 999px; background: var(--oc-elevated, transparent); color: var(--oc-elevated-fg, var(--oc-fg, inherit)); font-size: 12px; }
       input::placeholder { color: var(--oc-muted, currentColor); opacity: .8; }
       input:focus, button:focus-visible { outline: 2px solid var(--oc-focus, currentColor); outline-offset: 1px; }
       @media (forced-colors: active) {
-        .status::before, .session-tabs .oc-sdk-tab[aria-selected="true"]::after { forced-color-adjust: none; background: Highlight; }
+        .status::before, .session-tabs .oc-sdk-tab[aria-selected="true"]::after, .select-compatibility[aria-pressed="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
       }
     </style>
   </head>

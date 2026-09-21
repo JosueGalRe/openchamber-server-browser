@@ -14,6 +14,8 @@ const createRuntimeFactory = () => {
       agentActive: false,
       title: '',
       url: 'about:blank',
+      nativeSelectCompatibility: false,
+      nativeSelectCompatibilityError: '',
       async perform(action, parameters) {
         calls.push(['perform', action, parameters]);
         if (action === 'browser.open') runtime.url = parameters.url;
@@ -27,6 +29,11 @@ const createRuntimeFactory = () => {
       surfaceControl(controller) { runtime.controller = controller; calls.push(['control', controller]); },
       async surfaceResize(size) { calls.push(['resize', size]); return size; },
       async surfaceClipboard() { return scope.sessionId; },
+      async setNativeSelectCompatibility(enabled) {
+        calls.push(['select-compatibility', enabled]);
+        runtime.nativeSelectCompatibility = enabled;
+        runtime.nativeSelectCompatibilityError = '';
+      },
       async close() { calls.push(['close']); },
     };
     runtimes.set(scope.sessionId, runtime);
@@ -281,4 +288,60 @@ test('reload preserves the selected scope and enforces idle and generation guard
   await assert.rejects(manager.reload(before.generation), /idle/);
   assert.equal(runtimes.get('ses_one').calls.filter((call) => call[1] === 'browser.reload').length, 1);
   await manager.close();
+});
+
+test('keeps native select compatibility scoped and applies dock mutation guards', async () => {
+  // Given two independent browser scopes with the first selected.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_two'));
+  const generation = manager.state().generation;
+
+  // When compatibility is enabled from the dock, then only the selected scope changes.
+  await manager.setNativeSelectCompatibility(true, generation);
+  assert.equal(manager.state().scopes[0].nativeSelectCompatibility, true);
+  assert.equal(manager.state().scopes[1].nativeSelectCompatibility, false);
+  assert.deepEqual(runtimes.get('ses_one').calls.at(-1), ['select-compatibility', true]);
+
+  // Then stale or leased dock commands cannot mutate either scope.
+  await assert.rejects(manager.setNativeSelectCompatibility(false, generation + 1), /view changed/i);
+  await manager.surfaceControl('user');
+  await assert.rejects(manager.setNativeSelectCompatibility(false, generation), /surface is idle/i);
+  assert.equal(manager.state().scopes[0].nativeSelectCompatibility, true);
+});
+
+test('rolls back native select compatibility when surface control changes during the mutation', async () => {
+  // Given a compatibility mutation paused after it starts.
+  const started = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  const runtime = runtimes.get('ses_one');
+  const originalSet = runtime.setNativeSelectCompatibility;
+  let calls = 0;
+  runtime.setNativeSelectCompatibility = async (enabled) => {
+    calls += 1;
+    if (calls === 1) {
+      started.resolve();
+      await finish.promise;
+    }
+    await originalSet(enabled);
+  };
+
+  // When user input takes control before the mutation completes.
+  const mutation = manager.setNativeSelectCompatibility(true, manager.state().generation);
+  await started.promise;
+  const input = manager.surfaceInput([{ type: 'text', text: 'control' }]);
+  finish.resolve();
+
+  // Then the dock request fails and restores the previous setting before input runs.
+  await assert.rejects(mutation, /surface is idle/i);
+  await input;
+  assert.equal(manager.state().scopes[0].nativeSelectCompatibility, false);
+  assert.deepEqual(runtime.calls.filter(([kind]) => kind === 'select-compatibility'), [
+    ['select-compatibility', true],
+    ['select-compatibility', false],
+  ]);
 });

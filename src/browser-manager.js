@@ -126,6 +126,8 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
           selected: entry.id === selectedScopeId,
           url: entry.runtime.url ?? 'about:blank',
           title: entry.runtime.title ?? '',
+          nativeSelectCompatibility: entry.runtime.nativeSelectCompatibility === true,
+          nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? '',
         })),
       };
     },
@@ -152,6 +154,22 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
     },
     forward(expectedGeneration) {
       return dockAction('browser.forward', {}, expectedGeneration);
+    },
+    setNativeSelectCompatibility(enabled, expectedGeneration) {
+      return enqueue(async () => {
+        requireIdleSurface();
+        requireGeneration(expectedGeneration);
+        const entry = requireSelected();
+        const previous = entry.runtime.nativeSelectCompatibility === true;
+        await entry.runtime.setNativeSelectCompatibility(enabled);
+        try {
+          requireIdleSurface();
+          requireGeneration(expectedGeneration);
+        } catch (error) {
+          await entry.runtime.setNativeSelectCompatibility(previous);
+          throw error;
+        }
+      });
     },
     async surfaceFrame({ after, wait, signal }) {
       const entry = selected();

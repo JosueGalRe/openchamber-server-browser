@@ -171,6 +171,21 @@ export const createService = ({ runtime, token, port = 0 }) => {
       }
     }
 
+    if (request.method === 'POST' && url.pathname === '/browser/select-compatibility') {
+      const body = await readObjectBody(request);
+      const generation = generationProperty(body);
+      const enabled = body?.enabled === true || body?.enabled === false ? body.enabled : null;
+      if (enabled === null || generation === null) {
+        return text(response, 400, 'enabled and generation are required\n');
+      }
+      try {
+        await runtime.setNativeSelectCompatibility(enabled, generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+
     if (request.method === 'GET' && url.pathname === SURFACE_FRAME_PATH) {
       const after = queryInteger(url, 'after', 0, Number.MAX_SAFE_INTEGER);
       const wait = queryInteger(url, 'wait', 0, SURFACE_FRAME_WAIT_MS);

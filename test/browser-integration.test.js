@@ -27,6 +27,16 @@ body { margin: 0; font-family: sans-serif; min-height: 2400px; }
 const startWebFixture = async () => {
   const server = http.createServer((request, response) => {
     response.setHeader('content-type', 'text/html; charset=utf-8');
+    if (request.url === '/selects') {
+      response.setHeader('content-security-policy', "default-src 'self'; style-src 'none'; script-src 'unsafe-inline'");
+      response.end(html(`
+        <input id="name" aria-label="Name" value="initial">
+        <select id="native"><option>One</option><option>Two</option></select>
+        <select id="listbox" size="2"><option>One</option><option>Two</option></select>
+        <button id="custom" role="combobox">Custom menu</button>
+      `, 'Select compatibility'));
+      return;
+    }
     if (request.url === '/next') {
       response.end(html('<h1>Next page</h1><a href="/">Home</a>', 'Next'));
       return;
@@ -142,4 +152,46 @@ test('reload reloads the document even when its URL contains a fragment', { skip
   const snapshot = await runtime.perform('browser.snapshot', {});
   assert.match(snapshot.text, /Waiting/);
   assert.doesNotMatch(snapshot.text, /Before reload/);
+});
+
+test('applies and removes native select compatibility without reloading page state', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a CSP-protected page with native, listbox, and custom dropdown controls.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/selects` });
+  await runtime.perform('browser.type', { selector: '#name', value: 'Preserved', submit: false });
+  const page = await runtime.ensurePage();
+  const appearances = async () => {
+    const result = await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', {
+      expression: `JSON.stringify({
+        native: getComputedStyle(document.querySelector('#native')).appearance,
+        listbox: getComputedStyle(document.querySelector('#listbox')).appearance,
+        custom: getComputedStyle(document.querySelector('#custom')).appearance,
+        value: document.querySelector('#name').value,
+      })`,
+      returnByValue: true,
+    });
+    return JSON.parse(result.result.value);
+  };
+  const before = await appearances();
+
+  // When compatibility is enabled, then only the single-choice native select opts in.
+  await runtime.setNativeSelectCompatibility(true);
+  const enabled = await appearances();
+  assert.equal(enabled.native, 'base-select');
+  assert.equal(enabled.listbox, before.listbox);
+  assert.equal(enabled.custom, before.custom);
+  assert.equal(enabled.value, 'Preserved');
+
+  // When the page navigates and compatibility is disabled, then it follows navigation and reverses without reload.
+  await runtime.perform('browser.reload', {});
+  const afterReload = await appearances();
+  assert.equal(afterReload.native, 'base-select');
+  await runtime.perform('browser.type', { selector: '#name', value: 'Still here', submit: false });
+  await runtime.setNativeSelectCompatibility(false);
+  const disabled = await appearances();
+  assert.equal(disabled.native, before.native);
+  assert.equal(disabled.value, 'Still here');
 });
