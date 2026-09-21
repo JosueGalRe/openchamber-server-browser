@@ -4859,7 +4859,10 @@ var createPolicyProxy = (policy = {}) => {
       request.pipe(upstream);
     })().catch(() => denyHttp(response, "Proxy classification failed"));
   });
-  server.on("connection", (socket) => track(downstreamSockets, socket));
+  server.on("connection", (socket) => {
+    track(downstreamSockets, socket);
+    socket.on("error", () => socket.destroy());
+  });
   server.on("connect", (request, client, head) => {
     void (async () => {
       let upstream = null;

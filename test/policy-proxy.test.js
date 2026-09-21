@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import http from 'node:http';
 import net from 'node:net';
 import test from 'node:test';
@@ -141,4 +142,26 @@ test('closes a CONNECT upstream when its browser socket closes', async (context)
 
   await upstreamClosed.promise;
   assert.equal(client.destroyed, true);
+});
+
+test('survives repeated CONNECT aborts while the upstream is writing', { timeout: 10_000 }, async (context) => {
+  const fixture = new URL('./fixtures/policy-proxy-epipe.js', import.meta.url);
+  const child = spawn(process.execPath, [fixture.pathname], { stdio: ['ignore', 'pipe', 'pipe'] });
+  context.after(() => {
+    if (child.exitCode === null) child.kill();
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+
+  const code = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+
+  assert.equal(code, 0, stderr);
+  assert.match(stdout, /completed without uncaught socket error/);
 });
