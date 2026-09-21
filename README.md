@@ -6,7 +6,7 @@ This is the extension extraction of [OpenChamber PR #3425](https://github.com/op
 
 ## Status and goal
 
-**Experimental. This extension does not yet replace the original Server Browser implementation.** Version 0.2.0 adds browser isolation by project and chat plus a docked navigation toolbar. Substantial gaps remain in debugging, tab management, and multi-viewer coordination.
+**Experimental. This extension does not yet replace the original Server Browser implementation.** Version 0.3.0 adds an optional native-select compatibility mode and fixes a proxy socket error that could restart the service during navigation. It retains the project/chat isolation and docked navigation toolbar introduced in 0.2.0. Substantial gaps remain in debugging, tab management, and multi-viewer coordination.
 
 The goal is functional parity with the Server Browser in PR #3425 through OpenChamber's official extension APIs. The reference for this extraction is [commit 362dbc3f305615200d762b721106c64e796b095b](https://github.com/JosueGalRe/openchamber/tree/362dbc3f305615200d762b721106c64e796b095b/packages/web/server/lib/browser). It is a feature reference, not a claim that every original runtime or platform was validated.
 
@@ -16,7 +16,7 @@ The original implementation remains the functional reference until those gaps ar
 
 ## Requirements
 
-- An OpenChamber build containing [commit `959d179c6`](https://github.com/openchamber/openchamber/commit/959d179c6aa06af6d8102461c8fea166e0433445). No released version contained the required scoped-provider and dock contracts when version 0.2.0 was prepared, so the manifest does not claim a minimum released version yet.
+- An OpenChamber build containing [commit `959d179c6`](https://github.com/openchamber/openchamber/commit/959d179c6aa06af6d8102461c8fea166e0433445). The latest published host release checked on September 21, 2026 was v1.24.2, which predates the required scoped-provider and dock contracts. The manifest does not claim a minimum released version yet.
 - Chrome or Chromium 109 or newer installed on the machine running OpenChamber.
 - A supported host service runtime. Development uses Node.js 22 or newer and Bun for installing locked dependencies.
 
@@ -58,11 +58,13 @@ Each authoritative `{ directory, sessionId }` pair gets its own browser runtime,
 
 The first scope stays visible until the person picks another one. Agent work in another chat continues in that chat's browser without redirecting the shared viewer. The dock above the viewer lists live scopes and provides an address field plus back, forward, and reload controls through the official `serviceRequest` bridge.
 
+After handing control back, use the last toolbar button, "Show native select menus in the shared browser", to enable visible native select menus for the selected project/chat scope. It is off by default and does not persist across a service restart. Enabling it applies Chromium's `appearance: base-select` to single-choice native selects in the current document and later navigations. Disabling it removes only the extension-owned inspector styles, without reloading the page or clearing form state.
+
 OpenChamber owns the control handoff. A person can take over the page, the host refuses agent actions while that person holds control, and the agent can continue after control is released. This same-page workflow has been tested through the host and its panel.
 
 ## Known limitations and parity gaps
 
-| Area | Original Server Browser reference | Extension 0.2.0 |
+| Area | Original Server Browser reference | Extension 0.3.0 |
 | --- | --- | --- |
 | Chrome DevTools | Embedded Chrome DevTools with authenticated transport and frontend asset handling. | No embedded DevTools. `browser.inspect` returns element details; it does not replace DevTools. |
 | Console and network inspection | Dedicated inspector with console capture, network rows, and request details. | Bounded console warnings/errors in snapshots. No interactive console, network inspector, or request-detail panel. |
@@ -73,7 +75,7 @@ OpenChamber owns the control handoff. A person can take over the page, the host 
 | Viewports | Coordination between the viewer, agent presets, and external DevTools emulation. | Agent presets and panel resizing work. The original viewport coordination and DevTools emulation behavior have not been ported. |
 | Context menus and clipboard | Page-menu handling and selection reads through open shadow roots and same-origin frames. | Basic input and plain-text copy/paste. Selection reads the top document or its focused input; it does not traverse frames or shadow roots. No original viewer context menu or rich clipboard support. |
 | Keyboard and pointer details | Dedicated editing-key and cross-platform shortcut handling. | Basic keys, pointer input, wheel, and pasted text. Full shortcut/IME parity is unverified; pointer events currently use a single-click count, without dedicated double-click handling. |
-| Native popups | Not revalidated with the same native `select` fixture; prior behavior is user-reported. | A native HTML `select` accepts keyboard input, but its popup was not visible in the screencast during testing. In the same live viewer, opting the test page into `appearance: base-select` made the options visible and clickable; restoring native appearance reproduced the problem. This is a page-level workaround, not a shipped compatibility fix. The original build still needs a matched runtime comparison. |
+| Native popups | A matched local test showed the same invisible native `select` popup with the original screencast implementation. | A scope-local toolbar mode uses Chromium's `appearance: base-select` so single-choice options render inside the captured page. It is reversible and off by default because it changes the site's native select rendering. Native menus remain invisible while the mode is off. |
 | Chrome/CDP configuration | Managed Chrome discovery and CDP configuration integrated with the original host workflow. | Standard executable discovery or a manual `chromePath`. No migrated CDP settings UI or supported attachment to an arbitrary existing Chrome session. |
 | Runtime integration | Browser behavior integrated into OpenChamber's runtime contracts. | Linux web-host path validated. Mobile and VS Code integration have not been implemented. Electron, Windows/macOS, and private relay remain unverified. |
 
@@ -88,6 +90,8 @@ When the visible scope changes, the service applies the current panel dimensions
 The SDK does not identify which panel viewer sent `serviceRequest`, and surface input does not carry the frame or scope generation the viewer saw. Dock mutations are therefore disabled while any user or agent controller owns the surface. This prevents the dock from bypassing the host lease, but one residual race remains: input generated from an old image can arrive after an idle scope switch and target the newly selected view. Full multi-viewer fencing needs host-issued viewer identity or a view generation on input.
 
 Each scope currently uses a separate Chrome process and temporary profile. Stopping or restarting the service closes every process and removes its profiles, including cookies and login state. OpenChamber stops an unattended browser provider after ten minutes without actions; an open shared panel keeps it running. The next start creates fresh browsers. There is no session restore or persistent-profile option. Preserving state during a live handoff is supported; preserving it across process restarts is not. The original implementation also used temporary Chrome profiles, so durable profiles are not presented here as an existing original feature.
+
+Native select compatibility applies only to single-choice `<select>` elements without `multiple`, with no `size` attribute or with `size="1"`. It does not style custom menus such as Radix components. Chrome must support `appearance: base-select`; unsupported versions return an error and leave the mode off. The service uses CDP inspector stylesheets, so page CSP does not need to be bypassed. Styles inside shadow roots and out-of-process frames are not guaranteed because the extension does not attach to additional targets for this workaround. A site can still depend on native select measurements or platform-specific behavior. During validation, one Bootstrap control became taller and showed both its own arrow and the base-select arrow. The extension never enables the mode automatically for this reason.
 
 ### Configuration and security boundaries
 
@@ -141,9 +145,10 @@ These requirements are concrete, but we have not established that each requires 
 | Need | What needs clarification or support | Evidence that would close the question |
 | --- | --- | --- |
 | Agent tab selection | The ten browser actions do not define a tab-management contract. We need a supported way for agent requests to identify the intended target and agree with the viewer's selection. Additional extension tools may provide part of this. | A two-tab workflow where the agent lists/selects a target, the person sees that target, and concurrent viewers cannot silently redirect another action. |
-| Embedded DevTools and live inspection | The shared surface transports images and input. `serviceRequest` is request/response, not a general CDP stream. We need a supported way to host the DevTools frontend and assets and carry authenticated, target-scoped bidirectional messages with cancellation and backpressure. | A small extension demonstration that inspects its own Chrome target through the host, including disconnect, permission revocation, and supported remote transports. If existing mechanisms cannot do this, use that reproduction to propose a transport/UI extension. |
-| Live local-server discovery and grants | Static configuration does not reproduce the original host's live dev-server discovery or session-scoped authorization. We need to establish whether extensions can consume those authoritative host capabilities through a supported API. | A workflow that discovers an eligible listener, grants access only to its scope, and revokes access when it stops or approval is withdrawn. Reading internal files or calling undocumented host endpoints is not the intended integration. |
+| Dock sizing and control-row composition | The dock has a fixed manifest size, and the host owns its title/control row and handback action. A compact expandable inspector would benefit from a supported resizing or layout pattern. | Agree on an extension layout that can expand a console or network panel while preserving visible, host-owned control arbitration. This is a layout question, not a requirement for raw CDP access. |
 | Supported runtime behavior | The implementation uses a pinned SDK build and only the Linux web host has been exercised so far. | A reproducible install against a released host/SDK combination, followed by validation on every runtime and transport we advertise. |
+
+Embedded DevTools and live dev-server discovery/grants are deferred product discussions. The maintainer has explicitly kept them outside the SDK for now. We will keep manual origin configuration and investigate an extension-owned console/network inspector through supported panel and service mechanisms. Neither is presented as an accepted upstream API request.
 
 ### Work that remains ours
 
@@ -161,7 +166,7 @@ bun run check
 bun run package
 ```
 
-`service/main.js` and `panel/main.js` are the committed bundles used by Git installations. `artifacts/openchamber-server-browser-0.2.0.zip` contains the installable package. Rebuild both after changing source files.
+`service/main.js` and `panel/main.js` are the committed bundles used by Git installations. `artifacts/openchamber-server-browser-0.3.0.zip` contains the installable package. Rebuild both after changing source files.
 
 The SDK dependency is a vendored package built from a pinned OpenChamber commit because the registry package does not yet expose these contracts. See [vendor/README.md](vendor/README.md) for its source and replacement plan.
 
@@ -174,6 +179,10 @@ The host routed all ten browser actions to real Chrome, saved a capture to the t
 The automated suite covers service authentication and protocol validation, private-address policy, cancellation, real Chrome actions and shared input, temporary-profile cleanup, context isolation, fail-closed unknown context, pinned viewing, stale frame cancellation, dock generation checks, and the four-scope bound. Chrome-dependent tests report a skip when Chrome is unavailable. Windows, macOS, Electron, private relay, and mobile have not been validated.
 
 The 0.2.0 pre-push run passed 34 tests with no skips. Live host checks verified isolated cookies and storage across two scopes, same-page user/agent handoff, the host's 409 during human control, keyboard session switching, Enter-only navigation, back/forward, reload with a URL fragment, and invalid-URL recovery. Narrow and wide toolbar layouts were visually checked.
+
+For 0.3.0, the final automated run passed 41 tests with no skips, including real Chrome, compatibility under restrictive page CSP, navigation/reload persistence, disabling without clearing form values, scope isolation, and control/generation guards. A separate regression repeatedly aborts CONNECT tunnels while upstream data is arriving. It reproduced the uncaught `EPIPE` before the socket fix and passed afterward. The fix closes the affected connection rather than terminating the service; it does not change origin permissions.
+
+Live checks on the same unmodified `959d179c6` Linux web host covered Selenium's native select, selecting an option with the mouse, preserving form values when disabling compatibility, and opening/selecting a Radix custom dropdown. The original integrated build also reproduced the invisible native popup in a matched local comparison, so this is not reported as an SDK rendering regression. The final uninstrumented bundle completed the previously failing local-to-public navigation with the viewer connected, retained a second independent scope, and remained connected during an idle check longer than 40 seconds. Build, syntax, focused lint, and ZIP integrity checks passed. This is bounded functional evidence, not a long-running stability or cross-platform claim.
 
 ## Attribution
 
