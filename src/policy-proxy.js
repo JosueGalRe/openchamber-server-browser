@@ -45,13 +45,20 @@ const permanentlyDenied = (address) => {
 
 const grantProtocol = (protocol) => protocol === 'ws:' ? 'http:' : protocol === 'wss:' ? 'https:' : protocol;
 
+const LOOPBACK_ADDRESSES = ['127.0.0.1', '::1'];
+
+// A host grant matches the name the page asked for, never an address that name
+// resolves to, so a domain that resolves or rebinds to a granted address stays
+// blocked. localhost may use a loopback address's grant because the proxy pins
+// it below instead of asking DNS. Network blocks match by address.
 const hasGrant = (grants, hostname, address, port, protocol) => grants.some((grant) => {
   if (grant.block) {
     return grant.ports.some(([first, last]) => port >= first && port <= last) && grant.block.check(address, familyOf(address));
   }
+  const host = normalizeHost(grant.host);
   return grant.port === port
     && (!grant.protocol || grant.protocol === grantProtocol(protocol))
-    && (normalizeHost(grant.host) === hostname || normalizeHost(grant.host) === address);
+    && (host === hostname || (hostname === 'localhost' && host === address && LOOPBACK_ADDRESSES.includes(address)));
 });
 
 export const classifyProxyTarget = async (target, { grants = [], devServerGrants = null, lookup = dns.promises.lookup } = {}) => {
@@ -85,7 +92,7 @@ export const classifyProxyTarget = async (target, { grants = [], devServerGrants
   // a server listening on only one of them still works when DNS lists both.
   if (hostname === 'localhost') {
     const granted = await grantsFor();
-    const address = ['127.0.0.1', '::1'].find((candidate) => hasGrant(granted, hostname, candidate, port, url.protocol));
+    const address = LOOPBACK_ADDRESSES.find((candidate) => hasGrant(granted, hostname, candidate, port, url.protocol));
     if (address) answers = [{ address, family: net.isIP(address) }];
   }
   if (!answers && net.isIP(hostname)) {

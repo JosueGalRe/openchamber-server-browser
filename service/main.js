@@ -5825,11 +5825,13 @@ var permanentlyDenied = (address) => {
   return "Unspecified, link-local, transition, multicast, CGNAT, or reserved addresses are denied";
 };
 var grantProtocol = (protocol) => protocol === "ws:" ? "http:" : protocol === "wss:" ? "https:" : protocol;
+var LOOPBACK_ADDRESSES = ["127.0.0.1", "::1"];
 var hasGrant = (grants, hostname, address, port, protocol) => grants.some((grant) => {
   if (grant.block) {
     return grant.ports.some(([first, last]) => port >= first && port <= last) && grant.block.check(address, familyOf(address));
   }
-  return grant.port === port && (!grant.protocol || grant.protocol === grantProtocol(protocol)) && (normalizeHost(grant.host) === hostname || normalizeHost(grant.host) === address);
+  const host = normalizeHost(grant.host);
+  return grant.port === port && (!grant.protocol || grant.protocol === grantProtocol(protocol)) && (host === hostname || hostname === "localhost" && host === address && LOOPBACK_ADDRESSES.includes(address));
 });
 var classifyProxyTarget = async (target, { grants = [], devServerGrants: devServerGrants2 = null, lookup = dns.promises.lookup } = {}) => {
   let url;
@@ -5857,7 +5859,7 @@ var classifyProxyTarget = async (target, { grants = [], devServerGrants: devServ
   let answers;
   if (hostname === "localhost") {
     const granted = await grantsFor();
-    const address = ["127.0.0.1", "::1"].find((candidate) => hasGrant(granted, hostname, candidate, port, url.protocol));
+    const address = LOOPBACK_ADDRESSES.find((candidate) => hasGrant(granted, hostname, candidate, port, url.protocol));
     if (address) answers = [{ address, family: net.isIP(address) }];
   }
   if (!answers && net.isIP(hostname)) {

@@ -230,6 +230,33 @@ test('grants discovered development servers on loopback and asks for them only w
   assert.equal(undiscovered.allowed, false);
 });
 
+test('matches host grants against the requested name, never the address it resolves to', async () => {
+  // Given a loopback server granted by address, and a domain that resolves or rebinds to it.
+  const origin = { grants: [{ host: '127.0.0.1', port: 5173, protocol: 'http:' }] };
+  const discovery = { devServerGrants: async () => [{ host: '127.0.0.1', port: 5173 }] };
+  const lookup = async () => [{ address: '127.0.0.1', family: 4 }];
+
+  for (const policy of [origin, discovery]) {
+    // When a page asks for the domain, then it stays blocked like any other private target.
+    const alias = await classifyProxyTarget('http://rebind.test:5173/', { ...policy, lookup });
+    assert.deepEqual([alias.allowed, alias.reason], [false, 'Private or loopback address requires an allowed origin']);
+
+    // When it names the address, or localhost, which the proxy resolves itself, then the grant applies.
+    const literal = await classifyProxyTarget('http://127.0.0.1:5173/', policy);
+    const localhost = await classifyProxyTarget('http://localhost:5173/', { ...policy, lookup });
+    assert.deepEqual([literal.allowed, localhost.allowed, localhost.address], [true, true, '127.0.0.1']);
+  }
+
+  // When a name resolves into a listed network block, then the block still allows it by address.
+  const block = new net.BlockList();
+  block.addSubnet('192.168.1.0', 24, 'ipv4');
+  const nas = await classifyProxyTarget('http://nas.test:3100/', {
+    grants: [{ block, ports: [[3000, 3200]] }],
+    lookup: async () => [{ address: '192.168.1.20', family: 4 }],
+  });
+  assert.equal(nas.allowed, true);
+});
+
 test('points a blocked loopback address at development-server discovery', async (context) => {
   for (const [devServerGrants, expected] of [[null, /"discoverDevServers": true/], [async () => [], /discovery is on/]]) {
     const proxy = createPolicyProxy({ devServerGrants });
