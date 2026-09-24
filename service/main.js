@@ -6359,6 +6359,7 @@ var KEY_CODES = Object.freeze({
 });
 var modifiersMask = (modifiers) => (modifiers.alt ? 1 : 0) | (modifiers.ctrl ? 2 : 0) | (modifiers.meta ? 4 : 0) | (modifiers.shift ? 8 : 0);
 var mouseButton = (button) => BUTTON_NAMES[button] ?? "none";
+var heldButton = (buttons) => buttons & 1 ? "left" : buttons & 2 ? "right" : buttons & 4 ? "middle" : "none";
 var baseCharacter = (key, code) => code === `Key${key.toUpperCase()}` || code === `Digit${key}`;
 var dispatchInput = async (page, event) => {
   if (event.type === "text") {
@@ -6371,7 +6372,7 @@ var dispatchInput = async (page, event) => {
       type: types[event.action],
       x: event.x,
       y: event.y,
-      button: mouseButton(event.button),
+      button: event.action === "move" ? heldButton(event.buttons) : mouseButton(event.button),
       buttons: event.buttons,
       clickCount: event.action === "move" ? 0 : 1,
       modifiers: modifiersMask(event.modifiers)

@@ -351,6 +351,24 @@ test('copies the focused selection through shadow roots and same-origin frames b
   assert.equal(await runtime.surfaceClipboard(), '');
 });
 
+test('drags across page text to select it like a held mouse button', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a page with a heading.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/next` });
+
+  // When the viewer moves with the button held, as hosts report moves, then the text is selected.
+  await runtime.surfaceInput([
+    { type: 'pointer', action: 'down', x: 2, y: 40, button: 0, buttons: 1, modifiers },
+    { type: 'pointer', action: 'move', x: 80, y: 40, button: -1, buttons: 1, modifiers },
+    { type: 'pointer', action: 'move', x: 200, y: 40, button: -1, buttons: 1, modifiers },
+    { type: 'pointer', action: 'up', x: 200, y: 40, button: 0, buttons: 0, modifiers },
+  ]);
+  assert.equal(await runtime.surfaceClipboard(), 'Next page');
+});
+
 test('replaces a scope whose Chrome stopped with a fresh browser on the next action', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
   // Given a chat whose scope runs a real Chrome.
   const web = await startWebFixture();

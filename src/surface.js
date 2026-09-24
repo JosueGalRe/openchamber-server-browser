@@ -14,6 +14,9 @@ const modifiersMask = (modifiers) => (
 );
 
 const mouseButton = (button) => BUTTON_NAMES[button] ?? 'none';
+// Hosts report a move without a button; Chrome only drags (selects text,
+// moves sliders) when the move names the button being held.
+const heldButton = (buttons) => (buttons & 1 ? 'left' : buttons & 2 ? 'right' : buttons & 4 ? 'middle' : 'none');
 
 const baseCharacter = (key, code) => code === `Key${key.toUpperCase()}` || code === `Digit${key}`;
 
@@ -28,7 +31,7 @@ const dispatchInput = async (page, event) => {
       type: types[event.action],
       x: event.x,
       y: event.y,
-      button: mouseButton(event.button),
+      button: event.action === 'move' ? heldButton(event.buttons) : mouseButton(event.button),
       buttons: event.buttons,
       clickCount: event.action === 'move' ? 0 : 1,
       modifiers: modifiersMask(event.modifiers),
