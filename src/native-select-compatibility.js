@@ -124,12 +124,5 @@ export const createNativeSelectCompatibility = ({ ensurePage, reportError }) => 
     whenIdle() {
       return queue;
     },
-    close() {
-      return enqueue(async () => {
-        if (!styleSheets.size) return;
-        const page = await ensurePage();
-        await clearOwnedStyles(page).catch(() => {});
-      });
-    },
   };
 };

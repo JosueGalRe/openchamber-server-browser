@@ -603,3 +603,24 @@ test('opens the viewed chat\'s browser from the dock without waiting for an agen
   manager.surfaceControl('user');
   await assert.rejects(manager.openScope(context('/repo', 'ses_three'), manager.state().generation), /idle/i);
 });
+
+test('closes browsers at once on shutdown instead of waiting behind a stuck action', { timeout: 2_000 }, async () => {
+  // Given an action waiting on Chrome, like a command a hung page never answers, that fails once its browser closes.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  const runtime = runtimes.get('ses_one');
+  let failStuck;
+  runtime.perform = () => new Promise((_resolve, reject) => { failStuck = reject; });
+  runtime.close = async () => {
+    runtime.calls.push(['close']);
+    failStuck(new Error('CDP connection is closed'));
+  };
+  const stuck = assert.rejects(manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one')), /connection is closed/);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // When the service stops, then the browser closes without waiting for that action to settle.
+  await manager.close();
+  assert.equal(runtime.calls.some(([kind]) => kind === 'close'), true);
+  await stuck;
+});

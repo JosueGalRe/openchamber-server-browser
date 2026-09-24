@@ -97,6 +97,10 @@ const startWebFixture = async () => {
       response.once('close', () => clearTimeout(timer));
       return;
     }
+    if (request.url === '/hang') {
+      response.end(html('<button id="hang" onclick="for (;;) {}">Hang</button>', 'Hang'));
+      return;
+    }
     if (request.url === '/copy') {
       response.end(html(`
         <input id="secret" type="password" value="hunter2">
@@ -219,6 +223,24 @@ test('removes the temporary Chrome profile on shutdown', { skip: chromePath ? fa
 
   assert.equal(fs.existsSync(profileDir), false);
   assert.notEqual(running.process.exitCode === null && running.process.signalCode === null, true);
+});
+
+test('stops Chrome at once on close even when its page no longer answers', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a page stuck in an endless loop, with native select styles that a graceful close would try to undo there.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/hang` });
+  await runtime.setNativeSelectCompatibility(true);
+  const page = await runtime.ensurePage();
+  void page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', { expression: 'document.querySelector("#hang").click()' }).catch(() => {});
+
+  // When the runtime closes, then it finishes well inside the five seconds the host waits before killing the service.
+  const started = Date.now();
+  await runtime.close();
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 2_500, `closing took ${elapsed} ms`);
 });
 
 

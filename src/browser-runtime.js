@@ -588,19 +588,18 @@ export const createBrowserRuntime = ({
     if (closed) return;
     closed = true;
     shutdownController.abort(new DOMException('Browser runtime stopped', 'AbortError'));
+    // This Chrome serves this runtime alone, so nothing in it needs undoing.
+    // Stopping it first keeps it from outliving a service the host is about to
+    // kill, and fails the CDP calls that the work below may still wait on.
+    await chrome.close();
+    cdp?.close();
     await surface.close();
     inspector.close();
-    await Promise.allSettled([...tabs.values()].map((current) => current.compatibility.close()));
     await pagePromise?.catch(() => {});
     await actionQueue.catch(() => {});
     eventCleanup?.();
     for (const current of tabs.values()) clearTimeout(current.navigationTimer);
-    if (contextId && cdp?.isOpen) {
-      await cdp.send('Target.disposeBrowserContext', { browserContextId: contextId }).catch(() => {});
-    }
-    cdp?.close();
     await proxy.close();
-    await chrome.close();
     contextId = null;
     tabs.clear();
     sessions.clear();

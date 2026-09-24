@@ -125,6 +125,8 @@ export const createBrowserManager = ({
         throw new Error(`The browser scope limit (${maxScopes}) is in use by chats active in the last minute; try again shortly`);
       }
       await removeScope(oldest);
+      // Shutdown may have begun meanwhile, and it closes only the scopes it saw.
+      if (closed) throw new Error('Browser manager is closed');
     }
     const entry = {
       id,
@@ -464,8 +466,12 @@ export const createBrowserManager = ({
       sweepTimer = null;
       for (const pending of frameControllers) pending.abort();
       for (const waiter of selectionWaiters) finishSelectionWaiter(waiter);
+      // Not behind queued work: a closing runtime stops its Chrome and fails
+      // what is still waiting on it, and the host kills the service a few
+      // seconds after asking it to stop.
+      const closing = Promise.allSettled(Array.from(scopes.values(), (entry) => entry.runtime.close()));
       return enqueue(async () => {
-        await Promise.all(Array.from(scopes.values(), (entry) => entry.runtime.close()));
+        await closing;
         scopes.clear();
         selectedScopeId = null;
         frameState = null;

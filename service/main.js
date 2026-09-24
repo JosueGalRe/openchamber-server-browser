@@ -4319,6 +4319,7 @@ var createBrowserManager = ({
         throw new Error(`The browser scope limit (${maxScopes}) is in use by chats active in the last minute; try again shortly`);
       }
       await removeScope(oldest);
+      if (closed) throw new Error("Browser manager is closed");
     }
     const entry = {
       id,
@@ -4646,8 +4647,9 @@ var createBrowserManager = ({
       sweepTimer = null;
       for (const pending of frameControllers) pending.abort();
       for (const waiter of selectionWaiters) finishSelectionWaiter(waiter);
+      const closing = Promise.allSettled(Array.from(scopes.values(), (entry) => entry.runtime.close()));
       return enqueue(async () => {
-        await Promise.all(Array.from(scopes.values(), (entry) => entry.runtime.close()));
+        await closing;
         scopes.clear();
         selectedScopeId = null;
         frameState = null;
@@ -6423,14 +6425,6 @@ var createNativeSelectCompatibility = ({ ensurePage, reportError }) => {
     },
     whenIdle() {
       return queue;
-    },
-    close() {
-      return enqueue(async () => {
-        if (!styleSheets.size) return;
-        const page = await ensurePage();
-        await clearOwnedStyles(page).catch(() => {
-        });
-      });
     }
   };
 };
@@ -7220,22 +7214,17 @@ var createBrowserRuntime = ({
     if (closed) return;
     closed = true;
     shutdownController.abort(new DOMException("Browser runtime stopped", "AbortError"));
+    await chrome.close();
+    cdp?.close();
     await surface.close();
     inspector.close();
-    await Promise.allSettled([...tabs.values()].map((current) => current.compatibility.close()));
     await pagePromise?.catch(() => {
     });
     await actionQueue.catch(() => {
     });
     eventCleanup?.();
     for (const current of tabs.values()) clearTimeout(current.navigationTimer);
-    if (contextId && cdp?.isOpen) {
-      await cdp.send("Target.disposeBrowserContext", { browserContextId: contextId }).catch(() => {
-      });
-    }
-    cdp?.close();
     await proxy.close();
-    await chrome.close();
     contextId = null;
     tabs.clear();
     sessions.clear();
