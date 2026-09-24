@@ -2055,10 +2055,6 @@ ${row.source ?? ""}`.toLowerCase();
       runButton.update({ label: "Run", loading: false });
     }
   }
-  repl.addEventListener("submit", (event) => {
-    event.preventDefault();
-    void run();
-  });
   expressionInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();

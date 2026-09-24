@@ -565,11 +565,6 @@ async function run() {
   }
 }
 
-repl.addEventListener('submit', (event) => {
-  event.preventDefault();
-  void run();
-});
-
 expressionInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
     event.preventDefault();

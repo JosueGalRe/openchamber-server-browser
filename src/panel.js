@@ -112,9 +112,15 @@ const viewportSelect = document.createElement('select');
 viewportSelect.className = 'viewport-select';
 viewportSelect.setAttribute('aria-label', 'Viewport size');
 const customOption = new Option('Custom size…', 'custom');
+// Shows a custom size in effect, so picking "Custom size…" always changes the
+// value and opens the editor, even to edit that size.
+const currentCustomOption = new Option('', 'current');
+currentCustomOption.hidden = true;
+currentCustomOption.disabled = true;
 viewportSelect.append(
   new Option('Fit panel', 'auto'),
   ...Object.entries(VIEWPORT_PRESETS).map(([id, preset]) => new Option(`${preset.label} ${preset.width} × ${preset.height}`, id)),
+  currentCustomOption,
   customOption,
 );
 
@@ -157,7 +163,7 @@ const times = document.createElement('span');
 times.textContent = '×';
 times.setAttribute('aria-hidden', 'true');
 const applySize = document.createElement('button');
-applySize.type = 'submit';
+applySize.type = 'button';
 applySize.className = 'toolbar-button';
 applySize.title = 'Apply this size';
 applySize.setAttribute('aria-label', applySize.title);
@@ -397,8 +403,8 @@ const render = () => {
 
   const viewport = selected?.viewport ?? null;
   const choice = viewportChoice(viewport);
-  customOption.textContent = choice === 'custom' ? `Custom ${viewport.width} × ${viewport.height}` : 'Custom size…';
-  if (customSize.hidden) viewportSelect.value = choice;
+  currentCustomOption.textContent = choice === 'custom' ? `Custom ${viewport.width} × ${viewport.height}` : '';
+  if (customSize.hidden) viewportSelect.value = choice === 'custom' ? 'current' : choice;
   viewportSelect.disabled = disabled || !viewport;
   viewportSelect.title = viewport?.mode === 'fixed' && viewport.source === 'agent'
     ? 'The agent chose this viewport. Pick another size to take it over.'
@@ -686,20 +692,26 @@ mobileToggle.addEventListener('click', () => {
     : { mode: 'auto', mobile: !current.mobile });
 });
 
-customSize.addEventListener('submit', (event) => {
-  event.preventDefault();
+// The host frames the dock without allow-forms, so this form never fires
+// submit; Enter in a size field and the apply button call this instead.
+const applyCustomSize = () => {
   const current = selectedViewport();
   if (!current || !customSize.reportValidity()) return;
   customSize.hidden = true;
   address.hidden = false;
   setViewport({ mode: 'fixed', width: Number(widthInput.value), height: Number(heightInput.value), mobile: current.mobile });
-});
+};
 
+applySize.addEventListener('click', applyCustomSize);
 cancelSize.addEventListener('click', closeCustomSize);
 customSize.addEventListener('keydown', (event) => {
-  if (event.key !== 'Escape') return;
-  event.preventDefault();
-  closeCustomSize();
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeCustomSize();
+  } else if (event.key === 'Enter' && (event.target === widthInput || event.target === heightInput)) {
+    event.preventDefault();
+    applyCustomSize();
+  }
 });
 
 let mounted = false;
