@@ -141,6 +141,8 @@ export const createSurface = (runtime) => {
   };
 
   const startSurface = async () => {
+    // A page swapping renderers mid-navigation briefly refuses page commands.
+    const retryUntil = Date.now() + 2_000;
     for (;;) {
       const expected = target;
       const current = await runtime.ensurePage();
@@ -165,11 +167,18 @@ export const createSurface = (runtime) => {
           title: runtime.title,
         });
       });
-      await current.cdp.sendSession(current.sessionId, 'Page.startScreencast', {
-        format: 'jpeg',
-        quality: 72,
-        everyNthFrame: 1,
-      });
+      try {
+        await current.cdp.sendSession(current.sessionId, 'Page.startScreencast', {
+          format: 'jpeg',
+          quality: 72,
+          everyNthFrame: 1,
+        });
+      } catch (error) {
+        detach();
+        if (closed || Date.now() > retryUntil) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
       if (closed) {
         detach();
         throw new Error('Surface is closed');
