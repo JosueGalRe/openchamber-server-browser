@@ -6,7 +6,7 @@ This is the extension extraction of [OpenChamber PR #3425](https://github.com/op
 
 ## Status and goal
 
-**Experimental. This extension does not yet replace the original Server Browser implementation.** Version 0.4.0 targets the released OpenChamber 2.0.0 and its published SDK, and the empty panel now explains that the first browser action must come from the agent. It retains the native-select compatibility mode and proxy fix from 0.3.0, plus the project/chat isolation and docked navigation toolbar from 0.2.0. Substantial gaps remain in debugging, tab management, and multi-viewer coordination.
+**Experimental. This extension does not yet replace the original Server Browser implementation.** Version 0.5.0 explains blocked private addresses inside the browser, completes the scheme for addresses typed in the dock, and adds `allowedNetworks` for private blocks on explicit ports. It retains OpenChamber 2.0.0 support from 0.4.0, the native-select compatibility mode and proxy fix from 0.3.0, and the project/chat isolation and docked navigation toolbar from 0.2.0. Substantial gaps remain in debugging, tab management, and multi-viewer coordination.
 
 The goal is functional parity with the Server Browser in PR #3425 through OpenChamber's official extension APIs. The reference for this extraction is [commit 362dbc3f305615200d762b721106c64e796b095b](https://github.com/JosueGalRe/openchamber/tree/362dbc3f305615200d762b721106c64e796b095b/packages/web/server/lib/browser). It is a feature reference, not a claim that every original runtime or platform was validated.
 
@@ -46,7 +46,19 @@ Private and loopback destinations are blocked unless you explicitly allow them. 
 }
 ```
 
-Restart the extension after editing its configuration. `localhost` means the machine running the extension, so an SSH-forwarded port must be reachable there. A page that uses another private origin for assets, API requests, or sockets needs that origin allowed too. Grants distinguish HTTP from HTTPS and include the corresponding WebSocket traffic on the same host and port. Link-local, cloud metadata, CGNAT, IPv6 transition, and reserved ranges remain blocked even when listed.
+For several machines or many ports, list a private IPv4 block in `allowedNetworks` with the ports it may use. Ports are required, and a `"first-last"` string covers a range. A block applies to HTTP, HTTPS, and WebSocket traffic, and it must be private or loopback and no broader than /8:
+
+```json
+{
+  "allowedNetworks": [
+    { "cidr": "192.168.1.0/24", "ports": [3000, "5173-5199", 8080] }
+  ]
+}
+```
+
+Restart the extension after editing its configuration. `localhost` means the machine running the extension, so an SSH-forwarded port must be reachable there. A page that uses another private origin for assets, API requests, or sockets needs that origin allowed too. Origin grants distinguish HTTP from HTTPS and include the corresponding WebSocket traffic on the same host and port. Link-local, cloud metadata, CGNAT, IPv6 transition, and reserved ranges remain blocked even when listed.
+
+A blocked plain-HTTP address opens a Server Browser page that names the origin, the path of this `config.json`, and the entry to add. HTTPS navigations to a blocked address still end in Chrome's own `ERR_TUNNEL_CONNECTION_FAILED` error.
 
 Chrome discovery checks standard locations. If necessary, add `"chromePath": "/absolute/path/to/chromium"` to `config.json`. This file is local configuration and is excluded from Git and the distributed package. Keep a copy before reinstalling or updating an installation.
 
@@ -58,7 +70,7 @@ The provider implements `browser.open`, `snapshot`, `click`, `type`, `scroll`, `
 
 Each authoritative `{ directory, sessionId }` pair gets its own browser runtime, cookies, local storage, form state, and history. Calls with either field missing fail closed instead of reusing a private chat's browser. The service keeps at most four live scopes and refuses a fifth rather than silently deleting browser state.
 
-The first scope stays visible until the person picks another one. Agent work in another chat continues in that chat's browser without redirecting the shared viewer. The dock above the viewer lists live scopes and provides an address field plus back, forward, and reload controls through the official `serviceRequest` bridge.
+The first scope stays visible until the person picks another one. Agent work in another chat continues in that chat's browser without redirecting the shared viewer. The dock above the viewer lists live scopes and provides an address field plus back, forward, and reload controls through the official `serviceRequest` bridge. An address typed without a scheme opens over HTTP when it is an IP address or `localhost`, and over HTTPS otherwise.
 
 After handing control back, use the last toolbar button, "Show native select menus in the shared browser", to enable visible native select menus for the selected project/chat scope. It is off by default and does not persist across a service restart. Enabling it applies Chromium's `appearance: base-select` to single-choice native selects in the current document and later navigations. Disabling it removes only the extension-owned inspector styles, without reloading the page or clearing form state.
 
@@ -66,14 +78,14 @@ OpenChamber owns the control handoff. A person can take over the page, the host 
 
 ## Known limitations and parity gaps
 
-| Area | Original Server Browser reference | Extension 0.4.0 |
+| Area | Original Server Browser reference | Extension 0.5.0 |
 | --- | --- | --- |
 | Chrome DevTools | Embedded Chrome DevTools with authenticated transport and frontend asset handling. | No embedded DevTools. `browser.inspect` returns element details; it does not replace DevTools. |
 | Console and network inspection | Dedicated inspector with console capture, network rows, and request details. | Bounded console warnings/errors in snapshots. No interactive console, network inspector, or request-detail panel. |
 | Tabs and popups | Tab listing, creation, switching, closing, and tracking targets opened by pages or CDP clients. | One controlled target per project/chat scope. No tab manager or selection/routing for new windows and popups. A workflow that opens another target may become inaccessible through the extension. |
 | Project and chat isolation | Browser contexts scoped by directory and agent session, with separate cookies/storage. | One isolated runtime per authoritative project/chat pair, bounded to four live scopes. Unknown context fails closed. The selected viewer remains service-global. |
 | Browser controls | Browser-specific navigation, tab, viewport, and inspection controls. | Docked session tabs, address field, back, forward, and reload. No browser-tab management, viewport picker, stop, or inspector controls yet. |
-| Local-server access | Grants derived from live development-server discovery and checked against active destinations. | Manual `allowedOrigins` in `config.json`, applied on restart. No live discovery, automatic revocation when a dev server stops, or in-app origin editor. |
+| Local-server access | Grants derived from live development-server discovery and checked against active destinations. | Manual `allowedOrigins` and `allowedNetworks` in `config.json`, applied on restart. No live discovery, automatic revocation when a dev server stops, or in-app origin editor. |
 | Viewports | Coordination between the viewer, agent presets, and external DevTools emulation. | Agent presets and panel resizing work. The original viewport coordination and DevTools emulation behavior have not been ported. |
 | Context menus and clipboard | Page-menu handling and selection reads through open shadow roots and same-origin frames. | Basic input and plain-text copy/paste. Selection reads the top document or its focused input; it does not traverse frames or shadow roots. No original viewer context menu or rich clipboard support. |
 | Keyboard and pointer details | Dedicated editing-key and cross-platform shortcut handling. | Basic keys, pointer input, wheel, and pasted text. Full shortcut/IME parity is unverified; pointer events currently use a single-click count, without dedicated double-click handling. |
@@ -167,7 +179,7 @@ bun run check
 bun run package
 ```
 
-`service/main.js` and `panel/main.js` are the committed bundles used by Git installations. `artifacts/openchamber-server-browser-0.4.0.zip` contains the installable package. Rebuild both after changing source files.
+`service/main.js` and `panel/main.js` are the committed bundles used by Git installations. `artifacts/openchamber-server-browser-0.5.0.zip` contains the installable package. Rebuild both after changing source files.
 
 ## Validation
 
@@ -184,6 +196,8 @@ For 0.3.0, the final automated run passed 41 tests with no skips, including real
 Live checks on the same unmodified `959d179c6` Linux web host covered Selenium's native select, selecting an option with the mouse, preserving form values when disabling compatibility, and opening/selecting a Radix custom dropdown. The original integrated build also reproduced the invisible native popup in a matched local comparison, so this is not reported as an SDK rendering regression. The final uninstrumented bundle completed the previously failing local-to-public navigation with the viewer connected, retained a second independent scope, and remained connected during an idle check longer than 40 seconds. Build, syntax, focused lint, and ZIP integrity checks passed. This is bounded functional evidence, not a long-running stability or cross-platform claim.
 
 For 0.4.0, validation used the OpenChamber 2.0.0 web host with OpenCode 2.0.15. An `openchamber_web` `browser.open` call from a real chat created a scope for that chat's directory and session, launched Chromium, and appeared in the panel. Before any action, the rebuilt panel showed its empty-state hint with the toolbar disabled. After the host's idle stop, no Chrome process or temporary profile remained. The host's own install check accepted the package on 2.0.0 and refused it on 1.24.2 as `host-too-old`. Switching to SDK 2.0.0 left both bundles byte-identical to the 0.3.0 build, and the automated suite passed 41 tests with no skips.
+
+For 0.5.0, the automated suite passed 46 tests with no skips. With the built bundle, a real `config.json`, and real Chrome, a listed port inside an allowed block loaded. The same host on an unlisted port with a server running, and an address outside the block, showed the new blocked page, and a `0.0.0.0/0` block stopped the service with a clear error. The blocked page rendered without overflow at 320, 622, and 1440 pixels. Through the live OpenChamber 2.0.0 panel, typing `192.168.1.20:3100` opened `http://192.168.1.20:3100/` and `example.com` opened `https://example.com/`. A blocked HTTPS address still ended in `ERR_TUNNEL_CONNECTION_FAILED`.
 
 ## Attribution
 
