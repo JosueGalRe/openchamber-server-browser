@@ -1699,11 +1699,18 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     }
   });
   var matches = (node) => !filter || node.dataset.search.includes(filter);
+  var tabCounts = "";
   var renderCounts = () => {
-    tabs.update({ items: [
-      { id: "console", label: "Console", count: consoleCount },
-      { id: "network", label: "Network", count: networkRows.size }
-    ] });
+    const counts = `${consoleCount} ${networkRows.size}`;
+    if (counts !== tabCounts) {
+      tabCounts = counts;
+      const focusedId = tabsHost.contains(document.activeElement) ? document.activeElement.dataset.id : null;
+      tabs.update({ items: [
+        { id: "console", label: "Console", count: consoleCount },
+        { id: "network", label: "Network", count: networkRows.size }
+      ] });
+      for (const tab of tabsHost.querySelectorAll('[role="tab"]')) if (tab.dataset.id === focusedId) tab.focus();
+    }
     const omitted = view === "console" ? droppedConsole : droppedNetwork;
     dropped.textContent = omitted > 0 ? `Entries omitted: ${omitted}` : "";
   };

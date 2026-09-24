@@ -182,11 +182,20 @@ const filterField = mountSearchField(filterHost, {
 
 const matches = (node) => !filter || node.dataset.search.includes(filter);
 
+// The SDK rebuilds the tabs on update, which drops a click in progress and the
+// keyboard focus, so polling repaints them only when a count changes.
+let tabCounts = '';
 const renderCounts = () => {
-  tabs.update({ items: [
-    { id: 'console', label: 'Console', count: consoleCount },
-    { id: 'network', label: 'Network', count: networkRows.size },
-  ] });
+  const counts = `${consoleCount} ${networkRows.size}`;
+  if (counts !== tabCounts) {
+    tabCounts = counts;
+    const focusedId = tabsHost.contains(document.activeElement) ? document.activeElement.dataset.id : null;
+    tabs.update({ items: [
+      { id: 'console', label: 'Console', count: consoleCount },
+      { id: 'network', label: 'Network', count: networkRows.size },
+    ] });
+    for (const tab of tabsHost.querySelectorAll('[role="tab"]')) if (tab.dataset.id === focusedId) tab.focus();
+  }
   const omitted = view === 'console' ? droppedConsole : droppedNetwork;
   dropped.textContent = omitted > 0 ? `Entries omitted: ${omitted}` : '';
 };
