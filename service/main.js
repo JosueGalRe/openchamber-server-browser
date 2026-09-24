@@ -6576,8 +6576,8 @@ var createSurface = (runtime) => {
       }
     },
     control(controller) {
+      if (runtime.controller !== controller) void runtime.contextMenu.close();
       runtime.controller = controller;
-      void runtime.contextMenu.close();
     },
     resize({ width, height }) {
       return runtime.setPanelSize({ width, height });

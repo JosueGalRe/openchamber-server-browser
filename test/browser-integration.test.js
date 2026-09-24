@@ -517,10 +517,15 @@ test('shows the viewer menu only for right clicks the page leaves alone', { skip
   // Given a page with history, a plain area, and an element with its own menu.
   const web = await startWebFixture();
   context.after(() => close(web.server));
-  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
-  context.after(() => runtime.close());
-  await runtime.perform('browser.open', { url: `${web.origin}/next` });
-  await runtime.perform('browser.open', { url: `${web.origin}/menu` });
+  // Viewer input goes through the manager, as the service sends it.
+  let runtime;
+  const manager = createBrowserManager({
+    createRuntime: () => (runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] })),
+  });
+  context.after(() => manager.close());
+  const chat = { directory: '/repo', sessionId: 'ses_menu' };
+  await manager.perform('browser.open', { url: `${web.origin}/next` }, undefined, chat);
+  await manager.perform('browser.open', { url: `${web.origin}/menu` }, undefined, chat);
   const page = await runtime.ensurePage();
   const evaluate = async (expression) => (await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', {
     expression,
@@ -528,8 +533,8 @@ test('shows the viewer menu only for right clicks the page leaves alone', { skip
   })).result.value;
   const menuShown = () => evaluate('document.querySelector("openchamber-menu") !== null');
   const pointer = (action, x, y, button, buttons) => ({ type: 'pointer', action, x, y, button, buttons, modifiers });
-  const rightClick = (x, y) => runtime.surfaceInput([pointer('down', x, y, 2, 2), pointer('up', x, y, 2, 0)]);
-  const leftClick = (x, y) => runtime.surfaceInput([pointer('down', x, y, 0, 1), pointer('up', x, y, 0, 0)]);
+  const rightClick = (x, y) => manager.surfaceInput([pointer('down', x, y, 2, 2), pointer('up', x, y, 2, 0)]);
+  const leftClick = (x, y) => manager.surfaceInput([pointer('down', x, y, 0, 1), pointer('up', x, y, 0, 0)]);
 
   // When the page handles its own context menu, then the viewer menu stays away.
   await rightClick(30, 320);
@@ -539,7 +544,7 @@ test('shows the viewer menu only for right clicks the page leaves alone', { skip
   // When the page leaves a right click alone, then the menu appears, and Escape closes it without reaching the page.
   await rightClick(30, 30);
   assert.equal(await menuShown(), true);
-  await runtime.surfaceInput(['down', 'up'].map((action) => ({ type: 'key', action, key: 'Escape', code: 'Escape', modifiers })));
+  await manager.surfaceInput(['down', 'up'].map((action) => ({ type: 'key', action, key: 'Escape', code: 'Escape', modifiers })));
   assert.equal(await menuShown(), false);
   assert.equal(await evaluate('window.escapes'), 0);
 

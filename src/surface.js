@@ -250,8 +250,10 @@ export const createSurface = (runtime) => {
       }
     },
     control(controller) {
+      // The manager repeats the viewer's claim with every input batch; only a
+      // change of hands closes the menu.
+      if (runtime.controller !== controller) void runtime.contextMenu.close();
       runtime.controller = controller;
-      void runtime.contextMenu.close();
     },
     resize({ width, height }) {
       return runtime.setPanelSize({ width, height });
