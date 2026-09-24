@@ -3674,9 +3674,19 @@ var applyViewport = (cdp, sessionId, viewport) => cdp.sendSession(sessionId, "Em
 
 // src/browser-manager.js
 var DEFAULT_MAX_SCOPES = 4;
+var DEFAULT_IDLE_MS = 5 * 6e4;
+var IDLE_SWEEP_INTERVAL_MS = 6e4;
+var EVICTABLE_AFTER_MS = 6e4;
 var scopeId = ({ directory, sessionId }) => JSON.stringify([directory, sessionId]);
 var knownScope = (context) => context && typeof context.directory === "string" && context.directory.length > 0 && typeof context.sessionId === "string" && context.sessionId.length > 0;
-var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) => {
+var createBrowserManager = ({
+  createRuntime,
+  maxScopes = DEFAULT_MAX_SCOPES,
+  idleMs = DEFAULT_IDLE_MS,
+  now = Date.now,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout
+}) => {
   if (typeof createRuntime !== "function") throw new Error("createBrowserManager requires a runtime factory");
   if (!Number.isInteger(maxScopes) || maxScopes < 1) throw new Error("maxScopes must be a positive integer");
   const scopes = /* @__PURE__ */ new Map();
@@ -3698,6 +3708,9 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
     }).then(operation);
     operationQueue = pending;
     return pending;
+  };
+  const touch = (entry) => {
+    if (entry) entry.lastActivityAt = now();
   };
   const selected = () => selectedScopeId ? scopes.get(selectedScopeId) ?? null : null;
   const finishSelectionWaiter = (waiter, error = null) => {
@@ -3735,13 +3748,18 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
       return existing;
     }
     if (scopes.size >= maxScopes) {
-      throw new Error(`The browser scope limit (${maxScopes}) is already in use; restart the service to clear inactive scopes`);
+      const oldest = [...scopes.values()].filter((candidate) => now() - candidate.lastActivityAt >= EVICTABLE_AFTER_MS).reduce((best, candidate) => !best || candidate.lastActivityAt < best.lastActivityAt ? candidate : best, null);
+      if (!oldest) {
+        throw new Error(`The browser scope limit (${maxScopes}) is in use by chats active in the last minute; try again shortly`);
+      }
+      await removeScope(oldest);
     }
     const entry = {
       id,
       directory: context.directory,
       sessionId: context.sessionId,
-      runtime: createRuntime(context)
+      runtime: createRuntime(context),
+      lastActivityAt: now()
     };
     scopes.set(id, entry);
     if (notice && scopeId(notice) === id) notice = null;
@@ -3782,8 +3800,25 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
   const dockCommand = (name, parameters, expectedGeneration) => enqueue(async () => {
     requireIdleSurface();
     requireGeneration(expectedGeneration);
-    await requireSelected().runtime.command(name, parameters);
+    const entry = requireSelected();
+    touch(entry);
+    await entry.runtime.command(name, parameters);
   });
+  let sweepTimer = null;
+  const sweepIdleScopes = () => enqueue(async () => {
+    const cutoff = now() - idleMs;
+    await Promise.all([...scopes.values()].filter((entry) => entry.lastActivityAt <= cutoff).map(removeScope));
+  });
+  const scheduleSweep = () => {
+    if (closed) return;
+    sweepTimer = setTimer(() => {
+      sweepTimer = null;
+      void sweepIdleScopes().catch(() => {
+      }).finally(scheduleSweep);
+    }, IDLE_SWEEP_INTERVAL_MS);
+    sweepTimer?.unref?.();
+  };
+  scheduleSweep();
   return {
     get agentActive() {
       return selected()?.runtime.agentActive === true;
@@ -3795,7 +3830,12 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
           throw new Error("The user controls the browser. Wait for them to hand control back.");
         }
         const entry = await ensureScope(context);
-        return entry.runtime.perform(action, parameters, signal);
+        touch(entry);
+        try {
+          return await entry.runtime.perform(action, parameters, signal);
+        } finally {
+          touch(entry);
+        }
       });
     },
     state() {
@@ -3832,6 +3872,7 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
         requireIdleSurface();
         requireGeneration(expectedGeneration);
         select(entry);
+        touch(entry);
         notice = null;
       });
     },
@@ -3863,7 +3904,9 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
       return enqueue(async () => {
         requireIdleSurface();
         requireGeneration(expectedGeneration);
-        await requireSelected().runtime.configureViewport({ mode, source: "viewer", width, height, mobile });
+        const entry = requireSelected();
+        touch(entry);
+        await entry.runtime.configureViewport({ mode, source: "viewer", width, height, mobile });
       });
     },
     setViewerTheme(theme) {
@@ -3882,6 +3925,7 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
         requireIdleSurface();
         requireGeneration(expectedGeneration);
         const entry = requireSelected();
+        touch(entry);
         const previous = entry.runtime.nativeSelectCompatibility === true;
         await entry.runtime.setNativeSelectCompatibility(enabled);
         try {
@@ -3912,6 +3956,7 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
           if (signal?.aborted) waiter.onAbort();
         });
       }
+      touch(entry);
       const generation = viewGeneration;
       const current = frameState?.scopeId === entry.id ? frameState : null;
       if (current?.frame && current.sequence > after) return current.frame;
@@ -3947,7 +3992,9 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
     surfaceInput(events) {
       controller = "user";
       return enqueue(async () => {
-        const runtime = requireSelected().runtime;
+        const entry = requireSelected();
+        touch(entry);
+        const { runtime } = entry;
         await runtime.surfaceControl("user");
         return runtime.surfaceInput(events, viewerTheme);
       });
@@ -3970,6 +4017,8 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
     close() {
       if (closed) return operationQueue;
       closed = true;
+      if (sweepTimer) clearTimer(sweepTimer);
+      sweepTimer = null;
       for (const pending of frameControllers) pending.abort();
       for (const waiter of selectionWaiters) finishSelectionWaiter(waiter);
       return enqueue(async () => {

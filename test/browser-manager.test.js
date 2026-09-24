@@ -466,3 +466,40 @@ test('hands the viewer theme to surface input and reports a pending copy from th
   assert.deepEqual(runtimes.get('ses_one').calls.at(-1), ['input', [{ type: 'text', text: 'x' }], theme]);
   assert.deepEqual(manager.state().copy, { id: 'copy-1', text: 'hello' });
 });
+
+test('expires idle scopes and makes room by evicting the least recently active idle scope', async () => {
+  // Given a two-scope bound, a controllable clock, and a captured sweep timer.
+  let clock = 0;
+  const timers = [];
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({
+    createRuntime: factory,
+    maxScopes: 2,
+    now: () => clock,
+    setTimer: (callback) => timers.push(callback),
+    clearTimer: () => {},
+  });
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  clock = 10_000;
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_two'));
+
+  // When a third chat arrives while both were active in the last minute, then it is refused.
+  clock = 30_000;
+  await assert.rejects(
+    manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_three')),
+    /scope limit \(2\)/i,
+  );
+
+  // When a minute has passed, then the least recently active scope makes room.
+  clock = 75_000;
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_three'));
+  assert.deepEqual(manager.state().scopes.map((scope) => scope.sessionId), ['ses_two', 'ses_three']);
+  assert.deepEqual(runtimes.get('ses_one').calls.at(-1), ['close']);
+
+  // When five idle minutes pass, then the sweep closes only the scope that stayed idle.
+  clock = 10_000 + 5 * 60_000;
+  timers.shift()();
+  await manager.surfaceControl('none');
+  assert.deepEqual(manager.state().scopes.map((scope) => scope.sessionId), ['ses_three']);
+  assert.deepEqual(runtimes.get('ses_two').calls.at(-1), ['close']);
+});
