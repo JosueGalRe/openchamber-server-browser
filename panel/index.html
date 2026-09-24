@@ -21,6 +21,7 @@
       .session-tabs .oc-sdk-tab[aria-selected="true"]::after { position: absolute; right: 8px; bottom: 0; left: 8px; height: 2px; border-radius: 999px 999px 0 0; background: var(--oc-selection, currentColor); content: ""; }
       .session-tabs .oc-sdk-tab span { overflow: hidden; text-overflow: ellipsis; }
       .status { display: flex; min-width: 8px; max-width: 40%; align-items: center; gap: 6px; overflow: hidden; color: var(--oc-muted, currentColor); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .status[data-state="waiting"] { max-width: none; }
       .status::before { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--oc-muted, currentColor); content: ""; opacity: .65; }
       .status[data-state="ready"]::before { background: var(--oc-success, var(--oc-muted, currentColor)); }
       .status[data-state="user"]::before { background: var(--oc-primary, var(--oc-focus, currentColor)); opacity: 1; }

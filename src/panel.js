@@ -192,8 +192,8 @@ const render = () => {
     statusTitle = statusMessage;
   } else if (!selected) {
     statusState = 'waiting';
-    statusMessage = 'Waiting for a scoped browser action';
-    statusTitle = statusMessage;
+    statusMessage = 'Ask the agent to open a page with openchamber_web';
+    statusTitle = 'The browser starts with the agent\'s first browser action in a chat. Ask the agent to open a page with the openchamber_web tool.';
   } else if (state.controller === 'user') {
     statusState = 'user';
     statusTitle = 'A viewer has control of the page. Release control to change sessions or use the browser toolbar. The SDK cannot identify which viewer is using this toolbar.';
