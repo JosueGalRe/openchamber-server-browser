@@ -103,6 +103,10 @@ const clipboardExpression = `(() => {
   return '';
 })()`;
 
+const stopScreencast = (page) => {
+  if (page?.cdp.isOpen) void page.cdp.sendSession(page.sessionId, 'Page.stopScreencast').catch(() => {});
+};
+
 export const createSurface = (runtime) => {
   const waiters = new Set();
   let page = null;
@@ -111,6 +115,8 @@ export const createSurface = (runtime) => {
   let sequence = 0;
   let closed = false;
   let startPromise = null;
+  // Bumps whenever the runtime's active tab changes.
+  let target = 0;
 
   const finishWaiter = (waiter, value) => {
     if (!waiters.delete(waiter)) return;
@@ -126,39 +132,51 @@ export const createSurface = (runtime) => {
     }
   };
 
-  const startSurface = async () => {
-    const current = await runtime.ensurePage();
-    if (closed) throw new Error('Surface is closed');
-    if (page?.sessionId === current.sessionId && unsubscribe) return current;
+  const detach = () => {
     unsubscribe?.();
-    page = current;
-    unsubscribe = page.cdp.onEvent((event) => {
-      if (event.sessionId !== page.sessionId || event.method !== 'Page.screencastFrame') return;
-      void page.cdp.sendSession(page.sessionId, 'Page.screencastFrameAck', {
-        sessionId: event.params.sessionId,
-      }).catch(() => {});
-      const bytes = Buffer.from(String(event.params.data ?? ''), 'base64');
-      if (bytes.length === 0 || bytes.length > SURFACE_FRAME_MAX_BYTES) return;
-      sequence += 1;
-      publish({
-        sequence,
-        bytes,
-        mime: 'image/jpeg',
-        width: Math.round(event.params.metadata?.deviceWidth ?? runtime.viewport?.width ?? 0),
-        height: Math.round(event.params.metadata?.deviceHeight ?? runtime.viewport?.height ?? 0),
-        title: runtime.title,
+    unsubscribe = null;
+    stopScreencast(page);
+    page = null;
+  };
+
+  const startSurface = async () => {
+    for (;;) {
+      const expected = target;
+      const current = await runtime.ensurePage();
+      if (closed) throw new Error('Surface is closed');
+      if (page?.sessionId === current.sessionId && unsubscribe) return current;
+      detach();
+      page = current;
+      unsubscribe = current.cdp.onEvent((event) => {
+        if (event.sessionId !== current.sessionId || event.method !== 'Page.screencastFrame') return;
+        void current.cdp.sendSession(current.sessionId, 'Page.screencastFrameAck', {
+          sessionId: event.params.sessionId,
+        }).catch(() => {});
+        const bytes = Buffer.from(String(event.params.data ?? ''), 'base64');
+        if (bytes.length === 0 || bytes.length > SURFACE_FRAME_MAX_BYTES) return;
+        sequence += 1;
+        publish({
+          sequence,
+          bytes,
+          mime: 'image/jpeg',
+          width: Math.round(event.params.metadata?.deviceWidth ?? runtime.viewport?.width ?? 0),
+          height: Math.round(event.params.metadata?.deviceHeight ?? runtime.viewport?.height ?? 0),
+          title: runtime.title,
+        });
       });
-    });
-    await page.cdp.sendSession(page.sessionId, 'Page.startScreencast', {
-      format: 'jpeg',
-      quality: 72,
-      everyNthFrame: 1,
-    });
-    if (closed) {
-      await page.cdp.sendSession(page.sessionId, 'Page.stopScreencast').catch(() => {});
-      throw new Error('Surface is closed');
+      await current.cdp.sendSession(current.sessionId, 'Page.startScreencast', {
+        format: 'jpeg',
+        quality: 72,
+        everyNthFrame: 1,
+      });
+      if (closed) {
+        detach();
+        throw new Error('Surface is closed');
+      }
+      if (expected === target) return current;
+      // The active tab changed while this stream started; stop it and follow.
+      stopScreencast(current);
     }
-    return page;
   };
 
   const start = () => {
@@ -213,17 +231,20 @@ export const createSurface = (runtime) => {
       });
       return typeof response.result?.value === 'string' ? response.result.value : '';
     },
+    // The active tab changed: stop streaming the old one and wake long polls so
+    // the next request starts on the new tab.
+    retarget() {
+      target += 1;
+      detach();
+      latest = null;
+      for (const waiter of waiters) finishWaiter(waiter, null);
+    },
     async close() {
       if (closed) return;
       closed = true;
       for (const waiter of waiters) finishWaiter(waiter, null);
       await startPromise?.catch(() => {});
-      unsubscribe?.();
-      unsubscribe = null;
-      if (page?.cdp.isOpen) {
-        await page.cdp.sendSession(page.sessionId, 'Page.stopScreencast').catch(() => {});
-      }
-      page = null;
+      detach();
     },
   };
 };

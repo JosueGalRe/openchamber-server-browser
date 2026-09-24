@@ -1391,13 +1391,82 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
   address.autocomplete = "off";
   address.spellcheck = false;
   address.setAttribute("aria-label", "Address");
+  var pageTabs = document.createElement("div");
+  pageTabs.className = "page-tabs";
+  pageTabs.setAttribute("role", "tablist");
+  pageTabs.setAttribute("aria-label", "Pages");
+  var newTab = document.createElement("button");
+  newTab.type = "button";
+  newTab.className = "new-tab";
+  newTab.title = "New tab";
+  newTab.setAttribute("aria-label", "New tab");
+  setIcon(newTab, (svg) => {
+    addLine(svg, { x1: "12", y1: "5", x2: "12", y2: "19" });
+    addLine(svg, { x1: "5", y1: "12", x2: "19", y2: "12" });
+  });
+  var pageLabel = (tab) => {
+    if (tab.title) return tab.title;
+    if (tab.url === "about:blank") return "New tab";
+    try {
+      return new URL(tab.url).host || tab.url;
+    } catch {
+      return tab.url;
+    }
+  };
+  var pageTabsSignature = "";
+  var renderPageTabs = (selected, disabled) => {
+    newTab.disabled = disabled;
+    const items = selected?.tabs ?? [];
+    const signature = JSON.stringify([items.map((tab) => [tab.id, pageLabel(tab), tab.url, tab.active]), disabled]);
+    if (signature === pageTabsSignature) return;
+    pageTabsSignature = signature;
+    const focused = pageTabs.contains(document.activeElement) ? document.activeElement : null;
+    pageTabs.replaceChildren(...items.map((tab) => {
+      const item = document.createElement("div");
+      item.className = "page-tab";
+      item.dataset.active = String(tab.active);
+      const select = document.createElement("button");
+      select.type = "button";
+      select.className = "page-tab-select";
+      select.setAttribute("role", "tab");
+      select.setAttribute("aria-selected", String(tab.active));
+      select.tabIndex = tab.active ? 0 : -1;
+      select.dataset.id = tab.id;
+      select.disabled = disabled;
+      select.title = tab.url === "about:blank" ? pageLabel(tab) : `${pageLabel(tab)}
+${tab.url}`;
+      const label = document.createElement("span");
+      label.textContent = pageLabel(tab);
+      select.append(label);
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "page-tab-close";
+      close.tabIndex = tab.active ? 0 : -1;
+      close.dataset.id = tab.id;
+      close.disabled = disabled;
+      close.title = `Close ${pageLabel(tab)}`;
+      close.setAttribute("aria-label", close.title);
+      setIcon(close, (svg) => {
+        addLine(svg, { x1: "7", y1: "7", x2: "17", y2: "17" });
+        addLine(svg, { x1: "17", y1: "7", x2: "7", y2: "17" });
+      });
+      item.append(select, close);
+      return item;
+    }));
+    if (focused?.dataset.id) {
+      pageTabs.querySelector(`.${focused.className}[data-id="${CSS.escape(focused.dataset.id)}"]`)?.focus();
+    }
+  };
   var scopeRow = document.createElement("div");
   scopeRow.className = "row scope-row";
   scopeRow.append(scopeSelect, status);
+  var pageTabsRow = document.createElement("div");
+  pageTabsRow.className = "row page-tabs-row";
+  pageTabsRow.append(pageTabs, newTab);
   var navigationRow = document.createElement("div");
   navigationRow.className = "row navigation-row";
   navigationRow.append(back, forward, reload, address, selectCompatibility);
-  root.append(scopeRow, navigationRow);
+  root.append(scopeRow, pageTabsRow, navigationRow);
   var state = null;
   var requestPending = false;
   var refreshPending = false;
@@ -1468,6 +1537,7 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     }
     if (!addressDirty) address.value = selected?.url === "about:blank" ? "" : String(selected?.url ?? "");
     const disabled = requestPending || !selected || !idle;
+    renderPageTabs(selected, disabled);
     back.disabled = disabled || !selected.canGoBack;
     forward.disabled = disabled || !selected.canGoForward;
     drawReload(selected?.isLoading === true);
@@ -1570,6 +1640,28 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       render();
     });
   });
+  var tabCommand = (path, payload) => {
+    if (!state) return;
+    void request(path, { ...payload, generation: state.generation }).then((succeeded) => {
+      if (!succeeded) return;
+      addressDirty = false;
+      render();
+    });
+  };
+  pageTabs.addEventListener("click", (event) => {
+    const button2 = event.target.closest("button");
+    if (!button2?.dataset.id) return;
+    if (button2.classList.contains("page-tab-close")) tabCommand("/browser/tabs/close", { tabId: button2.dataset.id });
+    else if (button2.getAttribute("aria-selected") !== "true") tabCommand("/browser/tabs/select", { tabId: button2.dataset.id });
+  });
+  pageTabs.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" || !event.target.matches(".page-tab-select")) return;
+    const buttons = [...pageTabs.querySelectorAll(".page-tab-select")];
+    const step = event.key === "ArrowRight" ? 1 : -1;
+    event.preventDefault();
+    buttons[(buttons.indexOf(event.target) + step + buttons.length) % buttons.length]?.focus();
+  });
+  newTab.addEventListener("click", () => tabCommand("/browser/tabs/new", {}));
   selectCompatibility.addEventListener("click", () => {
     if (!state) return;
     const selected = state.scopes.find((scope) => scope.id === state.selectedScopeId);

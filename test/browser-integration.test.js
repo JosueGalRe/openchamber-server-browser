@@ -50,6 +50,13 @@ const startWebFixture = async () => {
       response.end(html('<h1>Next page</h1><a href="/">Home</a>', 'Next'));
       return;
     }
+    if (request.url === '/tabs') {
+      response.end(html(`
+        <a id="surface" href="/next" target="_blank">Open next</a>
+        <button id="mark" onclick="window.open('/next', 'popup')">Open popup</button>
+      `, 'Tabs'));
+      return;
+    }
     if (request.url === '/title') {
       response.end(html('<button id="surface" onclick="document.title = \'Renamed by the page\'">Rename</button>', 'Title before'));
       return;
@@ -371,4 +378,38 @@ test('tracks title, loading, and history for the dock, and stops a slow load', {
 
   // Then the dock still refuses anything but http(s).
   await assert.rejects(runtime.command('navigate', { url: 'file:///etc/passwd' }), /http\(s\)/);
+});
+
+test('follows pages the site opens as tabs and returns to the opener when they close', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a page with a target=_blank link and a window.open button.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/tabs` });
+  const opener = runtime.tabs[0].id;
+  const click = (x, y) => runtime.surfaceInput([
+    { type: 'pointer', action: 'down', x, y, button: 0, buttons: 1, modifiers },
+    { type: 'pointer', action: 'up', x, y, button: 0, buttons: 0, modifiers },
+  ]);
+
+  // When the user follows the link, then the new page becomes the active tab and the agent works there.
+  await click(30, 30);
+  await waitFor(() => runtime.tabs.length === 2 && runtime.url === `${web.origin}/next`);
+  assert.equal((await runtime.perform('browser.snapshot', {})).title, 'Next');
+
+  // When that tab closes, then its opener comes back.
+  await runtime.command('tab-close', { tabId: runtime.tabs.find((tab) => tab.active).id });
+  assert.deepEqual(runtime.tabs.map((tab) => [tab.id, tab.active]), [[opener, true]]);
+
+  // When the page opens a window from script, then it is tracked and brought forward too.
+  await click(30, 128);
+  await waitFor(() => runtime.tabs.length === 2 && runtime.url === `${web.origin}/next`);
+
+  // When the dock opens a blank tab and then selects the opener, then the agent follows the selection.
+  await runtime.command('tab-new');
+  assert.equal(runtime.tabs.length, 3);
+  assert.equal(runtime.url, 'about:blank');
+  await runtime.command('tab-select', { tabId: opener });
+  assert.equal((await runtime.perform('browser.snapshot', {})).title, 'Tabs');
 });

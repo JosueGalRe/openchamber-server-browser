@@ -9,9 +9,10 @@ import { applyViewport, viewportForMode } from './viewports.js';
 
 const boundedText = (value, maximum = 1_000) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maximum);
 
-const createTab = (targetId, sessionId) => ({
+const createTab = (targetId, sessionId, openerId) => ({
   targetId,
   sessionId,
+  openerId,
   // A page target's main frame shares the target's id.
   mainFrameId: targetId,
   url: 'about:blank',
@@ -22,21 +23,32 @@ const createTab = (targetId, sessionId) => ({
   navigationRefresh: null,
   navigationStale: false,
   navigationTimer: null,
+  problems: [],
+  compatibility: null,
+  lastActive: 0,
 });
+
+const isScopePage = (info, contextId) => info?.type === 'page'
+  && info.browserContextId === contextId
+  && info.subtype !== 'prerender';
 
 export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNetworks = [], configPath = null } = {}) => {
   const chrome = createChromeProcess({ chromePath });
   const proxy = createPolicyProxy({ grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)], configPath });
   const shutdownController = new AbortController();
-  const problems = [];
+  const tabs = new Map();
+  const sessions = new Map();
+  const attaching = new Map();
+  const tabListeners = new Set();
+  let activeTargetId = null;
+  let activations = 0;
+  let nativeSelectEnabled = false;
   let cdp = null;
   let contextId = null;
-  let tab = null;
   let eventCleanup = null;
   let startupPromise = null;
   let pagePromise = null;
   let actionQueue = Promise.resolve();
-  let nativeSelectCompatibility = null;
   let closed = false;
   let dead = null;
   const deathListeners = new Set();
@@ -49,40 +61,62 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
   };
   chrome.onExit(markDead);
 
+  const activeTab = () => tabs.get(activeTargetId) ?? null;
+
   const runtime = {
     viewport: viewportForMode('desktop'),
     controller: 'none',
     agentActive: false,
     get url() {
-      return tab?.url ?? 'about:blank';
+      return activeTab()?.url ?? 'about:blank';
     },
     get title() {
-      return tab?.title ?? '';
+      return activeTab()?.title ?? '';
     },
     get isLoading() {
-      return tab?.isLoading === true;
+      return activeTab()?.isLoading === true;
     },
     get canGoBack() {
-      return tab?.canGoBack === true;
+      return activeTab()?.canGoBack === true;
     },
     get canGoForward() {
-      return tab?.canGoForward === true;
+      return activeTab()?.canGoForward === true;
+    },
+    get tabs() {
+      return Array.from(tabs.values(), (current) => ({
+        id: current.targetId,
+        url: current.url,
+        title: current.title,
+        isLoading: current.isLoading,
+        active: current.targetId === activeTargetId,
+      }));
+    },
+    get nativeSelectCompatibility() {
+      return activeTab()?.compatibility.enabled ?? nativeSelectEnabled;
+    },
+    get nativeSelectCompatibilityError() {
+      return activeTab()?.compatibility.error ?? '';
     },
     get consoleProblems() {
-      return problems.map((problem) => ({ ...problem }));
+      return (activeTab()?.problems ?? []).map((problem) => ({ ...problem }));
     },
     clearConsoleProblems() {
-      problems.length = 0;
+      const current = activeTab();
+      if (current) current.problems.length = 0;
     },
   };
 
-  const addProblem = (problem) => {
+  const addProblem = (current, problem) => {
     if (!problem.message) return;
-    problems.push(problem);
-    if (problems.length > 50) problems.shift();
+    current.problems.push(problem);
+    if (current.problems.length > 50) current.problems.shift();
   };
 
   const pageOf = (current) => ({ cdp, contextId, targetId: current.targetId, sessionId: current.sessionId });
+
+  const notifyTabs = () => {
+    for (const listener of tabListeners) listener();
+  };
 
   // Coalesced: events during a read schedule one more read. A failed read keeps
   // the last known state. History entries carry the live document title.
@@ -101,8 +135,9 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
           current.canGoBack = index > 0;
           current.canGoForward = index >= 0 && index < entries.length - 1;
           if (typeof entries[index]?.title === 'string') current.title = entries[index].title;
+          if (typeof entries[index]?.url === 'string' && entries[index].url) current.url = entries[index].url;
         } catch {}
-      } while (current.navigationStale && !closed);
+      } while (current.navigationStale && !closed && tabs.get(current.targetId) === current);
     })().finally(() => { current.navigationRefresh = null; });
     return current.navigationRefresh;
   };
@@ -113,33 +148,104 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     if (current.navigationTimer) return;
     current.navigationTimer = setTimeout(() => {
       current.navigationTimer = null;
-      if (tab === current) void refreshNavigation(current);
+      if (tabs.get(current.targetId) === current) void refreshNavigation(current);
     }, 500);
     current.navigationTimer.unref?.();
   };
 
-  const handleEvent = (event) => {
-    const current = tab;
+  const activate = async (current) => {
+    if (activeTargetId === current.targetId || tabs.get(current.targetId) !== current) return;
+    activeTargetId = current.targetId;
+    activations += 1;
+    current.lastActive = activations;
+    surface.retarget();
+    notifyTabs();
+    // Chrome can defer input and frames for a page that is not in front.
+    await cdp.sendSession(current.sessionId, 'Page.bringToFront').catch(() => {});
+  };
+
+  const removeTab = (targetId) => {
+    const current = tabs.get(targetId);
     if (!current) return;
-    if (!event.sessionId) {
-      const info = event.params.targetInfo;
-      if (event.method === 'Target.targetInfoChanged' && info?.targetId === current.targetId) {
-        if (typeof info.url === 'string') current.url = info.url;
-        if (typeof info.title === 'string') current.title = info.title;
-      }
+    tabs.delete(targetId);
+    sessions.delete(current.sessionId);
+    clearTimeout(current.navigationTimer);
+    if (activeTargetId !== targetId) {
+      notifyTabs();
       return;
     }
-    if (event.sessionId !== current.sessionId) return;
+    activeTargetId = null;
+    surface.retarget();
+    const fallback = tabs.get(current.openerId)
+      ?? [...tabs.values()].reduce((best, candidate) => (!best || candidate.lastActive > best.lastActive ? candidate : best), null);
+    if (fallback) void activate(fallback);
+    else notifyTabs();
+  };
+
+  const attachTab = (targetId, openerId = null) => {
+    const known = tabs.get(targetId);
+    if (known) return Promise.resolve(known);
+    const pending = attaching.get(targetId);
+    if (pending) return pending;
+    const attached = (async () => {
+      const sessionId = await cdp.attach(targetId);
+      if (closed) throw new Error('Browser runtime is closed');
+      const current = createTab(targetId, sessionId, openerId);
+      current.compatibility = createNativeSelectCompatibility({
+        ensurePage: async () => pageOf(current),
+        reportError: (message) => addProblem(current, { level: 'error', message, source: 'browser' }),
+      });
+      tabs.set(targetId, current);
+      sessions.set(sessionId, current);
+      await Promise.all([
+        cdp.sendSession(sessionId, 'Page.enable'),
+        cdp.sendSession(sessionId, 'Runtime.enable'),
+        cdp.sendSession(sessionId, 'Log.enable'),
+      ]);
+      await applyViewport(cdp, sessionId, runtime.viewport);
+      if (nativeSelectEnabled) await current.compatibility.setEnabled(true).catch(() => {});
+      await refreshNavigation(current);
+      return current;
+    })().finally(() => attaching.delete(targetId));
+    attaching.set(targetId, attached);
+    return attached;
+  };
+
+  const handleTargetEvent = (event) => {
+    const info = event.params.targetInfo;
+    if (event.method === 'Target.targetCreated' && isScopePage(info, contextId)) {
+      // Pages the site opens (popups, target=_blank) come to the front like in a browser.
+      void attachTab(info.targetId, info.openerId ?? null).then(activate).catch(() => {});
+    } else if (event.method === 'Target.targetInfoChanged' && info) {
+      const current = tabs.get(info.targetId);
+      if (!current) return;
+      if (typeof info.url === 'string') current.url = info.url;
+      if (typeof info.title === 'string') current.title = info.title;
+    } else if (event.method === 'Target.targetDestroyed') {
+      removeTab(event.params.targetId);
+    } else if (event.method === 'Target.detachedFromTarget') {
+      const current = sessions.get(event.params.sessionId);
+      if (current) removeTab(current.targetId);
+    }
+  };
+
+  const handleEvent = (event) => {
+    if (!event.sessionId) {
+      handleTargetEvent(event);
+      return;
+    }
+    const current = sessions.get(event.sessionId);
+    if (!current) return;
     if (event.method === 'Page.frameNavigated' && event.params.frame?.id) {
       if (!event.params.frame.parentId) {
         current.mainFrameId = event.params.frame.id;
         current.url = event.params.frame.url;
         void refreshNavigation(current);
       }
-      nativeSelectCompatibility?.frameNavigated(event.params.frame.id);
+      current.compatibility.frameNavigated(event.params.frame.id);
     }
     if (event.method === 'Page.frameDetached' && event.params.frameId) {
-      nativeSelectCompatibility?.frameDetached(event.params.frameId);
+      current.compatibility.frameDetached(event.params.frameId);
     }
     if (event.method === 'Page.navigatedWithinDocument' && event.params.frameId === current.mainFrameId) {
       current.url = event.params.url;
@@ -156,12 +262,12 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     if (event.method === 'Runtime.consoleAPICalled') {
       if (event.params.type !== 'warning' && event.params.type !== 'error') return;
       const message = event.params.args?.map((arg) => arg.value ?? arg.description).filter(Boolean).join(' ');
-      addProblem({ level: event.params.type, message: boundedText(message), source: 'console' });
+      addProblem(current, { level: event.params.type, message: boundedText(message), source: 'console' });
     }
     if (event.method === 'Log.entryAdded') {
       const entry = event.params.entry;
       if (entry?.level !== 'warning' && entry?.level !== 'error') return;
-      addProblem({ level: entry.level, message: boundedText(entry.text), source: boundedText(entry.source || 'log', 120) });
+      addProblem(current, { level: entry.level, message: boundedText(entry.text), source: boundedText(entry.source || 'log', 120) });
     }
   };
 
@@ -172,7 +278,6 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
       const [proxyAddress, processInfo] = await Promise.all([proxy.listen(), chrome.ensure()]);
       if (closed) throw new Error('Browser runtime is closed');
       nextCdp = await connectCdp(processInfo.endpoint);
-      await nextCdp.send('Target.setDiscoverTargets', { discover: true });
       const context = await nextCdp.send('Target.createBrowserContext', {
         proxyServer: proxyAddress,
         proxyBypassList: '<-loopback>',
@@ -184,6 +289,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
       contextId = nextContextId;
       cdp.onClose(markDead);
       eventCleanup = cdp.onEvent(handleEvent);
+      await cdp.send('Target.setDiscoverTargets', { discover: true });
     } catch (error) {
       if (nextContextId && nextCdp?.isOpen) {
         await nextCdp.send('Target.disposeBrowserContext', { browserContextId: nextContextId }).catch(() => {});
@@ -204,58 +310,65 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     await startupPromise;
   };
 
-  const createPage = async () => {
+  const openTab = async () => {
     await ensureStarted();
-    if (tab) return pageOf(tab);
-    if (closed) throw new Error('Browser runtime is closed');
     const target = await cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: contextId });
     if (typeof target.targetId !== 'string') throw new Error('Chrome returned no page target id');
-    const nextTargetId = target.targetId;
-    const nextSessionId = await cdp.attach(nextTargetId);
+    const current = await attachTab(target.targetId);
     if (closed) throw new Error('Browser runtime is closed');
-    tab = createTab(nextTargetId, nextSessionId);
-    await Promise.all([
-      cdp.sendSession(tab.sessionId, 'Page.enable'),
-      cdp.sendSession(tab.sessionId, 'Runtime.enable'),
-      cdp.sendSession(tab.sessionId, 'Log.enable'),
-    ]);
-    await applyViewport(cdp, tab.sessionId, runtime.viewport);
-    await refreshNavigation(tab);
-    return pageOf(tab);
+    await activate(current);
+    return current;
   };
 
   runtime.ensurePage = async () => {
     if (dead) throw dead;
-    if (tab) return pageOf(tab);
-    if (!pagePromise) pagePromise = createPage().catch((error) => {
-      tab = null;
-      throw error;
-    }).finally(() => { pagePromise = null; });
-    return pagePromise;
+    const current = activeTab();
+    if (current) return pageOf(current);
+    if (!pagePromise) pagePromise = openTab().finally(() => { pagePromise = null; });
+    return pageOf(await pagePromise);
   };
 
-  nativeSelectCompatibility = createNativeSelectCompatibility({
-    ensurePage: runtime.ensurePage,
-    reportError: (message) => addProblem({ level: 'error', message, source: 'browser' }),
-  });
-  Object.defineProperties(runtime, {
-    nativeSelectCompatibility: { get: () => nativeSelectCompatibility.enabled },
-    nativeSelectCompatibilityError: { get: () => nativeSelectCompatibility.error },
-  });
-  runtime.setNativeSelectCompatibility = (enabled) => nativeSelectCompatibility.setEnabled(enabled);
+  // The active tab decides; other tabs follow on a best-effort basis.
+  runtime.setNativeSelectCompatibility = async (enabled) => {
+    await runtime.ensurePage();
+    const active = activeTab();
+    await active.compatibility.setEnabled(enabled);
+    nativeSelectEnabled = enabled;
+    await Promise.allSettled([...tabs.values()]
+      .filter((current) => current !== active)
+      .map((current) => current.compatibility.setEnabled(enabled)));
+  };
 
   runtime.setViewport = async (viewport) => {
     const page = await runtime.ensurePage();
     await applyViewport(page.cdp, page.sessionId, viewport);
     runtime.viewport = viewport;
+    await Promise.allSettled([...tabs.values()]
+      .filter((current) => current.sessionId !== page.sessionId)
+      .map((current) => applyViewport(cdp, current.sessionId, viewport)));
   };
 
   // Dock commands return once Chrome accepts them; loading and history state
   // follow page events, so a slow page can still be stopped.
   runtime.command = async (name, parameters = {}) => {
     if (closed) throw new Error('Browser runtime is closed');
+    if (name === 'tab-new') {
+      await openTab();
+      return;
+    }
+    if (name === 'tab-select' || name === 'tab-close') {
+      const selected = tabs.get(parameters.tabId);
+      if (!selected) throw new Error('That tab is no longer open');
+      if (name === 'tab-select') {
+        await activate(selected);
+        return;
+      }
+      await cdp.send('Target.closeTarget', { targetId: selected.targetId });
+      removeTab(selected.targetId);
+      return;
+    }
     const page = await runtime.ensurePage();
-    const current = tab;
+    const current = activeTab();
     const send = (method, params) => page.cdp.sendSession(page.sessionId, method, params);
     if (name === 'navigate') {
       const url = new URL(parameters.url);
@@ -282,7 +395,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     } else {
       throw new Error(`Unsupported browser command: ${name}`);
     }
-    if (current) await refreshNavigation(current);
+    await refreshNavigation(current);
   };
 
   const execute = createBrowserActions(runtime);
@@ -304,9 +417,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
       runtime.agentActive = true;
       try {
         const data = await execute(action, parameters, signal);
-        await nativeSelectCompatibility.whenIdle();
-        if (tab && typeof data?.title === 'string') tab.title = data.title;
-        if (tab && typeof data?.url === 'string' && data.url) tab.url = data.url;
+        await activeTab()?.compatibility.whenIdle();
         return data;
       } finally {
         runtime.agentActive = false;
@@ -325,15 +436,20 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     deathListeners.add(listener);
     return () => deathListeners.delete(listener);
   };
+  runtime.onTabsChanged = (listener) => {
+    tabListeners.add(listener);
+    return () => tabListeners.delete(listener);
+  };
   runtime.close = async () => {
     if (closed) return;
     closed = true;
     shutdownController.abort(new DOMException('Browser runtime stopped', 'AbortError'));
     await surface.close();
-    await nativeSelectCompatibility.close();
+    await Promise.allSettled([...tabs.values()].map((current) => current.compatibility.close()));
     await pagePromise?.catch(() => {});
     await actionQueue.catch(() => {});
     eventCleanup?.();
+    for (const current of tabs.values()) clearTimeout(current.navigationTimer);
     if (contextId && cdp?.isOpen) {
       await cdp.send('Target.disposeBrowserContext', { browserContextId: contextId }).catch(() => {});
     }
@@ -341,8 +457,9 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     await proxy.close();
     await chrome.close();
     contextId = null;
-    if (tab?.navigationTimer) clearTimeout(tab.navigationTimer);
-    tab = null;
+    tabs.clear();
+    sessions.clear();
+    activeTargetId = null;
   };
 
   return runtime;

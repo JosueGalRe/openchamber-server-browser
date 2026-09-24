@@ -107,7 +107,7 @@ const generationProperty = (value) => (
 const dockErrorStatus = (error) => {
   const message = errorMessage(error);
   if (/surface is idle|browser view changed/i.test(message)) return 409;
-  if (/no browser scope|no longer exists/i.test(message)) return 404;
+  if (/no browser scope|no longer exists|no longer open/i.test(message)) return 404;
   return 400;
 };
 
@@ -176,6 +176,24 @@ export const createService = ({ runtime, token, port = 0 }) => {
         else if (url.pathname === '/browser/forward') await runtime.forward(generation);
         else if (url.pathname === '/browser/stop') await runtime.stop(generation);
         else await runtime.reload(generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+
+    const tabOperation = request.method === 'POST' ? /^\/browser\/tabs\/(new|select|close)$/.exec(url.pathname)?.[1] : null;
+    if (tabOperation) {
+      const body = await readObjectBody(request);
+      const generation = generationProperty(body);
+      const tabId = stringProperty(body, 'tabId');
+      if (generation === null || (tabOperation !== 'new' && !tabId)) {
+        return text(response, 400, 'generation is required, and tabId to select or close a tab\n');
+      }
+      try {
+        if (tabOperation === 'new') await runtime.newTab(generation);
+        else if (tabOperation === 'select') await runtime.selectTab(tabId, generation);
+        else await runtime.closeTab(tabId, generation);
         return json(response, 200, runtime.state());
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });

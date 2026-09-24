@@ -3724,6 +3724,9 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
       await removeScope(entry);
     }).catch(() => {
     }));
+    entry.runtime.onTabsChanged(() => {
+      if (selectedScopeId === entry.id) viewGeneration += 1;
+    });
     if (!selectedScopeId) select(entry);
     return entry;
   };
@@ -3778,7 +3781,8 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
           canGoBack: entry.runtime.canGoBack === true,
           canGoForward: entry.runtime.canGoForward === true,
           nativeSelectCompatibility: entry.runtime.nativeSelectCompatibility === true,
-          nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? ""
+          nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? "",
+          tabs: entry.runtime.tabs ?? []
         }))
       };
     },
@@ -3809,6 +3813,15 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
     },
     stop(expectedGeneration) {
       return dockCommand("stop", {}, expectedGeneration);
+    },
+    newTab(expectedGeneration) {
+      return dockCommand("tab-new", {}, expectedGeneration);
+    },
+    selectTab(tabId, expectedGeneration) {
+      return dockCommand("tab-select", { tabId }, expectedGeneration);
+    },
+    closeTab(tabId, expectedGeneration) {
+      return dockCommand("tab-close", { tabId }, expectedGeneration);
     },
     setNativeSelectCompatibility(enabled, expectedGeneration) {
       return enqueue(async () => {
@@ -5526,6 +5539,10 @@ var clipboardExpression = `(() => {
   }
   return '';
 })()`;
+var stopScreencast = (page) => {
+  if (page?.cdp.isOpen) void page.cdp.sendSession(page.sessionId, "Page.stopScreencast").catch(() => {
+  });
+};
 var createSurface = (runtime) => {
   const waiters = /* @__PURE__ */ new Set();
   let page = null;
@@ -5534,6 +5551,7 @@ var createSurface = (runtime) => {
   let sequence = 0;
   let closed = false;
   let startPromise = null;
+  let target = 0;
   const finishWaiter = (waiter, value) => {
     if (!waiters.delete(waiter)) return;
     clearTimeout(waiter.timer);
@@ -5546,41 +5564,50 @@ var createSurface = (runtime) => {
       if (frame.sequence > waiter.after) finishWaiter(waiter, frame);
     }
   };
-  const startSurface = async () => {
-    const current = await runtime.ensurePage();
-    if (closed) throw new Error("Surface is closed");
-    if (page?.sessionId === current.sessionId && unsubscribe) return current;
+  const detach = () => {
     unsubscribe?.();
-    page = current;
-    unsubscribe = page.cdp.onEvent((event) => {
-      if (event.sessionId !== page.sessionId || event.method !== "Page.screencastFrame") return;
-      void page.cdp.sendSession(page.sessionId, "Page.screencastFrameAck", {
-        sessionId: event.params.sessionId
-      }).catch(() => {
+    unsubscribe = null;
+    stopScreencast(page);
+    page = null;
+  };
+  const startSurface = async () => {
+    for (; ; ) {
+      const expected = target;
+      const current = await runtime.ensurePage();
+      if (closed) throw new Error("Surface is closed");
+      if (page?.sessionId === current.sessionId && unsubscribe) return current;
+      detach();
+      page = current;
+      unsubscribe = current.cdp.onEvent((event) => {
+        if (event.sessionId !== current.sessionId || event.method !== "Page.screencastFrame") return;
+        void current.cdp.sendSession(current.sessionId, "Page.screencastFrameAck", {
+          sessionId: event.params.sessionId
+        }).catch(() => {
+        });
+        const bytes = Buffer.from(String(event.params.data ?? ""), "base64");
+        if (bytes.length === 0 || bytes.length > SURFACE_FRAME_MAX_BYTES) return;
+        sequence += 1;
+        publish({
+          sequence,
+          bytes,
+          mime: "image/jpeg",
+          width: Math.round(event.params.metadata?.deviceWidth ?? runtime.viewport?.width ?? 0),
+          height: Math.round(event.params.metadata?.deviceHeight ?? runtime.viewport?.height ?? 0),
+          title: runtime.title
+        });
       });
-      const bytes = Buffer.from(String(event.params.data ?? ""), "base64");
-      if (bytes.length === 0 || bytes.length > SURFACE_FRAME_MAX_BYTES) return;
-      sequence += 1;
-      publish({
-        sequence,
-        bytes,
-        mime: "image/jpeg",
-        width: Math.round(event.params.metadata?.deviceWidth ?? runtime.viewport?.width ?? 0),
-        height: Math.round(event.params.metadata?.deviceHeight ?? runtime.viewport?.height ?? 0),
-        title: runtime.title
+      await current.cdp.sendSession(current.sessionId, "Page.startScreencast", {
+        format: "jpeg",
+        quality: 72,
+        everyNthFrame: 1
       });
-    });
-    await page.cdp.sendSession(page.sessionId, "Page.startScreencast", {
-      format: "jpeg",
-      quality: 72,
-      everyNthFrame: 1
-    });
-    if (closed) {
-      await page.cdp.sendSession(page.sessionId, "Page.stopScreencast").catch(() => {
-      });
-      throw new Error("Surface is closed");
+      if (closed) {
+        detach();
+        throw new Error("Surface is closed");
+      }
+      if (expected === target) return current;
+      stopScreencast(current);
     }
-    return page;
   };
   const start = () => {
     if (closed) return Promise.reject(new Error("Surface is closed"));
@@ -5635,28 +5662,31 @@ var createSurface = (runtime) => {
       });
       return typeof response.result?.value === "string" ? response.result.value : "";
     },
+    // The active tab changed: stop streaming the old one and wake long polls so
+    // the next request starts on the new tab.
+    retarget() {
+      target += 1;
+      detach();
+      latest = null;
+      for (const waiter of waiters) finishWaiter(waiter, null);
+    },
     async close() {
       if (closed) return;
       closed = true;
       for (const waiter of waiters) finishWaiter(waiter, null);
       await startPromise?.catch(() => {
       });
-      unsubscribe?.();
-      unsubscribe = null;
-      if (page?.cdp.isOpen) {
-        await page.cdp.sendSession(page.sessionId, "Page.stopScreencast").catch(() => {
-        });
-      }
-      page = null;
+      detach();
     }
   };
 };
 
 // src/browser-runtime.js
 var boundedText = (value, maximum = 1e3) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, maximum);
-var createTab = (targetId, sessionId) => ({
+var createTab = (targetId, sessionId, openerId) => ({
   targetId,
   sessionId,
+  openerId,
   // A page target's main frame shares the target's id.
   mainFrameId: targetId,
   url: "about:blank",
@@ -5666,21 +5696,29 @@ var createTab = (targetId, sessionId) => ({
   canGoForward: false,
   navigationRefresh: null,
   navigationStale: false,
-  navigationTimer: null
+  navigationTimer: null,
+  problems: [],
+  compatibility: null,
+  lastActive: 0
 });
+var isScopePage = (info, contextId) => info?.type === "page" && info.browserContextId === contextId && info.subtype !== "prerender";
 var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNetworks = [], configPath = null } = {}) => {
   const chrome = createChromeProcess({ chromePath });
   const proxy = createPolicyProxy({ grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)], configPath });
   const shutdownController = new AbortController();
-  const problems = [];
+  const tabs = /* @__PURE__ */ new Map();
+  const sessions = /* @__PURE__ */ new Map();
+  const attaching = /* @__PURE__ */ new Map();
+  const tabListeners = /* @__PURE__ */ new Set();
+  let activeTargetId = null;
+  let activations = 0;
+  let nativeSelectEnabled = false;
   let cdp = null;
   let contextId = null;
-  let tab = null;
   let eventCleanup = null;
   let startupPromise = null;
   let pagePromise = null;
   let actionQueue = Promise.resolve();
-  let nativeSelectCompatibility = null;
   let closed = false;
   let dead = null;
   const deathListeners = /* @__PURE__ */ new Set();
@@ -5691,38 +5729,58 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     for (const listener of deathListeners) listener(dead);
   };
   chrome.onExit(markDead);
+  const activeTab = () => tabs.get(activeTargetId) ?? null;
   const runtime = {
     viewport: viewportForMode("desktop"),
     controller: "none",
     agentActive: false,
     get url() {
-      return tab?.url ?? "about:blank";
+      return activeTab()?.url ?? "about:blank";
     },
     get title() {
-      return tab?.title ?? "";
+      return activeTab()?.title ?? "";
     },
     get isLoading() {
-      return tab?.isLoading === true;
+      return activeTab()?.isLoading === true;
     },
     get canGoBack() {
-      return tab?.canGoBack === true;
+      return activeTab()?.canGoBack === true;
     },
     get canGoForward() {
-      return tab?.canGoForward === true;
+      return activeTab()?.canGoForward === true;
+    },
+    get tabs() {
+      return Array.from(tabs.values(), (current) => ({
+        id: current.targetId,
+        url: current.url,
+        title: current.title,
+        isLoading: current.isLoading,
+        active: current.targetId === activeTargetId
+      }));
+    },
+    get nativeSelectCompatibility() {
+      return activeTab()?.compatibility.enabled ?? nativeSelectEnabled;
+    },
+    get nativeSelectCompatibilityError() {
+      return activeTab()?.compatibility.error ?? "";
     },
     get consoleProblems() {
-      return problems.map((problem) => ({ ...problem }));
+      return (activeTab()?.problems ?? []).map((problem) => ({ ...problem }));
     },
     clearConsoleProblems() {
-      problems.length = 0;
+      const current = activeTab();
+      if (current) current.problems.length = 0;
     }
   };
-  const addProblem = (problem) => {
+  const addProblem = (current, problem) => {
     if (!problem.message) return;
-    problems.push(problem);
-    if (problems.length > 50) problems.shift();
+    current.problems.push(problem);
+    if (current.problems.length > 50) current.problems.shift();
   };
   const pageOf = (current) => ({ cdp, contextId, targetId: current.targetId, sessionId: current.sessionId });
+  const notifyTabs = () => {
+    for (const listener of tabListeners) listener();
+  };
   const refreshNavigation = (current) => {
     if (current.navigationRefresh) {
       current.navigationStale = true;
@@ -5738,9 +5796,10 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
           current.canGoBack = index > 0;
           current.canGoForward = index >= 0 && index < entries.length - 1;
           if (typeof entries[index]?.title === "string") current.title = entries[index].title;
+          if (typeof entries[index]?.url === "string" && entries[index].url) current.url = entries[index].url;
         } catch {
         }
-      } while (current.navigationStale && !closed);
+      } while (current.navigationStale && !closed && tabs.get(current.targetId) === current);
     })().finally(() => {
       current.navigationRefresh = null;
     });
@@ -5750,32 +5809,99 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     if (current.navigationTimer) return;
     current.navigationTimer = setTimeout(() => {
       current.navigationTimer = null;
-      if (tab === current) void refreshNavigation(current);
+      if (tabs.get(current.targetId) === current) void refreshNavigation(current);
     }, 500);
     current.navigationTimer.unref?.();
   };
-  const handleEvent = (event) => {
-    const current = tab;
+  const activate = async (current) => {
+    if (activeTargetId === current.targetId || tabs.get(current.targetId) !== current) return;
+    activeTargetId = current.targetId;
+    activations += 1;
+    current.lastActive = activations;
+    surface.retarget();
+    notifyTabs();
+    await cdp.sendSession(current.sessionId, "Page.bringToFront").catch(() => {
+    });
+  };
+  const removeTab = (targetId) => {
+    const current = tabs.get(targetId);
     if (!current) return;
-    if (!event.sessionId) {
-      const info = event.params.targetInfo;
-      if (event.method === "Target.targetInfoChanged" && info?.targetId === current.targetId) {
-        if (typeof info.url === "string") current.url = info.url;
-        if (typeof info.title === "string") current.title = info.title;
-      }
+    tabs.delete(targetId);
+    sessions.delete(current.sessionId);
+    clearTimeout(current.navigationTimer);
+    if (activeTargetId !== targetId) {
+      notifyTabs();
       return;
     }
-    if (event.sessionId !== current.sessionId) return;
+    activeTargetId = null;
+    surface.retarget();
+    const fallback = tabs.get(current.openerId) ?? [...tabs.values()].reduce((best, candidate) => !best || candidate.lastActive > best.lastActive ? candidate : best, null);
+    if (fallback) void activate(fallback);
+    else notifyTabs();
+  };
+  const attachTab = (targetId, openerId = null) => {
+    const known = tabs.get(targetId);
+    if (known) return Promise.resolve(known);
+    const pending = attaching.get(targetId);
+    if (pending) return pending;
+    const attached = (async () => {
+      const sessionId = await cdp.attach(targetId);
+      if (closed) throw new Error("Browser runtime is closed");
+      const current = createTab(targetId, sessionId, openerId);
+      current.compatibility = createNativeSelectCompatibility({
+        ensurePage: async () => pageOf(current),
+        reportError: (message) => addProblem(current, { level: "error", message, source: "browser" })
+      });
+      tabs.set(targetId, current);
+      sessions.set(sessionId, current);
+      await Promise.all([
+        cdp.sendSession(sessionId, "Page.enable"),
+        cdp.sendSession(sessionId, "Runtime.enable"),
+        cdp.sendSession(sessionId, "Log.enable")
+      ]);
+      await applyViewport(cdp, sessionId, runtime.viewport);
+      if (nativeSelectEnabled) await current.compatibility.setEnabled(true).catch(() => {
+      });
+      await refreshNavigation(current);
+      return current;
+    })().finally(() => attaching.delete(targetId));
+    attaching.set(targetId, attached);
+    return attached;
+  };
+  const handleTargetEvent = (event) => {
+    const info = event.params.targetInfo;
+    if (event.method === "Target.targetCreated" && isScopePage(info, contextId)) {
+      void attachTab(info.targetId, info.openerId ?? null).then(activate).catch(() => {
+      });
+    } else if (event.method === "Target.targetInfoChanged" && info) {
+      const current = tabs.get(info.targetId);
+      if (!current) return;
+      if (typeof info.url === "string") current.url = info.url;
+      if (typeof info.title === "string") current.title = info.title;
+    } else if (event.method === "Target.targetDestroyed") {
+      removeTab(event.params.targetId);
+    } else if (event.method === "Target.detachedFromTarget") {
+      const current = sessions.get(event.params.sessionId);
+      if (current) removeTab(current.targetId);
+    }
+  };
+  const handleEvent = (event) => {
+    if (!event.sessionId) {
+      handleTargetEvent(event);
+      return;
+    }
+    const current = sessions.get(event.sessionId);
+    if (!current) return;
     if (event.method === "Page.frameNavigated" && event.params.frame?.id) {
       if (!event.params.frame.parentId) {
         current.mainFrameId = event.params.frame.id;
         current.url = event.params.frame.url;
         void refreshNavigation(current);
       }
-      nativeSelectCompatibility?.frameNavigated(event.params.frame.id);
+      current.compatibility.frameNavigated(event.params.frame.id);
     }
     if (event.method === "Page.frameDetached" && event.params.frameId) {
-      nativeSelectCompatibility?.frameDetached(event.params.frameId);
+      current.compatibility.frameDetached(event.params.frameId);
     }
     if (event.method === "Page.navigatedWithinDocument" && event.params.frameId === current.mainFrameId) {
       current.url = event.params.url;
@@ -5792,12 +5918,12 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     if (event.method === "Runtime.consoleAPICalled") {
       if (event.params.type !== "warning" && event.params.type !== "error") return;
       const message = event.params.args?.map((arg) => arg.value ?? arg.description).filter(Boolean).join(" ");
-      addProblem({ level: event.params.type, message: boundedText(message), source: "console" });
+      addProblem(current, { level: event.params.type, message: boundedText(message), source: "console" });
     }
     if (event.method === "Log.entryAdded") {
       const entry = event.params.entry;
       if (entry?.level !== "warning" && entry?.level !== "error") return;
-      addProblem({ level: entry.level, message: boundedText(entry.text), source: boundedText(entry.source || "log", 120) });
+      addProblem(current, { level: entry.level, message: boundedText(entry.text), source: boundedText(entry.source || "log", 120) });
     }
   };
   const start = async () => {
@@ -5807,7 +5933,6 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       const [proxyAddress, processInfo] = await Promise.all([proxy.listen(), chrome.ensure()]);
       if (closed) throw new Error("Browser runtime is closed");
       nextCdp = await connectCdp(processInfo.endpoint);
-      await nextCdp.send("Target.setDiscoverTargets", { discover: true });
       const context = await nextCdp.send("Target.createBrowserContext", {
         proxyServer: proxyAddress,
         proxyBypassList: "<-loopback>"
@@ -5819,6 +5944,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       contextId = nextContextId;
       cdp.onClose(markDead);
       eventCleanup = cdp.onEvent(handleEvent);
+      await cdp.send("Target.setDiscoverTargets", { discover: true });
     } catch (error) {
       if (nextContextId && nextCdp?.isOpen) {
         await nextCdp.send("Target.disposeBrowserContext", { browserContextId: nextContextId }).catch(() => {
@@ -5838,54 +5964,56 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     });
     await startupPromise;
   };
-  const createPage = async () => {
+  const openTab = async () => {
     await ensureStarted();
-    if (tab) return pageOf(tab);
-    if (closed) throw new Error("Browser runtime is closed");
     const target = await cdp.send("Target.createTarget", { url: "about:blank", browserContextId: contextId });
     if (typeof target.targetId !== "string") throw new Error("Chrome returned no page target id");
-    const nextTargetId = target.targetId;
-    const nextSessionId = await cdp.attach(nextTargetId);
+    const current = await attachTab(target.targetId);
     if (closed) throw new Error("Browser runtime is closed");
-    tab = createTab(nextTargetId, nextSessionId);
-    await Promise.all([
-      cdp.sendSession(tab.sessionId, "Page.enable"),
-      cdp.sendSession(tab.sessionId, "Runtime.enable"),
-      cdp.sendSession(tab.sessionId, "Log.enable")
-    ]);
-    await applyViewport(cdp, tab.sessionId, runtime.viewport);
-    await refreshNavigation(tab);
-    return pageOf(tab);
+    await activate(current);
+    return current;
   };
   runtime.ensurePage = async () => {
     if (dead) throw dead;
-    if (tab) return pageOf(tab);
-    if (!pagePromise) pagePromise = createPage().catch((error) => {
-      tab = null;
-      throw error;
-    }).finally(() => {
+    const current = activeTab();
+    if (current) return pageOf(current);
+    if (!pagePromise) pagePromise = openTab().finally(() => {
       pagePromise = null;
     });
-    return pagePromise;
+    return pageOf(await pagePromise);
   };
-  nativeSelectCompatibility = createNativeSelectCompatibility({
-    ensurePage: runtime.ensurePage,
-    reportError: (message) => addProblem({ level: "error", message, source: "browser" })
-  });
-  Object.defineProperties(runtime, {
-    nativeSelectCompatibility: { get: () => nativeSelectCompatibility.enabled },
-    nativeSelectCompatibilityError: { get: () => nativeSelectCompatibility.error }
-  });
-  runtime.setNativeSelectCompatibility = (enabled) => nativeSelectCompatibility.setEnabled(enabled);
+  runtime.setNativeSelectCompatibility = async (enabled) => {
+    await runtime.ensurePage();
+    const active = activeTab();
+    await active.compatibility.setEnabled(enabled);
+    nativeSelectEnabled = enabled;
+    await Promise.allSettled([...tabs.values()].filter((current) => current !== active).map((current) => current.compatibility.setEnabled(enabled)));
+  };
   runtime.setViewport = async (viewport) => {
     const page = await runtime.ensurePage();
     await applyViewport(page.cdp, page.sessionId, viewport);
     runtime.viewport = viewport;
+    await Promise.allSettled([...tabs.values()].filter((current) => current.sessionId !== page.sessionId).map((current) => applyViewport(cdp, current.sessionId, viewport)));
   };
   runtime.command = async (name, parameters = {}) => {
     if (closed) throw new Error("Browser runtime is closed");
+    if (name === "tab-new") {
+      await openTab();
+      return;
+    }
+    if (name === "tab-select" || name === "tab-close") {
+      const selected = tabs.get(parameters.tabId);
+      if (!selected) throw new Error("That tab is no longer open");
+      if (name === "tab-select") {
+        await activate(selected);
+        return;
+      }
+      await cdp.send("Target.closeTarget", { targetId: selected.targetId });
+      removeTab(selected.targetId);
+      return;
+    }
     const page = await runtime.ensurePage();
-    const current = tab;
+    const current = activeTab();
     const send = (method, params) => page.cdp.sendSession(page.sessionId, method, params);
     if (name === "navigate") {
       const url = new URL(parameters.url);
@@ -5909,7 +6037,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     } else {
       throw new Error(`Unsupported browser command: ${name}`);
     }
-    if (current) await refreshNavigation(current);
+    await refreshNavigation(current);
   };
   const execute = createBrowserActions(runtime);
   const surface = createSurface(runtime);
@@ -5928,9 +6056,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       runtime.agentActive = true;
       try {
         const data = await execute(action, parameters, signal);
-        await nativeSelectCompatibility.whenIdle();
-        if (tab && typeof data?.title === "string") tab.title = data.title;
-        if (tab && typeof data?.url === "string" && data.url) tab.url = data.url;
+        await activeTab()?.compatibility.whenIdle();
         return data;
       } finally {
         runtime.agentActive = false;
@@ -5948,17 +6074,22 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     deathListeners.add(listener);
     return () => deathListeners.delete(listener);
   };
+  runtime.onTabsChanged = (listener) => {
+    tabListeners.add(listener);
+    return () => tabListeners.delete(listener);
+  };
   runtime.close = async () => {
     if (closed) return;
     closed = true;
     shutdownController.abort(new DOMException("Browser runtime stopped", "AbortError"));
     await surface.close();
-    await nativeSelectCompatibility.close();
+    await Promise.allSettled([...tabs.values()].map((current) => current.compatibility.close()));
     await pagePromise?.catch(() => {
     });
     await actionQueue.catch(() => {
     });
     eventCleanup?.();
+    for (const current of tabs.values()) clearTimeout(current.navigationTimer);
     if (contextId && cdp?.isOpen) {
       await cdp.send("Target.disposeBrowserContext", { browserContextId: contextId }).catch(() => {
       });
@@ -5967,8 +6098,9 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     await proxy.close();
     await chrome.close();
     contextId = null;
-    if (tab?.navigationTimer) clearTimeout(tab.navigationTimer);
-    tab = null;
+    tabs.clear();
+    sessions.clear();
+    activeTargetId = null;
   };
   return runtime;
 };
@@ -6045,7 +6177,7 @@ var generationProperty = (value) => Number.isInteger(value?.generation) && value
 var dockErrorStatus = (error) => {
   const message = errorMessage(error);
   if (/surface is idle|browser view changed/i.test(message)) return 409;
-  if (/no browser scope|no longer exists/i.test(message)) return 404;
+  if (/no browser scope|no longer exists|no longer open/i.test(message)) return 404;
   return 400;
 };
 var createService = ({ runtime, token, port = 0 }) => {
@@ -6106,6 +6238,23 @@ var createService = ({ runtime, token, port = 0 }) => {
         else if (url.pathname === "/browser/forward") await runtime.forward(generation);
         else if (url.pathname === "/browser/stop") await runtime.stop(generation);
         else await runtime.reload(generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+    const tabOperation = request.method === "POST" ? /^\/browser\/tabs\/(new|select|close)$/.exec(url.pathname)?.[1] : null;
+    if (tabOperation) {
+      const body = await readObjectBody(request);
+      const generation = generationProperty(body);
+      const tabId = stringProperty(body, "tabId");
+      if (generation === null || tabOperation !== "new" && !tabId) {
+        return text(response, 400, "generation is required, and tabId to select or close a tab\n");
+      }
+      try {
+        if (tabOperation === "new") await runtime.newTab(generation);
+        else if (tabOperation === "select") await runtime.selectTab(tabId, generation);
+        else await runtime.closeTab(tabId, generation);
         return json(response, 200, runtime.state());
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });

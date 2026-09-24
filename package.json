@@ -21,7 +21,7 @@
         "icon": "computer",
         "entry": "panel/index.html",
         "dock": "top",
-        "size": 76
+        "size": 104
       },
       "service": {
         "entry": "service/main.js",

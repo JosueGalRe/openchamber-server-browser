@@ -29,6 +29,9 @@ const createRuntime = () => {
     async selectScope(id, generation) { calls.push(['select', id, generation]); },
     async navigate(url, generation) { calls.push(['navigate', url, generation]); },
     async reload(generation) { calls.push(['reload', generation]); },
+    async newTab(generation) { calls.push(['tab-new', generation]); },
+    async selectTab(tabId, generation) { calls.push(['tab-select', tabId, generation]); },
+    async closeTab(tabId, generation) { calls.push(['tab-close', tabId, generation]); },
     async stop(generation) { calls.push(['stop', generation]); },
     async back(generation) { calls.push(['back', generation]); },
     async forward(generation) { calls.push(['forward', generation]); },
@@ -268,4 +271,23 @@ test('answers no content when nothing was copied so the viewer keeps its clipboa
 
   assert.equal(clipboard.status, 204);
   assert.equal(await clipboard.text(), '');
+});
+
+test('dock tab routes validate their fields and reach the manager', async (context) => {
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+  const post = (path, body) => fetch(`${fixture.origin}${path}`, {
+    method: 'POST', headers: authorization, body: JSON.stringify(body),
+  });
+
+  const missingTab = await post('/browser/tabs/select', { generation: 1 });
+  const unknown = await post('/browser/tabs/move', { generation: 1, tabId: 'tab-2' });
+  const created = await post('/browser/tabs/new', { generation: 1 });
+  const selected = await post('/browser/tabs/select', { generation: 1, tabId: 'tab-2' });
+  const closed = await post('/browser/tabs/close', { generation: 1, tabId: 'tab-2' });
+
+  assert.equal(missingTab.status, 400);
+  assert.equal(unknown.status, 404);
+  assert.deepEqual([created.status, selected.status, closed.status], [200, 200, 200]);
+  assert.deepEqual(fixture.runtime.calls, [['tab-new', 1], ['tab-select', 'tab-2', 1], ['tab-close', 'tab-2', 1]]);
 });

@@ -47,6 +47,15 @@ const createRuntimeFactory = () => {
       die() {
         for (const listener of runtime.deathListeners) listener(new Error('Chrome exited'));
       },
+      tabs: [],
+      tabListeners: new Set(),
+      onTabsChanged(listener) {
+        runtime.tabListeners.add(listener);
+        return () => runtime.tabListeners.delete(listener);
+      },
+      changeTabs() {
+        for (const listener of runtime.tabListeners) listener();
+      },
     };
     runtimes.set(scope.sessionId, runtime);
     return runtime;
@@ -388,4 +397,35 @@ test('discards a scope whose Chrome died and starts a fresh one on the next acti
   assert.equal(recreated.scopes.length, 1);
   assert.equal(recreated.notice, null);
   assert.equal(recreated.selectedScopeId, recreated.scopes[0].id);
+});
+
+test('guards tab commands and treats a tab switch in the visible scope as a view change', async () => {
+  // Given two scopes with the first one visible.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_two'));
+  const generation = manager.state().generation;
+
+  // When the dock opens, selects, and closes tabs, then each command reaches the visible runtime.
+  await manager.newTab(generation);
+  await manager.selectTab('tab-2', generation);
+  await manager.closeTab('tab-2', generation);
+  assert.deepEqual(runtimes.get('ses_one').calls.filter(([kind]) => kind === 'command'), [
+    ['command', 'tab-new', {}],
+    ['command', 'tab-select', { tabId: 'tab-2' }],
+    ['command', 'tab-close', { tabId: 'tab-2' }],
+  ]);
+
+  // When a background scope switches tabs, then the visible view is unchanged.
+  runtimes.get('ses_two').changeTabs();
+  assert.equal(manager.state().generation, generation);
+
+  // When the visible scope switches tabs, then commands captured before it are refused.
+  runtimes.get('ses_one').changeTabs();
+  await assert.rejects(manager.newTab(generation), /view changed/i);
+
+  // When a viewer holds control, then tab commands wait for the surface to be idle.
+  manager.surfaceControl('user');
+  await assert.rejects(manager.newTab(manager.state().generation), /idle/i);
 });

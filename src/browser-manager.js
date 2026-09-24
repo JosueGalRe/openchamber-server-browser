@@ -92,6 +92,10 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
       };
       await removeScope(entry);
     }).catch(() => {}));
+    // A tab switch changes what the dock commands act on, like a scope switch.
+    entry.runtime.onTabsChanged(() => {
+      if (selectedScopeId === entry.id) viewGeneration += 1;
+    });
     if (!selectedScopeId) select(entry);
     return entry;
   };
@@ -152,6 +156,7 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
           canGoForward: entry.runtime.canGoForward === true,
           nativeSelectCompatibility: entry.runtime.nativeSelectCompatibility === true,
           nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? '',
+          tabs: entry.runtime.tabs ?? [],
         })),
       };
     },
@@ -182,6 +187,15 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
     },
     stop(expectedGeneration) {
       return dockCommand('stop', {}, expectedGeneration);
+    },
+    newTab(expectedGeneration) {
+      return dockCommand('tab-new', {}, expectedGeneration);
+    },
+    selectTab(tabId, expectedGeneration) {
+      return dockCommand('tab-select', { tabId }, expectedGeneration);
+    },
+    closeTab(tabId, expectedGeneration) {
+      return dockCommand('tab-close', { tabId }, expectedGeneration);
     },
     setNativeSelectCompatibility(enabled, expectedGeneration) {
       return enqueue(async () => {
