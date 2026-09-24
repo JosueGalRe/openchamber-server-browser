@@ -13,6 +13,7 @@ export const connectCdp = async (webSocketDebuggerUrl, {
   });
   const pending = new Map();
   const listeners = new Set();
+  const closeListeners = new Set();
   let nextId = 1;
   let open = false;
 
@@ -28,6 +29,11 @@ export const connectCdp = async (webSocketDebuggerUrl, {
     if (!open && pending.size === 0) return;
     open = false;
     rejectPending(reason);
+    for (const listener of closeListeners) {
+      try {
+        listener(reason);
+      } catch {}
+    }
   };
 
   const sendCommand = (method, params = {}, sessionId) => {
@@ -121,6 +127,10 @@ export const connectCdp = async (webSocketDebuggerUrl, {
     onEvent(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    onClose(listener) {
+      closeListeners.add(listener);
+      return () => closeListeners.delete(listener);
     },
     close() {
       if (!open) return;

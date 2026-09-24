@@ -25,6 +25,16 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
   let actionQueue = Promise.resolve();
   let nativeSelectCompatibility = null;
   let closed = false;
+  let dead = null;
+  const deathListeners = new Set();
+
+  const markDead = () => {
+    if (closed || dead) return;
+    dead = new Error('Chrome for this chat stopped unexpectedly; retry the action to start a new browser');
+    shutdownController.abort(dead);
+    for (const listener of deathListeners) listener(dead);
+  };
+  chrome.onExit(markDead);
 
   const runtime = {
     viewport: viewportForMode('desktop'),
@@ -91,6 +101,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
       if (closed) throw new Error('Browser runtime is closed');
       cdp = nextCdp;
       contextId = nextContextId;
+      cdp.onClose(markDead);
     } catch (error) {
       if (nextContextId && nextCdp?.isOpen) {
         await nextCdp.send('Target.disposeBrowserContext', { browserContextId: nextContextId }).catch(() => {});
@@ -102,6 +113,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
 
   const ensureStarted = async () => {
     if (closed) throw new Error('Browser runtime is closed');
+    if (dead) throw dead;
     if (cdp?.isOpen && contextId) return;
     if (!startupPromise) startupPromise = start().catch((error) => {
       startupPromise = null;
@@ -132,6 +144,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
   };
 
   runtime.ensurePage = async () => {
+    if (dead) throw dead;
     if (targetId && sessionId) return { cdp, contextId, targetId, sessionId };
     if (!pagePromise) pagePromise = createPage().catch((error) => {
       targetId = null;
@@ -193,6 +206,10 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
   runtime.surfaceControl = (controller) => surface.control(controller);
   runtime.surfaceResize = (size) => surface.resize(size);
   runtime.surfaceClipboard = () => surface.clipboard();
+  runtime.onDead = (listener) => {
+    deathListeners.add(listener);
+    return () => deathListeners.delete(listener);
+  };
   runtime.close = async () => {
     if (closed) return;
     closed = true;

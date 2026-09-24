@@ -71,6 +71,7 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
   let profileDir = null;
   let result = null;
   let closed = false;
+  const exitListeners = new Set();
 
   const removeProfile = async () => {
     if (!profileDir) return;
@@ -119,7 +120,9 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
     let exitError = null;
     child.once('error', (error) => { exitError = new Error(`Chrome failed to spawn: ${error.message}`); });
     child.once('exit', (code, signal) => {
-      if (!closed && !result) exitError = new Error(`Chrome exited during startup (code ${code ?? 'null'}, signal ${signal ?? 'none'})`);
+      if (closed) return;
+      if (!result) exitError = new Error(`Chrome exited during startup (code ${code ?? 'null'}, signal ${signal ?? 'none'})`);
+      else for (const listener of exitListeners) listener({ code, signal });
     });
 
     const deadline = Date.now() + startupTimeoutMs;
@@ -164,6 +167,10 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
       await removeProfile();
       child = null;
       result = null;
+    },
+    onExit(listener) {
+      exitListeners.add(listener);
+      return () => exitListeners.delete(listener);
     },
     get process() {
       return child;

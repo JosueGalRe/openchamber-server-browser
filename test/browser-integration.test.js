@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
 import test from 'node:test';
+import { createBrowserManager } from '../src/browser-manager.js';
 import { createBrowserRuntime } from '../src/browser-runtime.js';
 import { createChromeProcess, resolveChromePath } from '../src/chrome-process.js';
 
@@ -13,6 +14,14 @@ const listen = (server) => new Promise((resolve, reject) => {
 });
 
 const close = (server) => new Promise((resolve) => server.close(resolve));
+
+const waitFor = async (predicate, timeoutMs = 5_000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('Timed out waiting for the condition');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+};
 
 const html = (body, title) => `<!doctype html>
 <html><head><title>${title}</title><style>
@@ -287,4 +296,33 @@ test('copies the focused selection through shadow roots and same-origin frames b
   assert.equal(await runtime.surfaceClipboard(), 'frame');
   await select('const p = document.querySelector("#secret"); p.focus(); p.select()');
   assert.equal(await runtime.surfaceClipboard(), '');
+});
+
+test('replaces a scope whose Chrome stopped with a fresh browser on the next action', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a chat whose scope runs a real Chrome.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtimes = [];
+  const manager = createBrowserManager({
+    createRuntime: () => {
+      const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+      runtimes.push(runtime);
+      return runtime;
+    },
+  });
+  context.after(() => manager.close());
+  const chat = { directory: '/repo', sessionId: 'ses_crash' };
+  await manager.perform('browser.open', { url: `${web.origin}/` }, undefined, chat);
+  const page = await runtimes[0].ensurePage();
+
+  // When that Chrome exits.
+  await page.cdp.send('Browser.close').catch(() => {});
+  await waitFor(() => manager.state().notice !== null);
+
+  // Then the old runtime refuses work, and the chat's next action starts a new browser.
+  assert.deepEqual(manager.state().scopes, []);
+  await assert.rejects(runtimes[0].perform('browser.snapshot', {}), /stopped unexpectedly|closed/);
+  const reopened = await manager.perform('browser.open', { url: `${web.origin}/next` }, undefined, chat);
+  assert.equal(reopened.title, 'Next');
+  assert.equal(runtimes.length, 2);
 });

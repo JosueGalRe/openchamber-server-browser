@@ -3661,6 +3661,7 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
   const selectionWaiters = /* @__PURE__ */ new Set();
   let surfaceViewport = null;
   let closed = false;
+  let notice = null;
   const enqueue = (operation) => {
     const pending = operationQueue.catch(() => {
     }).then(operation);
@@ -3683,6 +3684,16 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
     viewGeneration += 1;
     for (const waiter of selectionWaiters) finishSelectionWaiter(waiter);
   };
+  const removeScope = (entry) => {
+    scopes.delete(entry.id);
+    if (selectedScopeId === entry.id) {
+      for (const pending of frameControllers) pending.abort();
+      selectedScopeId = null;
+      frameState = null;
+      viewGeneration += 1;
+    }
+    return entry.runtime.close();
+  };
   const ensureScope = async (context) => {
     if (!knownScope(context)) {
       throw new Error("Browser actions require both project and chat context; this host did not provide them");
@@ -3702,6 +3713,17 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
       runtime: createRuntime(context)
     };
     scopes.set(id, entry);
+    if (notice && scopeId(notice) === id) notice = null;
+    entry.runtime.onDead(() => enqueue(async () => {
+      if (scopes.get(id) !== entry) return;
+      notice = {
+        directory: entry.directory,
+        sessionId: entry.sessionId,
+        message: "Chrome stopped unexpectedly. The next browser action in this chat starts a new browser."
+      };
+      await removeScope(entry);
+    }).catch(() => {
+    }));
     if (!selectedScopeId) select(entry);
     return entry;
   };
@@ -3746,6 +3768,7 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
         controller,
         selectedScopeId,
         generation: viewGeneration,
+        notice: notice ? { ...notice } : null,
         scopes: Array.from(scopes.values(), (entry) => ({
           id: entry.id,
           directory: entry.directory,
@@ -3768,6 +3791,7 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
         requireIdleSurface();
         requireGeneration(expectedGeneration);
         select(entry);
+        notice = null;
       });
     },
     navigate(url, expectedGeneration) {
@@ -4358,6 +4382,7 @@ var connectCdp = async (webSocketDebuggerUrl, {
   });
   const pending = /* @__PURE__ */ new Map();
   const listeners = /* @__PURE__ */ new Set();
+  const closeListeners = /* @__PURE__ */ new Set();
   let nextId = 1;
   let open = false;
   const rejectPending = (reason) => {
@@ -4371,6 +4396,12 @@ var connectCdp = async (webSocketDebuggerUrl, {
     if (!open && pending.size === 0) return;
     open = false;
     rejectPending(reason);
+    for (const listener of closeListeners) {
+      try {
+        listener(reason);
+      } catch {
+      }
+    }
   };
   const sendCommand = (method, params = {}, sessionId) => {
     if (!open || socket.readyState !== import_websocket.default.OPEN) {
@@ -4465,6 +4496,10 @@ var connectCdp = async (webSocketDebuggerUrl, {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    onClose(listener) {
+      closeListeners.add(listener);
+      return () => closeListeners.delete(listener);
+    },
     close() {
       if (!open) return;
       disconnect("connection closed by client");
@@ -4543,6 +4578,7 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
   let profileDir = null;
   let result = null;
   let closed = false;
+  const exitListeners = /* @__PURE__ */ new Set();
   const removeProfile = async () => {
     if (!profileDir) return;
     const directory = profileDir;
@@ -4595,7 +4631,9 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
       exitError = new Error(`Chrome failed to spawn: ${error.message}`);
     });
     child.once("exit", (code, signal) => {
-      if (!closed && !result) exitError = new Error(`Chrome exited during startup (code ${code ?? "null"}, signal ${signal ?? "none"})`);
+      if (closed) return;
+      if (!result) exitError = new Error(`Chrome exited during startup (code ${code ?? "null"}, signal ${signal ?? "none"})`);
+      else for (const listener of exitListeners) listener({ code, signal });
     });
     const deadline = Date.now() + startupTimeoutMs;
     const activePortPath = path.join(profileDir, "DevToolsActivePort");
@@ -4640,6 +4678,10 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
       await removeProfile();
       child = null;
       result = null;
+    },
+    onExit(listener) {
+      exitListeners.add(listener);
+      return () => exitListeners.delete(listener);
     },
     get process() {
       return child;
@@ -5636,6 +5678,15 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
   let actionQueue = Promise.resolve();
   let nativeSelectCompatibility = null;
   let closed = false;
+  let dead = null;
+  const deathListeners = /* @__PURE__ */ new Set();
+  const markDead = () => {
+    if (closed || dead) return;
+    dead = new Error("Chrome for this chat stopped unexpectedly; retry the action to start a new browser");
+    shutdownController.abort(dead);
+    for (const listener of deathListeners) listener(dead);
+  };
+  chrome.onExit(markDead);
   const runtime = {
     viewport: viewportForMode("desktop"),
     controller: "none",
@@ -5698,6 +5749,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       if (closed) throw new Error("Browser runtime is closed");
       cdp = nextCdp;
       contextId = nextContextId;
+      cdp.onClose(markDead);
     } catch (error) {
       if (nextContextId && nextCdp?.isOpen) {
         await nextCdp.send("Target.disposeBrowserContext", { browserContextId: nextContextId }).catch(() => {
@@ -5709,6 +5761,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
   };
   const ensureStarted = async () => {
     if (closed) throw new Error("Browser runtime is closed");
+    if (dead) throw dead;
     if (cdp?.isOpen && contextId) return;
     if (!startupPromise) startupPromise = start().catch((error) => {
       startupPromise = null;
@@ -5737,6 +5790,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     return { cdp, contextId, targetId, sessionId };
   };
   runtime.ensurePage = async () => {
+    if (dead) throw dead;
     if (targetId && sessionId) return { cdp, contextId, targetId, sessionId };
     if (!pagePromise) pagePromise = createPage().catch((error) => {
       targetId = null;
@@ -5794,6 +5848,10 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
   runtime.surfaceControl = (controller) => surface.control(controller);
   runtime.surfaceResize = (size) => surface.resize(size);
   runtime.surfaceClipboard = () => surface.clipboard();
+  runtime.onDead = (listener) => {
+    deathListeners.add(listener);
+    return () => deathListeners.delete(listener);
+  };
   runtime.close = async () => {
     if (closed) return;
     closed = true;

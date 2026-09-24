@@ -35,6 +35,14 @@ const createRuntimeFactory = () => {
         runtime.nativeSelectCompatibilityError = '';
       },
       async close() { calls.push(['close']); },
+      deathListeners: new Set(),
+      onDead(listener) {
+        runtime.deathListeners.add(listener);
+        return () => runtime.deathListeners.delete(listener);
+      },
+      die() {
+        for (const listener of runtime.deathListeners) listener(new Error('Chrome exited'));
+      },
     };
     runtimes.set(scope.sessionId, runtime);
     return runtime;
@@ -344,4 +352,35 @@ test('rolls back native select compatibility when surface control changes during
     ['select-compatibility', true],
     ['select-compatibility', false],
   ]);
+});
+
+
+test('discards a scope whose Chrome died and starts a fresh one on the next action', async () => {
+  // Given a visible scope.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.open', { url: 'https://one.test' }, undefined, context('/repo', 'ses_one'));
+  const first = runtimes.get('ses_one');
+  const generation = manager.state().generation;
+
+  // When its Chrome dies.
+  first.die();
+  await manager.surfaceControl('none');
+
+  // Then the scope, its selection, and its runtime are gone, and the dock learns why.
+  const afterDeath = manager.state();
+  assert.deepEqual(afterDeath.scopes, []);
+  assert.equal(afterDeath.selectedScopeId, null);
+  assert.ok(afterDeath.generation > generation);
+  assert.equal(afterDeath.notice.sessionId, 'ses_one');
+  assert.match(afterDeath.notice.message, /stopped unexpectedly/);
+  assert.deepEqual(first.calls.at(-1), ['close']);
+
+  // When the same chat acts again, then a fresh runtime serves it and becomes visible.
+  await manager.perform('browser.open', { url: 'https://two.test' }, undefined, context('/repo', 'ses_one'));
+  const recreated = manager.state();
+  assert.notEqual(runtimes.get('ses_one'), first);
+  assert.equal(recreated.scopes.length, 1);
+  assert.equal(recreated.notice, null);
+  assert.equal(recreated.selectedScopeId, recreated.scopes[0].id);
 });

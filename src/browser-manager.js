@@ -25,6 +25,7 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
   const selectionWaiters = new Set();
   let surfaceViewport = null;
   let closed = false;
+  let notice = null;
 
   const enqueue = (operation) => {
     const pending = operationQueue.catch(() => {}).then(operation);
@@ -51,6 +52,17 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
     for (const waiter of selectionWaiters) finishSelectionWaiter(waiter);
   };
 
+  const removeScope = (entry) => {
+    scopes.delete(entry.id);
+    if (selectedScopeId === entry.id) {
+      for (const pending of frameControllers) pending.abort();
+      selectedScopeId = null;
+      frameState = null;
+      viewGeneration += 1;
+    }
+    return entry.runtime.close();
+  };
+
   const ensureScope = async (context) => {
     if (!knownScope(context)) {
       throw new Error('Browser actions require both project and chat context; this host did not provide them');
@@ -70,6 +82,16 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
       runtime: createRuntime(context),
     };
     scopes.set(id, entry);
+    if (notice && scopeId(notice) === id) notice = null;
+    entry.runtime.onDead(() => enqueue(async () => {
+      if (scopes.get(id) !== entry) return;
+      notice = {
+        directory: entry.directory,
+        sessionId: entry.sessionId,
+        message: 'Chrome stopped unexpectedly. The next browser action in this chat starts a new browser.',
+      };
+      await removeScope(entry);
+    }).catch(() => {}));
     if (!selectedScopeId) select(entry);
     return entry;
   };
@@ -119,6 +141,7 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
         controller,
         selectedScopeId,
         generation: viewGeneration,
+        notice: notice ? { ...notice } : null,
         scopes: Array.from(scopes.values(), (entry) => ({
           id: entry.id,
           directory: entry.directory,
@@ -141,6 +164,7 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
         requireIdleSurface();
         requireGeneration(expectedGeneration);
         select(entry);
+        notice = null;
       });
     },
     navigate(url, expectedGeneration) {

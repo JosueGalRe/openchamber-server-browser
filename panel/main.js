@@ -1468,9 +1468,10 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     let statusState = "ready";
     let statusMessage = "";
     let statusTitle = "Click or type in the page to take control. Enter an address and press Enter to navigate.";
-    if (commandError || serviceError || selected?.nativeSelectCompatibilityError) {
+    const notice = state?.notice ? `${scopeLabel(state.notice)}: ${state.notice.message}` : null;
+    if (commandError || serviceError || notice || selected?.nativeSelectCompatibilityError) {
       statusState = "error";
-      statusMessage = commandError ?? serviceError ?? selected.nativeSelectCompatibilityError;
+      statusMessage = commandError ?? serviceError ?? notice ?? selected.nativeSelectCompatibilityError;
       statusTitle = statusMessage;
     } else if (!selected) {
       statusState = "waiting";
