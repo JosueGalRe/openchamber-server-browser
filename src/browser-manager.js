@@ -226,7 +226,7 @@ export const createBrowserManager = ({
         }
       });
     },
-    state({ viewer = null } = {}) {
+    state({ viewer = null } = {}, { problems = false } = {}) {
       return {
         controller,
         // Whether the viewer asking holds control, so its dock can act.
@@ -235,6 +235,8 @@ export const createBrowserManager = ({
         generation: viewGeneration,
         notice: notice ? { ...notice } : null,
         copy: selected()?.runtime.copyRequest ?? null,
+        // The visible tab's errors and warnings, only for a dock whose console is open.
+        ...(problems ? { consoleProblems: selected()?.runtime.consoleProblems?.() ?? [] } : {}),
         scopes: Array.from(scopes.values(), (entry) => ({
           id: entry.id,
           directory: entry.directory,

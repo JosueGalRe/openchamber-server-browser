@@ -220,7 +220,7 @@ export const createService = ({ runtime, token, port = 0 }) => {
     const access = dockAccess(request);
 
     if (request.method === 'GET' && url.pathname === '/browser/state') {
-      return json(response, 200, runtime.state(access));
+      return json(response, 200, runtime.state(access, { problems: url.searchParams.get('problems') === '1' }));
     }
 
     if (request.method === 'POST' && url.pathname === '/browser/scope') {

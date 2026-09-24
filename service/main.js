@@ -4411,7 +4411,7 @@ var createBrowserManager = ({
         }
       });
     },
-    state({ viewer = null } = {}) {
+    state({ viewer = null } = {}, { problems = false } = {}) {
       return {
         controller,
         // Whether the viewer asking holds control, so its dock can act.
@@ -4420,6 +4420,8 @@ var createBrowserManager = ({
         generation: viewGeneration,
         notice: notice ? { ...notice } : null,
         copy: selected()?.runtime.copyRequest ?? null,
+        // The visible tab's errors and warnings, only for a dock whose console is open.
+        ...problems ? { consoleProblems: selected()?.runtime.consoleProblems?.() ?? [] } : {},
         scopes: Array.from(scopes.values(), (entry) => ({
           id: entry.id,
           directory: entry.directory,
@@ -7584,7 +7586,7 @@ var createService = ({ runtime, token, port = 0 }) => {
     }
     const access = dockAccess(request);
     if (request.method === "GET" && url.pathname === "/browser/state") {
-      return json(response, 200, runtime.state(access));
+      return json(response, 200, runtime.state(access, { problems: url.searchParams.get("problems") === "1" }));
     }
     if (request.method === "POST" && url.pathname === "/browser/scope") {
       const body = await readObjectBody(request);

@@ -518,6 +518,19 @@ test('works out a panel measured before the dock reported its pixel ratio once t
   assert.deepEqual(runtime.calls.at(-1), ['resize', { width: 700, height: 500 }]);
 });
 
+test('lists the visible tab\'s errors and warnings only for a dock whose console is open', async () => {
+  // Given a manager with no browser yet, and then a visible scope whose page logged an error.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  assert.deepEqual(manager.state({}, { problems: true }).consoleProblems, []);
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  runtimes.get('ses_one').consoleProblems = () => [{ level: 'error', message: 'boom', source: 'console' }];
+
+  // When a dock asks with its console open, then the list comes along; otherwise it stays out of the poll.
+  assert.deepEqual(manager.state({}, { problems: true }).consoleProblems, [{ level: 'error', message: 'boom', source: 'console' }]);
+  assert.equal('consoleProblems' in manager.state(), false);
+});
+
 test('hands the viewer theme to surface input and reports a pending copy from the visible scope', async () => {
   const { factory, runtimes } = createRuntimeFactory();
   const manager = createBrowserManager({ createRuntime: factory });

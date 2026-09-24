@@ -177,15 +177,75 @@ setIcon(cancelSize, (svg) => {
   addLine(svg, { x1: '6', y1: '6', x2: '18', y2: '18' });
   addLine(svg, { x1: '18', y1: '6', x2: '6', y2: '18' });
 });
-// Console problems on the visible page; the full view is the Browser inspector page.
-const problems = document.createElement('span');
+// Console problems on the visible page. The badge opens a compact list under
+// the address bar and grows the dock; the Browser inspector page keeps the
+// full console and network.
+const DOCK_HEIGHT = 104;
+const CONSOLE_HEIGHT = 132;
+let consoleOpen = false;
+let consoleEntries = null;
+const problems = document.createElement('button');
+problems.type = 'button';
 problems.className = 'problems';
 problems.hidden = true;
+problems.setAttribute('aria-controls', 'console');
+problems.setAttribute('aria-expanded', 'false');
 const errorCount = document.createElement('span');
 errorCount.className = 'problem-errors';
 const warningCount = document.createElement('span');
 warningCount.className = 'problem-warnings';
 problems.append(errorCount, warningCount);
+
+const consolePanel = document.createElement('section');
+consolePanel.id = 'console';
+consolePanel.className = 'console';
+consolePanel.hidden = true;
+consolePanel.setAttribute('aria-label', 'Page errors and warnings');
+const consoleHeader = document.createElement('p');
+consoleHeader.className = 'console-header';
+consoleHeader.textContent = 'Errors and warnings since this page loaded. Browser inspector, under Extension pages, has the full console and network.';
+const consoleList = document.createElement('ol');
+consoleList.className = 'console-list';
+consoleList.tabIndex = 0;
+consoleList.setAttribute('role', 'log');
+consoleList.setAttribute('aria-label', 'Errors and warnings since this page loaded');
+consolePanel.append(consoleHeader, consoleList);
+
+let consoleSignature = '';
+const renderConsole = () => {
+  root.classList.toggle('console-open', consoleOpen);
+  consolePanel.hidden = !consoleOpen;
+  const signature = JSON.stringify(consoleEntries);
+  if (signature === consoleSignature) return;
+  consoleSignature = signature;
+  // Stay on the newest entry unless the reader scrolled up.
+  const atEnd = consoleList.scrollTop + consoleList.clientHeight >= consoleList.scrollHeight - 4;
+  const rows = (consoleEntries ?? []).map((entry) => {
+    const row = document.createElement('li');
+    row.className = 'console-row';
+    row.dataset.level = entry.level;
+    const level = document.createElement('span');
+    level.className = 'console-level';
+    level.textContent = entry.level === 'error' ? 'Error' : 'Warning';
+    const message = document.createElement('span');
+    message.className = 'console-message';
+    message.textContent = entry.message;
+    message.title = entry.message;
+    const source = document.createElement('span');
+    source.className = 'console-source';
+    source.textContent = entry.source;
+    row.append(level, message, source);
+    return row;
+  });
+  if (consoleEntries?.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'console-empty';
+    empty.textContent = 'No errors or warnings since this page loaded.';
+    rows.push(empty);
+  }
+  consoleList.replaceChildren(...rows);
+  if (atEnd) consoleList.scrollTop = consoleList.scrollHeight;
+};
 
 const customSize = document.createElement('form');
 customSize.className = 'custom-size';
@@ -297,7 +357,7 @@ pageTabsRow.append(pageTabs, newTab);
 const navigationRow = document.createElement('div');
 navigationRow.className = 'row navigation-row';
 navigationRow.append(back, forward, reload, address, customSize, problems, viewportSelect, rotate, mobileToggle, selectCompatibility);
-root.append(scopeRow, pageTabsRow, navigationRow);
+root.append(scopeRow, pageTabsRow, navigationRow, consolePanel);
 
 let state = null;
 let requestPending = false;
@@ -397,12 +457,15 @@ const render = () => {
   selectCompatibility.setAttribute('aria-label', compatibilityLabel);
 
   const { errors = 0, warnings = 0 } = selected?.problems ?? {};
-  problems.hidden = errors + warnings === 0;
-  errorCount.textContent = errors ? `✕ ${errors}` : '';
+  // An open console keeps its toggle even once the page has no problems.
+  problems.hidden = errors + warnings === 0 && !consoleOpen;
+  errorCount.textContent = errors || !warnings ? `✕ ${errors}` : '';
   warningCount.textContent = warnings ? `⚠ ${warnings}` : '';
-  const problemsLabel = `${errors} ${errors === 1 ? 'error' : 'errors'} and ${warnings} ${warnings === 1 ? 'warning' : 'warnings'} in this page's console. Open Browser inspector from Extension pages to see them.`;
+  problems.setAttribute('aria-expanded', String(consoleOpen));
+  const problemsLabel = `${errors} ${errors === 1 ? 'error' : 'errors'} and ${warnings} ${warnings === 1 ? 'warning' : 'warnings'} on this page. ${consoleOpen ? 'Hide the list.' : 'Show them under the address bar.'}`;
   problems.title = problemsLabel;
   problems.setAttribute('aria-label', problemsLabel);
+  renderConsole();
 
   const viewport = selected?.viewport ?? null;
   const choice = viewportChoice(viewport);
@@ -505,9 +568,11 @@ const refresh = async () => {
   if (refreshPending || requestPending) return;
   refreshPending = true;
   try {
-    const result = await host.serviceRequest({ method: 'GET', path: '/browser/state' });
+    const result = await host.serviceRequest({ method: 'GET', path: '/browser/state', ...(consoleOpen ? { query: { problems: '1' } } : {}) });
     if (result.status === 200) {
       state = parseState(result.body);
+      // Command answers carry no list, so the console keeps the last one it got.
+      if (consoleOpen && Array.isArray(state.consoleProblems)) consoleEntries = state.consoleProblems;
       serviceError = null;
       syncViewer();
       offerCopy(state.copy);
@@ -521,6 +586,14 @@ const refresh = async () => {
     refreshPending = false;
   }
 };
+
+problems.addEventListener('click', () => {
+  consoleOpen = !consoleOpen;
+  consoleEntries = null;
+  void host.setHeight(consoleOpen ? DOCK_HEIGHT + CONSOLE_HEIGHT : DOCK_HEIGHT).catch(() => {});
+  render();
+  void refresh();
+});
 
 back.addEventListener('click', () => {
   if (!state) return;
@@ -735,6 +808,8 @@ host.onReady((context) => {
   };
   if (mounted) return;
   mounted = true;
+  // A reloaded dock starts closed, whatever height the host kept for it.
+  void host.setHeight(DOCK_HEIGHT).catch(() => {});
   render();
   void refresh();
   window.setInterval(() => { void refresh(); }, 1_000);

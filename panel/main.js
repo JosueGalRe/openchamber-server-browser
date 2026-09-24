@@ -1510,14 +1510,69 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     addLine(svg, { x1: "6", y1: "6", x2: "18", y2: "18" });
     addLine(svg, { x1: "18", y1: "6", x2: "6", y2: "18" });
   });
-  var problems = document.createElement("span");
+  var DOCK_HEIGHT = 104;
+  var CONSOLE_HEIGHT = 132;
+  var consoleOpen = false;
+  var consoleEntries = null;
+  var problems = document.createElement("button");
+  problems.type = "button";
   problems.className = "problems";
   problems.hidden = true;
+  problems.setAttribute("aria-controls", "console");
+  problems.setAttribute("aria-expanded", "false");
   var errorCount = document.createElement("span");
   errorCount.className = "problem-errors";
   var warningCount = document.createElement("span");
   warningCount.className = "problem-warnings";
   problems.append(errorCount, warningCount);
+  var consolePanel = document.createElement("section");
+  consolePanel.id = "console";
+  consolePanel.className = "console";
+  consolePanel.hidden = true;
+  consolePanel.setAttribute("aria-label", "Page errors and warnings");
+  var consoleHeader = document.createElement("p");
+  consoleHeader.className = "console-header";
+  consoleHeader.textContent = "Errors and warnings since this page loaded. Browser inspector, under Extension pages, has the full console and network.";
+  var consoleList = document.createElement("ol");
+  consoleList.className = "console-list";
+  consoleList.tabIndex = 0;
+  consoleList.setAttribute("role", "log");
+  consoleList.setAttribute("aria-label", "Errors and warnings since this page loaded");
+  consolePanel.append(consoleHeader, consoleList);
+  var consoleSignature = "";
+  var renderConsole = () => {
+    root.classList.toggle("console-open", consoleOpen);
+    consolePanel.hidden = !consoleOpen;
+    const signature = JSON.stringify(consoleEntries);
+    if (signature === consoleSignature) return;
+    consoleSignature = signature;
+    const atEnd = consoleList.scrollTop + consoleList.clientHeight >= consoleList.scrollHeight - 4;
+    const rows = (consoleEntries ?? []).map((entry) => {
+      const row = document.createElement("li");
+      row.className = "console-row";
+      row.dataset.level = entry.level;
+      const level = document.createElement("span");
+      level.className = "console-level";
+      level.textContent = entry.level === "error" ? "Error" : "Warning";
+      const message = document.createElement("span");
+      message.className = "console-message";
+      message.textContent = entry.message;
+      message.title = entry.message;
+      const source = document.createElement("span");
+      source.className = "console-source";
+      source.textContent = entry.source;
+      row.append(level, message, source);
+      return row;
+    });
+    if (consoleEntries?.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "console-empty";
+      empty.textContent = "No errors or warnings since this page loaded.";
+      rows.push(empty);
+    }
+    consoleList.replaceChildren(...rows);
+    if (atEnd) consoleList.scrollTop = consoleList.scrollHeight;
+  };
   var customSize = document.createElement("form");
   customSize.className = "custom-size";
   customSize.hidden = true;
@@ -1612,7 +1667,7 @@ ${tab.url}`;
   var navigationRow = document.createElement("div");
   navigationRow.className = "row navigation-row";
   navigationRow.append(back, forward, reload, address, customSize, problems, viewportSelect, rotate, mobileToggle, selectCompatibility);
-  root.append(scopeRow, pageTabsRow, navigationRow);
+  root.append(scopeRow, pageTabsRow, navigationRow, consolePanel);
   var state = null;
   var requestPending = false;
   var refreshPending = false;
@@ -1701,12 +1756,14 @@ ${tab.url}`;
     selectCompatibility.title = compatibilityLabel;
     selectCompatibility.setAttribute("aria-label", compatibilityLabel);
     const { errors = 0, warnings = 0 } = selected?.problems ?? {};
-    problems.hidden = errors + warnings === 0;
-    errorCount.textContent = errors ? `\u2715 ${errors}` : "";
+    problems.hidden = errors + warnings === 0 && !consoleOpen;
+    errorCount.textContent = errors || !warnings ? `\u2715 ${errors}` : "";
     warningCount.textContent = warnings ? `\u26A0 ${warnings}` : "";
-    const problemsLabel = `${errors} ${errors === 1 ? "error" : "errors"} and ${warnings} ${warnings === 1 ? "warning" : "warnings"} in this page's console. Open Browser inspector from Extension pages to see them.`;
+    problems.setAttribute("aria-expanded", String(consoleOpen));
+    const problemsLabel = `${errors} ${errors === 1 ? "error" : "errors"} and ${warnings} ${warnings === 1 ? "warning" : "warnings"} on this page. ${consoleOpen ? "Hide the list." : "Show them under the address bar."}`;
     problems.title = problemsLabel;
     problems.setAttribute("aria-label", problemsLabel);
+    renderConsole();
     const viewport = selected?.viewport ?? null;
     const choice = viewportChoice(viewport);
     currentCustomOption.textContent = choice === "custom" ? `Custom ${viewport.width} \xD7 ${viewport.height}` : "";
@@ -1796,9 +1853,10 @@ ${tab.url}`;
     if (refreshPending || requestPending) return;
     refreshPending = true;
     try {
-      const result = await host.serviceRequest({ method: "GET", path: "/browser/state" });
+      const result = await host.serviceRequest({ method: "GET", path: "/browser/state", ...consoleOpen ? { query: { problems: "1" } } : {} });
       if (result.status === 200) {
         state = parseState(result.body);
+        if (consoleOpen && Array.isArray(state.consoleProblems)) consoleEntries = state.consoleProblems;
         serviceError = null;
         syncViewer();
         offerCopy(state.copy);
@@ -1812,6 +1870,14 @@ ${tab.url}`;
       refreshPending = false;
     }
   };
+  problems.addEventListener("click", () => {
+    consoleOpen = !consoleOpen;
+    consoleEntries = null;
+    void host.setHeight(consoleOpen ? DOCK_HEIGHT + CONSOLE_HEIGHT : DOCK_HEIGHT).catch(() => {
+    });
+    render();
+    void refresh();
+  });
   back.addEventListener("click", () => {
     if (!state) return;
     void request("/browser/back", { generation: state.generation }).then((succeeded) => {
@@ -1993,6 +2059,8 @@ ${tab.url}`;
     };
     if (mounted) return;
     mounted = true;
+    void host.setHeight(DOCK_HEIGHT).catch(() => {
+    });
     render();
     void refresh();
     window.setInterval(() => {

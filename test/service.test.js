@@ -380,8 +380,9 @@ test('hands the host\'s viewer headers to dock commands, input, and control noti
   // Given a runtime that records what each request says about its viewer.
   const runtime = createRuntime();
   const seen = [];
-  runtime.state = (access) => {
+  runtime.state = (access, options) => {
     seen.push(['state', access]);
+    if (options?.problems) seen.push(['problems']);
     return { controller: 'user', selectedScopeId: null, generation: 1, scopes: [] };
   };
   runtime.navigate = async (url, generation, access) => { seen.push(['navigate', access]); };
@@ -397,7 +398,7 @@ test('hands the host\'s viewer headers to dock commands, input, and control noti
     method: 'POST', headers: fromViewer({ 'x-surface-frame-seq': frameSeq }), body: JSON.stringify({ events: [{ type: 'text', text: 'a' }] }),
   });
 
-  // When the dock of the viewer in control navigates, another viewer's dock reads state, and a window without a viewer does too.
+  // When the dock of the viewer in control navigates, another viewer's dock reads state, and a window without a viewer does too with its console open.
   await fetch(`${fixture.origin}/browser/navigate`, {
     method: 'POST',
     headers: fromViewer({ 'x-surface-viewer-controls': '1', 'x-surface-frame-seq': '7' }),
@@ -405,6 +406,7 @@ test('hands the host\'s viewer headers to dock commands, input, and control noti
   });
   await fetch(`${fixture.origin}/browser/state`, { headers: fromViewer({ 'x-surface-viewer-controls': '0', 'x-surface-frame-seq': '7' }) });
   await fetch(`${fixture.origin}/browser/state`, { headers: authorization });
+  await fetch(`${fixture.origin}/browser/state?problems=1`, { headers: authorization });
 
   // When input arrives on a current frame and on a stale one, and control changes hands.
   const current = await input('7');
@@ -417,6 +419,8 @@ test('hands the host\'s viewer headers to dock commands, input, and control noti
     ['state', { viewer: 'viewer-a', frameSeq: 7 }],
     ['state', { viewer: null, frameSeq: 7 }],
     ['state', { viewer: null, frameSeq: null }],
+    ['state', { viewer: null, frameSeq: null }],
+    ['problems'],
     ['input', { viewer: 'viewer-a', frameSeq: 7 }],
     ['input', { viewer: 'viewer-a', frameSeq: 3 }],
     ['control', 'user', 'viewer-a'],

@@ -10,6 +10,7 @@
       html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
       button, input, select { font: inherit; }
       #root { display: grid; grid-template-rows: 28px 28px 40px; padding: 4px 8px; background: var(--oc-bg, transparent); color: var(--oc-fg, inherit); }
+      #root.console-open { grid-template-rows: 28px 28px 40px minmax(0, 1fr); }
       .row { display: flex; align-items: center; min-width: 0; }
       .scope-row { gap: 8px; border-bottom: 1px solid var(--oc-subtle, var(--oc-border, currentColor)); }
       .session-tabs { flex: 1; min-width: 0; margin: 0; padding: 0; border: 0; }
@@ -57,13 +58,26 @@
       .custom-size[hidden] { display: none; }
       .custom-size input { flex: 0 1 84px; margin-left: 0; padding: 0 8px; }
       .custom-size span { color: var(--oc-muted, currentColor); font-size: 12px; }
-      .problems { display: inline-flex; flex: 0 0 auto; height: 22px; align-items: center; gap: 6px; margin-left: 4px; padding: 0 8px; border-radius: 999px; background: var(--oc-hover, transparent); font-size: 11px; font-variant-numeric: tabular-nums; }
-      .problems[hidden], .problems span:empty { display: none; }
+      .navigation-row .problems { display: inline-flex; width: auto; flex: 0 0 auto; height: 22px; align-items: center; gap: 6px; margin-left: 4px; padding: 0 8px; border-radius: 999px; background: var(--oc-hover, transparent); color: inherit; font-size: 11px; font-variant-numeric: tabular-nums; }
+      .navigation-row .problems[aria-expanded="true"] { background: var(--oc-selection, var(--oc-hover, transparent)); }
+      .navigation-row .problems[hidden], .problems span:empty { display: none; }
       .problem-errors { color: var(--oc-error-text, var(--oc-error, currentColor)); }
       .problem-warnings { color: var(--oc-warning-text, var(--oc-warning, currentColor)); }
+      .console { display: flex; min-height: 0; flex-direction: column; border-top: 1px solid var(--oc-subtle, var(--oc-border, currentColor)); }
+      .console[hidden] { display: none; }
+      .console-header { margin: 0; padding: 4px 4px 2px; overflow: hidden; color: var(--oc-muted, currentColor); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .console-list { flex: 1; min-height: 0; margin: 0; padding: 0; overflow: auto; list-style: none; font: 11px/18px var(--oc-mono, ui-monospace, monospace); }
+      .console-row, .console-empty { display: flex; gap: 8px; padding: 1px 4px; border-bottom: 1px solid var(--oc-subtle, transparent); }
+      .console-empty { color: var(--oc-muted, currentColor); }
+      .console-level { flex: 0 0 52px; }
+      .console-row[data-level="error"] .console-level { color: var(--oc-error-text, var(--oc-error, currentColor)); }
+      .console-row[data-level="warning"] .console-level { color: var(--oc-warning-text, var(--oc-warning, currentColor)); }
+      .console-message { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .console-source { flex: 0 1 auto; max-width: 30%; overflow: hidden; color: var(--oc-muted, currentColor); text-overflow: ellipsis; white-space: nowrap; }
       input:focus, button:focus-visible, select:focus-visible { outline: 2px solid var(--oc-focus, currentColor); outline-offset: 1px; }
+      .console-list:focus-visible { outline: 2px solid var(--oc-focus, currentColor); outline-offset: -2px; }
       @media (forced-colors: active) {
-        .status::before, .session-tabs .oc-sdk-tab[aria-selected="true"]::after, .select-compatibility[aria-pressed="true"], .mobile-toggle[aria-pressed="true"], .page-tab[data-active="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+        .status::before, .session-tabs .oc-sdk-tab[aria-selected="true"]::after, .select-compatibility[aria-pressed="true"], .mobile-toggle[aria-pressed="true"], .problems[aria-expanded="true"], .page-tab[data-active="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
       }
     </style>
   </head>
