@@ -1,12 +1,12 @@
 # Server Browser for OpenChamber
 
-Run Chrome on the OpenChamber server. Agents use the standard `browser.*` tools, and you can open the Server Browser panel to see and control the same page, including its current form values, cookies, and navigation state.
+Run Chrome on the OpenChamber server. Agents drive it with the `browser.*` actions of OpenChamber's `openchamber_web` tool, and you can open the Server Browser panel to see and control the same page, including its current form values, cookies, and navigation state.
 
 This is the extension extraction of [OpenChamber PR #3425](https://github.com/openchamber/openchamber/pull/3425). It uses the browser-provider and shared-surface contracts added in [#3734](https://github.com/openchamber/openchamber/pull/3734).
 
 ## Status and goal
 
-**Experimental. This extension does not yet replace the original Server Browser implementation.** Version 0.3.0 adds an optional native-select compatibility mode and fixes a proxy socket error that could restart the service during navigation. It retains the project/chat isolation and docked navigation toolbar introduced in 0.2.0. Substantial gaps remain in debugging, tab management, and multi-viewer coordination.
+**Experimental. This extension does not yet replace the original Server Browser implementation.** Version 0.4.0 targets the released OpenChamber 2.0.0 and its published SDK, and the empty panel now explains that the first browser action must come from the agent. It retains the native-select compatibility mode and proxy fix from 0.3.0, plus the project/chat isolation and docked navigation toolbar from 0.2.0. Substantial gaps remain in debugging, tab management, and multi-viewer coordination.
 
 The goal is functional parity with the Server Browser in PR #3425 through OpenChamber's official extension APIs. The reference for this extraction is [commit 362dbc3f305615200d762b721106c64e796b095b](https://github.com/JosueGalRe/openchamber/tree/362dbc3f305615200d762b721106c64e796b095b/packages/web/server/lib/browser). It is a feature reference, not a claim that every original runtime or platform was validated.
 
@@ -16,7 +16,7 @@ The original implementation remains the functional reference until those gaps ar
 
 ## Requirements
 
-- An OpenChamber build containing [commit `959d179c6`](https://github.com/openchamber/openchamber/commit/959d179c6aa06af6d8102461c8fea166e0433445). The latest published host release checked on September 21, 2026 was v1.24.2, which predates the required scoped-provider and dock contracts. The manifest does not claim a minimum released version yet.
+- OpenChamber 2.0.0 or newer. The manifest declares `openchamber.engines.openchamber: >=2.0.0`, so older hosts refuse to install or update it.
 - Chrome or Chromium 109 or newer installed on the machine running OpenChamber.
 - A supported host service runtime. Development uses Node.js 22 or newer and Bun for installing locked dependencies.
 
@@ -27,9 +27,11 @@ The extension includes its built service. Installing it in OpenChamber does not 
 1. Open OpenChamber's extension settings and install from `https://github.com/JosueGalRe/openchamber-server-browser`.
 2. Review and approve its service permission. The service launches Chrome on the OpenChamber host.
 3. Select **Server Browser** under **Settings → General → OpenChamber Tools → Browser provider**.
-4. Ask the agent to open a page from a chat. Open **Server Browser** from the panel rail to view that same page.
+4. In a chat, ask the agent to open a page with the `openchamber_web` tool. Open **Server Browser** from the panel rail to view that same page.
 
 The service starts on the first browser action, even if no panel is open. Interacting with the panel takes control from the agent. Use the panel's release control action to hand the page back. OpenChamber owns this control handoff and rejects agent actions while you hold control.
+
+Opening the panel first does not start a browser. Each browser belongs to a project/chat pair, and only agent actions carry that context, so until the first action the panel shows "Ask the agent to open a page with openchamber_web" and keeps its toolbar disabled. OpenCode 2 also gives agents its own `browser.*` tools, such as `browser.tabs.open`, for its desktop app. Those calls never reach this extension and fail with `browser.disconnected` on a web host; ask the agent to use `openchamber_web` instead.
 
 ## Local development servers
 
@@ -64,7 +66,7 @@ OpenChamber owns the control handoff. A person can take over the page, the host 
 
 ## Known limitations and parity gaps
 
-| Area | Original Server Browser reference | Extension 0.3.0 |
+| Area | Original Server Browser reference | Extension 0.4.0 |
 | --- | --- | --- |
 | Chrome DevTools | Embedded Chrome DevTools with authenticated transport and frontend asset handling. | No embedded DevTools. `browser.inspect` returns element details; it does not replace DevTools. |
 | Console and network inspection | Dedicated inspector with console capture, network rows, and request details. | Bounded console warnings/errors in snapshots. No interactive console, network inspector, or request-detail panel. |
@@ -101,7 +103,7 @@ The service uses OpenChamber's authenticated loopback protocol and applies brows
 
 ### Compatibility and validation limits
 
-The extension vendors the official SDK snapshot from `959d179c6` because the latest published SDK inspected during development did not contain scoped provider calls or docked surface controls. Replace that pin with a compatible published SDK and add a verified host version requirement when the release exists. The package version inside the snapshot still reads `1.24.2`; that string does not establish host compatibility.
+The extension depends on the published `@openchamber/sdk@2.0.0`, the first registry release with scoped provider calls and docked surface controls. Only the Linux web host has been exercised against the 2.0.0 floor.
 
 The shared panel displays image frames. It does not expose the remote page's DOM as local controls, and accessibility or responsiveness parity with the original viewer has not been established. No performance or frame-rate equivalence is claimed.
 
@@ -127,7 +129,7 @@ The next implementation work should recover capabilities that fit the existing c
 
 ## What we still need from the SDK
 
-This assessment is based on the [official service contracts at the pinned host commit](https://github.com/openchamber/openchamber/blob/959d179c6aa06af6d8102461c8fea166e0433445/packages/sdk/GUEST_SERVICES.md). It records what remains after adopting scoped provider calls and docked controls. These are discussion points for upstream, not agreed API changes.
+This assessment is based on the [official service contracts at commit `959d179c6`](https://github.com/openchamber/openchamber/blob/959d179c6aa06af6d8102461c8fea166e0433445/packages/sdk/GUEST_SERVICES.md); the published SDK 2.0.0 ships the same compiled contracts. It records what remains after adopting scoped provider calls and docked controls. These are discussion points for upstream, not agreed API changes.
 
 The SDK now provides unattended browser-provider actions, authoritative project/chat context, a shared image/input viewer with host-owned control, and an extension page docked beside that viewer. We do not need to request those again.
 
@@ -136,7 +138,6 @@ The SDK now provides unattended browser-provider actions, authoritative project/
 | Need | Current contract | What would let us complete the migration |
 | --- | --- | --- |
 | Viewer identity and stale-input fencing | The shared surface has one service-global controller. Dock calls have no viewer identity, and input events have no view generation. | Bind dock calls and surface input to the viewer lease and the selected view generation. The service could then reject input produced from an old frame or by another viewer. |
-| Released compatibility floor | The needed contracts exist at `959d179c6`, while the SDK snapshot still identifies itself as `1.24.2` and no compatible release was available during this work. | Publish the contracts in a release and document the first compatible OpenChamber version so the extension can restore `openchamber.engines.openchamber`. |
 
 ### Capabilities to investigate with upstream
 
@@ -146,7 +147,7 @@ These requirements are concrete, but we have not established that each requires 
 | --- | --- | --- |
 | Agent tab selection | The ten browser actions do not define a tab-management contract. We need a supported way for agent requests to identify the intended target and agree with the viewer's selection. Additional extension tools may provide part of this. | A two-tab workflow where the agent lists/selects a target, the person sees that target, and concurrent viewers cannot silently redirect another action. |
 | Dock sizing and control-row composition | The dock has a fixed manifest size, and the host owns its title/control row and handback action. A compact expandable inspector would benefit from a supported resizing or layout pattern. | Agree on an extension layout that can expand a console or network panel while preserving visible, host-owned control arbitration. This is a layout question, not a requirement for raw CDP access. |
-| Supported runtime behavior | The implementation uses a pinned SDK build and only the Linux web host has been exercised so far. | A reproducible install against a released host/SDK combination, followed by validation on every runtime and transport we advertise. |
+| Supported runtime behavior | The implementation uses the released SDK 2.0.0, and only the Linux web host has been exercised so far. | A reproducible install against a released host/SDK combination, followed by validation on every runtime and transport we advertise. |
 
 Embedded DevTools and live dev-server discovery/grants are deferred product discussions. The maintainer has explicitly kept them outside the SDK for now. We will keep manual origin configuration and investigate an extension-owned console/network inspector through supported panel and service mechanisms. Neither is presented as an accepted upstream API request.
 
@@ -166,9 +167,7 @@ bun run check
 bun run package
 ```
 
-`service/main.js` and `panel/main.js` are the committed bundles used by Git installations. `artifacts/openchamber-server-browser-0.3.0.zip` contains the installable package. Rebuild both after changing source files.
-
-The SDK dependency is a vendored package built from a pinned OpenChamber commit because the registry package does not yet expose these contracts. See [vendor/README.md](vendor/README.md) for its source and replacement plan.
+`service/main.js` and `panel/main.js` are the committed bundles used by Git installations. `artifacts/openchamber-server-browser-0.4.0.zip` contains the installable package. Rebuild both after changing source files.
 
 ## Validation
 
@@ -183,6 +182,8 @@ The 0.2.0 pre-push run passed 34 tests with no skips. Live host checks verified 
 For 0.3.0, the final automated run passed 41 tests with no skips, including real Chrome, compatibility under restrictive page CSP, navigation/reload persistence, disabling without clearing form values, scope isolation, and control/generation guards. A separate regression repeatedly aborts CONNECT tunnels while upstream data is arriving. It reproduced the uncaught `EPIPE` before the socket fix and passed afterward. The fix closes the affected connection rather than terminating the service; it does not change origin permissions.
 
 Live checks on the same unmodified `959d179c6` Linux web host covered Selenium's native select, selecting an option with the mouse, preserving form values when disabling compatibility, and opening/selecting a Radix custom dropdown. The original integrated build also reproduced the invisible native popup in a matched local comparison, so this is not reported as an SDK rendering regression. The final uninstrumented bundle completed the previously failing local-to-public navigation with the viewer connected, retained a second independent scope, and remained connected during an idle check longer than 40 seconds. Build, syntax, focused lint, and ZIP integrity checks passed. This is bounded functional evidence, not a long-running stability or cross-platform claim.
+
+For 0.4.0, validation used the OpenChamber 2.0.0 web host with OpenCode 2.0.15. An `openchamber_web` `browser.open` call from a real chat created a scope for that chat's directory and session, launched Chromium, and appeared in the panel. Before any action, the rebuilt panel showed its empty-state hint with the toolbar disabled. After the host's idle stop, no Chrome process or temporary profile remained. The host's own install check accepted the package on 2.0.0 and refused it on 1.24.2 as `host-too-old`. Switching to SDK 2.0.0 left both bundles byte-identical to the 0.3.0 build, and the automated suite passed 41 tests with no skips.
 
 ## Attribution
 
