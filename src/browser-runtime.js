@@ -1,6 +1,9 @@
+import crypto from 'node:crypto';
+import { GUEST_CLIPBOARD_TEXT_MAX } from '@openchamber/sdk';
 import { createBrowserActions } from './browser-actions.js';
 import { connectCdp } from './cdp-client.js';
 import { createChromeProcess } from './chrome-process.js';
+import { MENU_BINDING, MENU_WORLD, createContextMenu } from './context-menu.js';
 import { networkGrants, originGrants } from './config.js';
 import { createNativeSelectCompatibility } from './native-select-compatibility.js';
 import { createPolicyProxy } from './policy-proxy.js';
@@ -111,6 +114,11 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     get nativeSelectCompatibilityError() {
       return activeTab()?.compatibility.error ?? '';
     },
+    // Text the viewer asked to copy from the page menu; the dock offers it through a host toast.
+    get copyRequest() {
+      if (!copyRequest || Date.now() - copyRequest.at > 10_000) return null;
+      return { id: copyRequest.id, text: copyRequest.text };
+    },
     get consoleProblems() {
       return (activeTab()?.problems ?? []).map((problem) => ({ ...problem }));
     },
@@ -172,6 +180,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     activeTargetId = current.targetId;
     activations += 1;
     current.lastActive = activations;
+    void contextMenu.close();
     surface.retarget();
     notifyTabs();
     // Chrome can defer input and frames for a page that is not in front.
@@ -184,6 +193,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     tabs.delete(targetId);
     sessions.delete(current.sessionId);
     clearTimeout(current.navigationTimer);
+    contextMenu.forget(current.sessionId);
     if (activeTargetId !== targetId) {
       notifyTabs();
       return;
@@ -215,6 +225,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
         cdp.sendSession(sessionId, 'Page.enable'),
         cdp.sendSession(sessionId, 'Runtime.enable'),
         cdp.sendSession(sessionId, 'Log.enable'),
+        cdp.sendSession(sessionId, 'Runtime.addBinding', { name: MENU_BINDING, executionContextName: MENU_WORLD }),
       ]);
       await applyViewport(cdp, sessionId, runtime.viewport);
       if (nativeSelectEnabled) await current.compatibility.setEnabled(true).catch(() => {});
@@ -253,6 +264,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     if (event.method === 'Page.frameNavigated' && event.params.frame?.id) {
       if (!event.params.frame.parentId) {
         current.mainFrameId = event.params.frame.id;
+        contextMenu.forget(current.sessionId);
         current.url = event.params.frame.url;
         void refreshNavigation(current);
       }
@@ -273,6 +285,9 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
       void refreshNavigation(current);
     }
     if (event.method === 'Page.screencastFrame') scheduleNavigationRefresh(current);
+    if (event.method === 'Runtime.bindingCalled' && event.params.name === MENU_BINDING) {
+      contextMenu.handleBinding(current.sessionId, event.params);
+    }
     if (event.method === 'Runtime.consoleAPICalled') {
       if (event.params.type !== 'warning' && event.params.type !== 'error') return;
       const message = event.params.args?.map((arg) => arg.value ?? arg.description).filter(Boolean).join(' ');
@@ -393,6 +408,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
   // follow page events, so a slow page can still be stopped.
   runtime.command = async (name, parameters = {}) => {
     if (closed) throw new Error('Browser runtime is closed');
+    await contextMenu.close();
     if (name === 'tab-new') {
       await openTab();
       return;
@@ -442,6 +458,20 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
   const execute = createBrowserActions(runtime);
   const surface = createSurface(runtime);
 
+  let copyRequest = null;
+  const contextMenu = createContextMenu({
+    navigationState: () => ({ canGoBack: runtime.canGoBack, canGoForward: runtime.canGoForward }),
+    readSelection: () => surface.clipboard(),
+    onAction: (action, selection) => {
+      if (action === 'back' || action === 'forward' || action === 'reload') {
+        void runtime.command(action).catch(() => {});
+      } else if (action === 'copy') {
+        copyRequest = { id: crypto.randomUUID(), text: selection.length > GUEST_CLIPBOARD_TEXT_MAX ? null : selection, at: Date.now() };
+      }
+    },
+  });
+  runtime.contextMenu = contextMenu;
+
   runtime.perform = (action, parameters, callerSignal) => {
     if (closed) return Promise.reject(new Error('Browser runtime is closed'));
     if (runtime.controller === 'user') {
@@ -455,6 +485,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
       if (runtime.controller === 'user') {
         throw new Error('The user controls the browser. Wait for them to hand control back.');
       }
+      await contextMenu.close();
       runtime.agentActive = true;
       try {
         const data = await execute(action, parameters, signal);
@@ -469,7 +500,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
   };
 
   runtime.surfaceFrame = (request) => surface.frame(request);
-  runtime.surfaceInput = (events) => surface.input(events);
+  runtime.surfaceInput = (events, theme) => surface.input(events, theme);
   runtime.surfaceControl = (controller) => surface.control(controller);
   runtime.surfaceResize = (size) => surface.resize(size);
   runtime.surfaceClipboard = () => surface.clipboard();

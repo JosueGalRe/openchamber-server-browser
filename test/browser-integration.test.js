@@ -50,6 +50,24 @@ const startWebFixture = async () => {
       response.end(html('<h1>Next page</h1><a href="/">Home</a>', 'Next'));
       return;
     }
+    if (request.url === '/menu') {
+      response.end(html(`
+        <div id="surface">Plain area</div>
+        <div id="custom" style="position:absolute;left:10px;top:300px;width:130px;height:44px">Custom</div>
+        <p id="words" style="position:absolute;left:10px;top:400px">Copy these words</p>
+        <script>
+          window.clicks = 0;
+          window.escapes = 0;
+          addEventListener('click', () => { window.clicks += 1; });
+          addEventListener('keydown', (event) => { if (event.key === 'Escape') window.escapes += 1; });
+          document.querySelector('#custom').addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+            document.title = 'Custom menu';
+          });
+        </script>
+      `, 'Menu'));
+      return;
+    }
     if (request.url === '/tabs') {
       response.end(html(`
         <a id="surface" href="/next" target="_blank">Open next</a>
@@ -450,4 +468,53 @@ test('sizes pages in CSS pixels for the viewer and keeps a chosen size fixed', {
   // When the dock returns to Auto, then the page follows the latest panel size again.
   await manager.setViewport({ mode: 'auto', mobile: false }, manager.state().generation);
   assert.equal(await innerSize(), '[600,400]');
+});
+
+test('shows the viewer menu only for right clicks the page leaves alone', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a page with history, a plain area, and an element with its own menu.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/next` });
+  await runtime.perform('browser.open', { url: `${web.origin}/menu` });
+  const page = await runtime.ensurePage();
+  const evaluate = async (expression) => (await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', {
+    expression,
+    returnByValue: true,
+  })).result.value;
+  const menuShown = () => evaluate('document.querySelector("openchamber-menu") !== null');
+  const pointer = (action, x, y, button, buttons) => ({ type: 'pointer', action, x, y, button, buttons, modifiers });
+  const rightClick = (x, y) => runtime.surfaceInput([pointer('down', x, y, 2, 2), pointer('up', x, y, 2, 0)]);
+  const leftClick = (x, y) => runtime.surfaceInput([pointer('down', x, y, 0, 1), pointer('up', x, y, 0, 0)]);
+
+  // When the page handles its own context menu, then the viewer menu stays away.
+  await rightClick(30, 320);
+  assert.equal(await menuShown(), false);
+  assert.equal(await evaluate('document.title'), 'Custom menu');
+
+  // When the page leaves a right click alone, then the menu appears, and Escape closes it without reaching the page.
+  await rightClick(30, 30);
+  assert.equal(await menuShown(), true);
+  await runtime.surfaceInput(['down', 'up'].map((action) => ({ type: 'key', action, key: 'Escape', code: 'Escape', modifiers })));
+  assert.equal(await menuShown(), false);
+  assert.equal(await evaluate('window.escapes'), 0);
+
+  // When the user clicks outside the menu, then it closes and the page never sees that click.
+  await rightClick(30, 30);
+  await leftClick(600, 500);
+  assert.equal(await menuShown(), false);
+  assert.equal(await evaluate('window.clicks'), 0);
+  assert.equal(await evaluate('typeof window.openchamberMenu'), 'undefined');
+
+  // When Copy is chosen with text selected, then the text waits for the dock's toast.
+  await evaluate('getSelection().selectAllChildren(document.querySelector("#words"))');
+  await rightClick(30, 30);
+  await leftClick(60, 142);
+  await waitFor(() => runtime.copyRequest?.text === 'Copy these words');
+
+  // When Back is chosen, then the tab goes back.
+  await rightClick(30, 30);
+  await leftClick(60, 49);
+  await waitFor(() => runtime.url === `${web.origin}/next`);
 });

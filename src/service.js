@@ -20,6 +20,7 @@ import {
   readSurfaceInputBatch,
   readSurfaceResizeRequest,
 } from '@openchamber/sdk';
+import { readMenuTheme } from './context-menu.js';
 import { MAX_VIEWPORT_DIMENSION } from './viewports.js';
 
 const BODY_MAX_BYTES = 17 * 1024 * 1024;
@@ -213,10 +214,13 @@ export const createService = ({ runtime, token, port = 0 }) => {
     if (request.method === 'POST' && url.pathname === '/browser/viewer') {
       const body = await readObjectBody(request);
       const ratio = body?.devicePixelRatio;
-      if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio < 0.25 || ratio > 8) {
-        return text(response, 400, 'devicePixelRatio must be a number from 0.25 to 8\n');
+      const theme = body?.theme === undefined ? undefined : readMenuTheme(body.theme);
+      const validRatio = typeof ratio === 'number' && Number.isFinite(ratio) && ratio >= 0.25 && ratio <= 8;
+      if ((ratio !== undefined && !validRatio) || theme === null || (ratio === undefined && theme === undefined)) {
+        return text(response, 400, 'Send devicePixelRatio from 0.25 to 8, a host theme, or both\n');
       }
-      await runtime.setDevicePixelRatio(ratio);
+      if (theme) runtime.setViewerTheme(theme);
+      if (validRatio) await runtime.setDevicePixelRatio(ratio);
       return json(response, 200, runtime.state());
     }
 

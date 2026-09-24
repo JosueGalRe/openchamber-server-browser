@@ -30,7 +30,7 @@ const createRuntimeFactory = () => {
         calls.push(['frame', after]);
         return { sequence: 1, bytes: Buffer.from(scope.sessionId), mime: 'image/jpeg', width: 800, height: 600, title: runtime.title };
       },
-      async surfaceInput(events) { calls.push(['input', events]); },
+      async surfaceInput(events, theme) { calls.push(['input', events, theme]); },
       surfaceControl(controller) { runtime.controller = controller; calls.push(['control', controller]); },
       async surfaceResize(size) { calls.push(['resize', size]); return size; },
       async surfaceClipboard() { return scope.sessionId; },
@@ -451,4 +451,18 @@ test('converts the viewer panel with its pixel ratio and sizes a first scope cre
   await manager.setViewport({ mode: 'fixed', width: 500, height: 400, mobile: false }, manager.state().generation);
   assert.deepEqual(runtime.calls.at(-1), ['viewport', { mode: 'fixed', source: 'viewer', width: 500, height: 400, mobile: false }]);
   await assert.rejects(manager.setViewport({ mode: 'auto', mobile: false }, manager.state().generation + 1), /view changed/i);
+});
+
+test('hands the viewer theme to surface input and reports a pending copy from the visible scope', async () => {
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  const theme = { dark: true, properties: {} };
+
+  manager.setViewerTheme(theme);
+  await manager.surfaceInput([{ type: 'text', text: 'x' }]);
+  runtimes.get('ses_one').copyRequest = { id: 'copy-1', text: 'hello' };
+
+  assert.deepEqual(runtimes.get('ses_one').calls.at(-1), ['input', [{ type: 'text', text: 'x' }], theme]);
+  assert.deepEqual(manager.state().copy, { id: 'copy-1', text: 'hello' });
 });

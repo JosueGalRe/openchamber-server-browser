@@ -117,6 +117,7 @@ export const createSurface = (runtime) => {
   let startPromise = null;
   // Bumps whenever the runtime's active tab changes.
   let target = 0;
+  let swallowEscapeUp = false;
 
   const finishWaiter = (waiter, value) => {
     if (!waiters.delete(waiter)) return;
@@ -211,12 +212,33 @@ export const createSurface = (runtime) => {
         waiters.add(waiter);
       });
     },
-    async input(events) {
+    async input(events, theme = null) {
       const current = await start();
-      for (const event of events) await dispatchInput(current, event);
+      const menu = runtime.contextMenu;
+      for (const event of events) {
+        if (event.type === 'key' && event.key === 'Escape' && event.action === 'up' && swallowEscapeUp) {
+          swallowEscapeUp = false;
+          continue;
+        }
+        const secondary = event.type === 'pointer' && event.button === 2;
+        if (menu.isOpen) {
+          // Escape and the wheel only dismiss the menu; other keys and a new
+          // right click dismiss it and go on to the page.
+          const dismissOnly = event.type === 'wheel' || (event.type === 'key' && event.key === 'Escape');
+          if (dismissOnly || event.type === 'key' || (secondary && event.action === 'down')) await menu.close();
+          if (dismissOnly) {
+            swallowEscapeUp = event.type === 'key';
+            continue;
+          }
+        }
+        if (secondary && event.action === 'down') await menu.observe(current).catch(() => {});
+        await dispatchInput(current, event);
+        if (secondary && event.action === 'up') await menu.settle(current, theme).catch(() => {});
+      }
     },
     control(controller) {
       runtime.controller = controller;
+      void runtime.contextMenu.close();
     },
     resize({ width, height }) {
       return runtime.setPanelSize({ width, height });

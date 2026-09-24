@@ -418,13 +418,27 @@ const request = async (path, payload) => {
   }
 };
 
-let reportedRatio = null;
-const syncPixelRatio = () => {
-  const ratio = window.devicePixelRatio || 1;
-  if (ratio === reportedRatio) return;
-  reportedRatio = ratio;
-  void host.serviceRequest({ method: 'POST', path: '/browser/viewer', body: JSON.stringify({ devicePixelRatio: ratio }) })
-    .then((result) => { if (result.status !== 200) reportedRatio = null; }, () => { reportedRatio = null; });
+// The service draws its page menu with these and sizes pages from the ratio.
+let viewerTheme = null;
+let reportedViewer = null;
+const syncViewer = () => {
+  const payload = JSON.stringify({ devicePixelRatio: window.devicePixelRatio || 1, ...(viewerTheme ? { theme: viewerTheme } : {}) });
+  if (payload === reportedViewer) return;
+  reportedViewer = payload;
+  void host.serviceRequest({ method: 'POST', path: '/browser/viewer', body: payload })
+    .then((result) => { if (result.status !== 200) reportedViewer = null; }, () => { reportedViewer = null; });
+};
+
+let lastCopyId = null;
+const offerCopy = (copy) => {
+  if (!copy || copy.id === lastCopyId) return;
+  lastCopyId = copy.id;
+  const toast = copy.text === null
+    ? { kind: 'error', message: 'This selection is too long to copy from the menu. Use Ctrl/Cmd+C instead.' }
+    : copy.text
+      ? { kind: 'info', message: 'The selected text is ready to copy.', copy: { text: copy.text } }
+      : { kind: 'info', message: 'Select text on the page to copy it.' };
+  void host.toast(toast).catch(() => {});
 };
 
 const refresh = async () => {
@@ -435,7 +449,8 @@ const refresh = async () => {
     if (result.status === 200) {
       state = parseState(result.body);
       serviceError = null;
-      syncPixelRatio();
+      syncViewer();
+      offerCopy(state.copy);
       render();
     }
   } catch (error) {
@@ -599,6 +614,17 @@ customSize.addEventListener('keydown', (event) => {
 let mounted = false;
 host.onReady((context) => {
   applyHostReady(context, document.documentElement);
+  const { tokens } = context.theme;
+  viewerTheme = {
+    mode: context.theme.mode,
+    elevated: tokens.elevated,
+    elevatedForeground: tokens.elevatedForeground,
+    border: tokens.border,
+    hover: tokens.hover,
+    muted: tokens.muted,
+    font: tokens.font,
+    radius: tokens.radius,
+  };
   if (mounted) return;
   mounted = true;
   render();

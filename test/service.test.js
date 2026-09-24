@@ -29,6 +29,7 @@ const createRuntime = () => {
     async selectScope(id, generation) { calls.push(['select', id, generation]); },
     async navigate(url, generation) { calls.push(['navigate', url, generation]); },
     async reload(generation) { calls.push(['reload', generation]); },
+    setViewerTheme(theme) { calls.push(['theme', theme]); },
     async setDevicePixelRatio(ratio) { calls.push(['ratio', ratio]); },
     async setViewport(viewport, generation) { calls.push(['viewport', viewport, generation]); },
     async newTab(generation) { calls.push(['tab-new', generation]); },
@@ -312,4 +313,19 @@ test('validates viewer ratio and viewport requests at the service boundary', asy
     ['ratio', 1.5],
     ['viewport', { mode: 'fixed', width: 800, height: 600, mobile: true }, 1],
   ]);
+});
+
+test('accepts the host theme for the page menu and rejects an unknown mode', async (context) => {
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+  const post = (path, body) => fetch(`${fixture.origin}${path}`, {
+    method: 'POST', headers: authorization, body: JSON.stringify(body),
+  });
+
+  const badMode = await post('/browser/viewer', { theme: { mode: 'sepia' } });
+  const empty = await post('/browser/viewer', {});
+  const themed = await post('/browser/viewer', { theme: { mode: 'dark', elevated: '#101010' } });
+
+  assert.deepEqual([badMode.status, empty.status, themed.status], [400, 400, 200]);
+  assert.deepEqual(fixture.runtime.calls, [['theme', { dark: true, properties: { '--menu-background': '#101010' } }]]);
 });

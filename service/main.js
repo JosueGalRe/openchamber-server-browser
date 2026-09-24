@@ -2251,7 +2251,7 @@ var require_websocket = __commonJS({
       NOOP
     } = require_constants();
     var {
-      EventTarget: { addEventListener, removeEventListener }
+      EventTarget: { addEventListener: addEventListener2, removeEventListener: removeEventListener2 }
     } = require_event_target();
     var { format, parse } = require_extension();
     var { toBuffer } = require_buffer_util();
@@ -2695,8 +2695,8 @@ var require_websocket = __commonJS({
         }
       });
     });
-    WebSocket2.prototype.addEventListener = addEventListener;
-    WebSocket2.prototype.removeEventListener = removeEventListener;
+    WebSocket2.prototype.addEventListener = addEventListener2;
+    WebSocket2.prototype.removeEventListener = removeEventListener2;
     module.exports = WebSocket2;
     function initAsClient(websocket, address, protocols, options) {
       const opts = {
@@ -3690,6 +3690,7 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
   const selectionWaiters = /* @__PURE__ */ new Set();
   let surfaceViewport = null;
   let devicePixelRatio = 1;
+  let viewerTheme = null;
   let closed = false;
   let notice = null;
   const enqueue = (operation) => {
@@ -3803,6 +3804,7 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
         selectedScopeId,
         generation: viewGeneration,
         notice: notice ? { ...notice } : null,
+        copy: selected()?.runtime.copyRequest ?? null,
         scopes: Array.from(scopes.values(), (entry) => ({
           id: entry.id,
           directory: entry.directory,
@@ -3863,6 +3865,9 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
         requireGeneration(expectedGeneration);
         await requireSelected().runtime.configureViewport({ mode, source: "viewer", width, height, mobile });
       });
+    },
+    setViewerTheme(theme) {
+      viewerTheme = theme;
     },
     setDevicePixelRatio(ratio) {
       return enqueue(async () => {
@@ -3944,7 +3949,7 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
       return enqueue(async () => {
         const runtime = requireSelected().runtime;
         await runtime.surfaceControl("user");
-        return runtime.surfaceInput(events);
+        return runtime.surfaceInput(events, viewerTheme);
       });
     },
     surfaceControl(nextController) {
@@ -3975,6 +3980,195 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
       });
     }
   };
+};
+
+// src/browser-runtime.js
+import crypto2 from "node:crypto";
+
+// node_modules/@openchamber/sdk/dist/contract.js
+var GUEST_FILE_STAT_KINDS = ["file", "directory", "other", "missing"];
+var GUEST_CLIPBOARD_TEXT_MAX = 32e3;
+var HOST_REQUEST_ERROR_CODES = [
+  "HOST_UNAVAILABLE",
+  "HOST_TIMEOUT",
+  "HOST_REJECTED",
+  "DISCONNECTED",
+  "DISABLED",
+  "BAD_PATH",
+  "NO_INTEGRATION",
+  "NO_SERVICE",
+  "SERVICE_FAILED",
+  "NO_SESSION",
+  "SESSION_BUSY",
+  "NOT_GRANTED",
+  "NO_DIRECTORY",
+  "NOT_FOUND",
+  "FILE_TOO_LARGE",
+  "DENIED",
+  "NO_MODEL",
+  "MODEL_FAILED"
+];
+var SERVICE_STATUS_VALUES = ["stopped", "starting", "ready", "failed"];
+var hostRequestErrorCodeSet = new Set(HOST_REQUEST_ERROR_CODES);
+var serviceStatusSet = new Set(SERVICE_STATUS_VALUES);
+var fileStatKindSet = new Set(GUEST_FILE_STAT_KINDS);
+
+// node_modules/@openchamber/sdk/dist/service-providers.js
+var BROWSER_PROVIDER_PATH = "/browser-control";
+var BROWSER_CONTROL_ACTIONS = [
+  "browser.open",
+  "browser.snapshot",
+  "browser.click",
+  "browser.type",
+  "browser.scroll",
+  "browser.back",
+  "browser.forward",
+  "browser.inspect",
+  "browser.capture",
+  "browser.resize"
+];
+var BROWSER_PROVIDER_IDLE_MS = 10 * 6e4;
+var CONTROL_ACTIONS = new Set(BROWSER_CONTROL_ACTIONS);
+var isBrowserControlAction = (value) => CONTROL_ACTIONS.has(value);
+var readContext = (wire) => {
+  const directory = wire?.directory;
+  const sessionId = wire?.sessionId;
+  return {
+    directory: String(directory) === directory && directory.length > 0 ? directory : null,
+    sessionId: String(sessionId) === sessionId && sessionId.length > 0 ? sessionId : null
+  };
+};
+var readBrowserProviderRequest = (body) => {
+  let wire;
+  try {
+    const parsed = JSON.parse(body);
+    if (Object(parsed) !== parsed || parsed === null)
+      return null;
+    wire = parsed;
+  } catch {
+    return null;
+  }
+  const { requestId, action, parameters, context } = wire;
+  if (String(requestId) !== requestId || requestId.length === 0)
+    return null;
+  if (String(action) !== action || !isBrowserControlAction(action))
+    return null;
+  if (Object(parameters) !== parameters)
+    return null;
+  return { requestId, action, parameters, context: readContext(context) };
+};
+
+// node_modules/@openchamber/sdk/dist/service-surface.js
+var SURFACE_FRAME_PATH = "/surface/frame";
+var SURFACE_INPUT_PATH = "/surface/input";
+var SURFACE_CONTROL_PATH = "/surface/control";
+var SURFACE_RESIZE_PATH = "/surface/resize";
+var SURFACE_CLIPBOARD_PATH = "/surface/clipboard";
+var SURFACE_SEQ_HEADER = "x-surface-seq";
+var SURFACE_WIDTH_HEADER = "x-surface-width";
+var SURFACE_HEIGHT_HEADER = "x-surface-height";
+var SURFACE_TITLE_HEADER = "x-surface-title";
+var SURFACE_AGENT_ACTIVE_HEADER = "x-surface-agent-active";
+var SURFACE_FRAME_WAIT_MS = 25e3;
+var SURFACE_FRAME_MAX_BYTES = 8e6;
+var SURFACE_INPUT_BATCH_MAX = 256;
+var SURFACE_TEXT_MAX = 64e3;
+var SURFACE_TITLE_MAX = 200;
+var SURFACE_DIMENSION_MAX = 16384;
+var SURFACE_CONTROLLERS = ["none", "agent", "user"];
+var isFiniteNumber = (value) => Number(value) === value && Number.isFinite(value);
+var isBool = (value) => value === true || value === false;
+var isText = (value) => String(value) === value;
+var readModifiers = (value) => {
+  if (Object(value) !== value || value === null)
+    return null;
+  const wire = value;
+  if (!isBool(wire.alt) || !isBool(wire.ctrl) || !isBool(wire.meta) || !isBool(wire.shift))
+    return null;
+  return { alt: wire.alt, ctrl: wire.ctrl, meta: wire.meta, shift: wire.shift };
+};
+var readEvent = (value) => {
+  if (value.type === "text") {
+    if (!isText(value.text) || value.text.length > SURFACE_TEXT_MAX)
+      return null;
+    return { type: "text", text: value.text };
+  }
+  const modifiers = readModifiers(value.modifiers);
+  if (!modifiers)
+    return null;
+  if (value.type === "pointer") {
+    if (value.action !== "down" && value.action !== "up" && value.action !== "move")
+      return null;
+    if (!isFiniteNumber(value.x) || !isFiniteNumber(value.y) || !isFiniteNumber(value.button) || !isFiniteNumber(value.buttons))
+      return null;
+    return { type: "pointer", action: value.action, x: value.x, y: value.y, button: value.button, buttons: value.buttons, modifiers };
+  }
+  if (value.type === "wheel") {
+    if (!isFiniteNumber(value.x) || !isFiniteNumber(value.y) || !isFiniteNumber(value.deltaX) || !isFiniteNumber(value.deltaY))
+      return null;
+    return { type: "wheel", x: value.x, y: value.y, deltaX: value.deltaX, deltaY: value.deltaY, modifiers };
+  }
+  if (value.type === "key") {
+    if (value.action !== "down" && value.action !== "up")
+      return null;
+    if (!isText(value.key) || !isText(value.code) || value.key.length > 64 || value.code.length > 64)
+      return null;
+    return { type: "key", action: value.action, key: value.key, code: value.code, modifiers };
+  }
+  return null;
+};
+var readSurfaceInputBatch = (body) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (Object(parsed) !== parsed || parsed === null || !Array.isArray(parsed.events))
+    return null;
+  if (parsed.events.length > SURFACE_INPUT_BATCH_MAX)
+    return null;
+  const events = [];
+  for (const item of parsed.events) {
+    if (Object(item) !== item || item === null)
+      return null;
+    const event = readEvent(item);
+    if (!event)
+      return null;
+    events.push(event);
+  }
+  return { events };
+};
+var CONTROLLERS = new Set(SURFACE_CONTROLLERS);
+var readSurfaceControlNotice = (body) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (Object(parsed) !== parsed || parsed === null)
+    return null;
+  const { controller } = parsed;
+  if (!isText(controller) || !CONTROLLERS.has(controller))
+    return null;
+  return { controller };
+};
+var readSurfaceResizeRequest = (body) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (Object(parsed) !== parsed || parsed === null)
+    return null;
+  const { width, height } = parsed;
+  if (!isFiniteNumber(width) || !isFiniteNumber(height))
+    return null;
+  if (width < 1 || height < 1 || width > SURFACE_DIMENSION_MAX || height > SURFACE_DIMENSION_MAX)
+    return null;
+  return { width: Math.round(width), height: Math.round(height) };
 };
 
 // src/page-scripts.js
@@ -4715,6 +4909,207 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
   };
 };
 
+// src/context-menu.js
+import crypto from "node:crypto";
+var MENU_WORLD = "openchamber-menu";
+var MENU_BINDING = "openchamberMenu";
+var THEME_PROPERTIES = Object.freeze({
+  elevated: "--menu-background",
+  elevatedForeground: "--menu-foreground",
+  border: "--menu-border",
+  hover: "--menu-hover",
+  muted: "--menu-muted",
+  font: "--menu-font",
+  radius: "--menu-radius"
+});
+var readMenuTheme = (value) => {
+  if (!value || typeof value !== "object" || value.mode !== "light" && value.mode !== "dark") return null;
+  const properties = {};
+  for (const [token, property] of Object.entries(THEME_PROPERTIES)) {
+    const declared = value[token];
+    if (typeof declared === "string" && declared.length <= 200 && !/[;{}<>\\]/.test(declared)) properties[property] = declared;
+  }
+  return { dark: value.mode === "dark", properties };
+};
+function observeContextMenu() {
+  const state = globalThis.__openchamberMenu ??= {};
+  state.dispose?.();
+  state.event = null;
+  const listener = (event) => {
+    if (!state.event && event.isTrusted && event.button === 2) state.event = event;
+  };
+  addEventListener("contextmenu", listener, true);
+  const timer = setTimeout(() => state.dispose?.(), 5e3);
+  state.dispose = () => {
+    removeEventListener("contextmenu", listener, true);
+    clearTimeout(timer);
+    state.dispose = null;
+  };
+}
+function settleContextMenu() {
+  const state = globalThis.__openchamberMenu;
+  const event = state?.event;
+  state?.dispose?.();
+  if (state) state.event = null;
+  return event ? { handled: event.defaultPrevented, x: event.clientX, y: event.clientY } : null;
+}
+function openContextMenu({ x, y, token, binding, theme, items }) {
+  const state = globalThis.__openchamberMenu ??= {};
+  state.close?.();
+  const report = globalThis[binding];
+  const host = document.createElement("openchamber-menu");
+  host.setAttribute("style", "all: initial; position: fixed; inset: 0; z-index: 2147483647; display: block;");
+  for (const [property, value] of Object.entries(theme.properties)) host.style.setProperty(property, value);
+  const root = host.attachShadow({ mode: "closed" });
+  const style = document.createElement("style");
+  style.textContent = [
+    `:host { color-scheme: ${theme.dark ? "dark" : "light"}; }`,
+    ".menu { position: fixed; box-sizing: border-box; min-width: 180px; padding: 4px; border: 1px solid var(--menu-border, #8886); border-radius: var(--menu-radius, 8px); background: var(--menu-background, Canvas); color: var(--menu-foreground, CanvasText); font: 13px var(--menu-font, system-ui, sans-serif); box-shadow: 0 8px 24px #0004; }",
+    "button { display: flex; box-sizing: border-box; width: 100%; height: 28px; align-items: center; justify-content: space-between; gap: 24px; padding: 0 10px; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; text-align: left; }",
+    "button:hover:not(:disabled) { background: var(--menu-hover, #8883); }",
+    "button:disabled, span { color: var(--menu-muted, GrayText); }",
+    "hr { margin: 4px 2px; border: 0; border-top: 1px solid var(--menu-border, #8886); }",
+    ".backdrop { position: fixed; inset: 0; }"
+  ].join("\n");
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.setAttribute("role", "menu");
+  for (const item of items) {
+    if (item.separator) {
+      menu.append(document.createElement("hr"));
+      continue;
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.dataset.action = item.action;
+    button.disabled = item.disabled === true;
+    button.append(item.label);
+    if (item.hint) {
+      const hint = document.createElement("span");
+      hint.textContent = item.hint;
+      button.append(hint);
+    }
+    menu.append(button);
+  }
+  const backdrop = document.createElement("div");
+  backdrop.className = "backdrop";
+  root.append(style, backdrop, menu);
+  const choose = (action) => {
+    state.close?.();
+    report(JSON.stringify({ token, action }));
+  };
+  for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "auxclick", "dblclick", "wheel"]) {
+    root.addEventListener(type, (event) => {
+      event.stopPropagation();
+      if (type === "mousedown") event.preventDefault();
+    });
+  }
+  root.addEventListener("click", (event) => {
+    if (!event.isTrusted) return;
+    const item = event.target.closest("button[data-action]");
+    if (item?.disabled) return;
+    choose(item ? item.dataset.action : "dismiss");
+  });
+  root.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.isTrusted) choose("dismiss");
+  });
+  document.documentElement.append(host);
+  try {
+    host.popover = "manual";
+    host.showPopover();
+  } catch {
+  }
+  const bounds = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(4, Math.min(x, innerWidth - bounds.width - 4))}px`;
+  menu.style.top = `${Math.max(4, Math.min(y, innerHeight - bounds.height - 4))}px`;
+  state.close = () => {
+    host.remove();
+    state.close = null;
+  };
+}
+function closeContextMenu() {
+  globalThis.__openchamberMenu?.close?.();
+}
+var call = (page, contextId, fn, argument) => page.cdp.sendSession(page.sessionId, "Runtime.callFunctionOn", {
+  functionDeclaration: fn.toString(),
+  executionContextId: contextId,
+  arguments: argument === void 0 ? [] : [{ value: argument }],
+  returnByValue: true
+});
+var DEFAULT_THEME = Object.freeze({ dark: false, properties: {} });
+var createContextMenu = ({ navigationState, readSelection, onAction }) => {
+  let observing = null;
+  let open = null;
+  const close = async () => {
+    const current = open;
+    open = null;
+    if (current) await call(current.page, current.contextId, closeContextMenu).catch(() => {
+    });
+  };
+  return {
+    get isOpen() {
+      return open !== null;
+    },
+    close,
+    // The document went away, and its menu with it.
+    forget(sessionId) {
+      if (open?.page.sessionId === sessionId) open = null;
+      if (observing?.page.sessionId === sessionId) observing = null;
+    },
+    async observe(page) {
+      await close();
+      const selection = await readSelection().catch(() => "");
+      const world = await page.cdp.sendSession(page.sessionId, "Page.createIsolatedWorld", {
+        frameId: page.targetId,
+        worldName: MENU_WORLD
+      });
+      observing = { page, contextId: world.executionContextId, selection };
+      await call(page, observing.contextId, observeContextMenu);
+    },
+    async settle(page, theme) {
+      const current = observing;
+      observing = null;
+      if (!current || current.page.sessionId !== page.sessionId) return;
+      const result = (await call(page, current.contextId, settleContextMenu)).result?.value;
+      if (!result || result.handled) return;
+      const { canGoBack, canGoForward } = navigationState();
+      const token = crypto.randomUUID();
+      await call(page, current.contextId, openContextMenu, {
+        x: result.x,
+        y: result.y,
+        token,
+        binding: MENU_BINDING,
+        theme: theme ?? DEFAULT_THEME,
+        items: [
+          { action: "back", label: "Back", disabled: !canGoBack },
+          { action: "forward", label: "Forward", disabled: !canGoForward },
+          { action: "reload", label: "Reload" },
+          { separator: true },
+          { action: "copy", label: "Copy" },
+          { action: "paste", label: "Paste", hint: "Ctrl/Cmd+V", disabled: true }
+        ]
+      });
+      open = { page, contextId: current.contextId, token, selection: current.selection };
+    },
+    handleBinding(sessionId, params) {
+      if (!open || open.page.sessionId !== sessionId || params.executionContextId !== open.contextId) return;
+      let choice;
+      try {
+        choice = JSON.parse(params.payload);
+      } catch {
+        return;
+      }
+      if (choice?.token !== open.token) return;
+      const { selection } = open;
+      open = null;
+      if (typeof choice.action === "string") onAction(choice.action, selection);
+    }
+  };
+};
+
 // src/config.js
 import fs2 from "node:fs";
 import net2 from "node:net";
@@ -5273,191 +5668,6 @@ var createNativeSelectCompatibility = ({ ensurePage, reportError }) => {
   };
 };
 
-// node_modules/@openchamber/sdk/dist/contract.js
-var GUEST_FILE_STAT_KINDS = ["file", "directory", "other", "missing"];
-var HOST_REQUEST_ERROR_CODES = [
-  "HOST_UNAVAILABLE",
-  "HOST_TIMEOUT",
-  "HOST_REJECTED",
-  "DISCONNECTED",
-  "DISABLED",
-  "BAD_PATH",
-  "NO_INTEGRATION",
-  "NO_SERVICE",
-  "SERVICE_FAILED",
-  "NO_SESSION",
-  "SESSION_BUSY",
-  "NOT_GRANTED",
-  "NO_DIRECTORY",
-  "NOT_FOUND",
-  "FILE_TOO_LARGE",
-  "DENIED",
-  "NO_MODEL",
-  "MODEL_FAILED"
-];
-var SERVICE_STATUS_VALUES = ["stopped", "starting", "ready", "failed"];
-var hostRequestErrorCodeSet = new Set(HOST_REQUEST_ERROR_CODES);
-var serviceStatusSet = new Set(SERVICE_STATUS_VALUES);
-var fileStatKindSet = new Set(GUEST_FILE_STAT_KINDS);
-
-// node_modules/@openchamber/sdk/dist/service-providers.js
-var BROWSER_PROVIDER_PATH = "/browser-control";
-var BROWSER_CONTROL_ACTIONS = [
-  "browser.open",
-  "browser.snapshot",
-  "browser.click",
-  "browser.type",
-  "browser.scroll",
-  "browser.back",
-  "browser.forward",
-  "browser.inspect",
-  "browser.capture",
-  "browser.resize"
-];
-var BROWSER_PROVIDER_IDLE_MS = 10 * 6e4;
-var CONTROL_ACTIONS = new Set(BROWSER_CONTROL_ACTIONS);
-var isBrowserControlAction = (value) => CONTROL_ACTIONS.has(value);
-var readContext = (wire) => {
-  const directory = wire?.directory;
-  const sessionId = wire?.sessionId;
-  return {
-    directory: String(directory) === directory && directory.length > 0 ? directory : null,
-    sessionId: String(sessionId) === sessionId && sessionId.length > 0 ? sessionId : null
-  };
-};
-var readBrowserProviderRequest = (body) => {
-  let wire;
-  try {
-    const parsed = JSON.parse(body);
-    if (Object(parsed) !== parsed || parsed === null)
-      return null;
-    wire = parsed;
-  } catch {
-    return null;
-  }
-  const { requestId, action, parameters, context } = wire;
-  if (String(requestId) !== requestId || requestId.length === 0)
-    return null;
-  if (String(action) !== action || !isBrowserControlAction(action))
-    return null;
-  if (Object(parameters) !== parameters)
-    return null;
-  return { requestId, action, parameters, context: readContext(context) };
-};
-
-// node_modules/@openchamber/sdk/dist/service-surface.js
-var SURFACE_FRAME_PATH = "/surface/frame";
-var SURFACE_INPUT_PATH = "/surface/input";
-var SURFACE_CONTROL_PATH = "/surface/control";
-var SURFACE_RESIZE_PATH = "/surface/resize";
-var SURFACE_CLIPBOARD_PATH = "/surface/clipboard";
-var SURFACE_SEQ_HEADER = "x-surface-seq";
-var SURFACE_WIDTH_HEADER = "x-surface-width";
-var SURFACE_HEIGHT_HEADER = "x-surface-height";
-var SURFACE_TITLE_HEADER = "x-surface-title";
-var SURFACE_AGENT_ACTIVE_HEADER = "x-surface-agent-active";
-var SURFACE_FRAME_WAIT_MS = 25e3;
-var SURFACE_FRAME_MAX_BYTES = 8e6;
-var SURFACE_INPUT_BATCH_MAX = 256;
-var SURFACE_TEXT_MAX = 64e3;
-var SURFACE_TITLE_MAX = 200;
-var SURFACE_DIMENSION_MAX = 16384;
-var SURFACE_CONTROLLERS = ["none", "agent", "user"];
-var isFiniteNumber = (value) => Number(value) === value && Number.isFinite(value);
-var isBool = (value) => value === true || value === false;
-var isText = (value) => String(value) === value;
-var readModifiers = (value) => {
-  if (Object(value) !== value || value === null)
-    return null;
-  const wire = value;
-  if (!isBool(wire.alt) || !isBool(wire.ctrl) || !isBool(wire.meta) || !isBool(wire.shift))
-    return null;
-  return { alt: wire.alt, ctrl: wire.ctrl, meta: wire.meta, shift: wire.shift };
-};
-var readEvent = (value) => {
-  if (value.type === "text") {
-    if (!isText(value.text) || value.text.length > SURFACE_TEXT_MAX)
-      return null;
-    return { type: "text", text: value.text };
-  }
-  const modifiers = readModifiers(value.modifiers);
-  if (!modifiers)
-    return null;
-  if (value.type === "pointer") {
-    if (value.action !== "down" && value.action !== "up" && value.action !== "move")
-      return null;
-    if (!isFiniteNumber(value.x) || !isFiniteNumber(value.y) || !isFiniteNumber(value.button) || !isFiniteNumber(value.buttons))
-      return null;
-    return { type: "pointer", action: value.action, x: value.x, y: value.y, button: value.button, buttons: value.buttons, modifiers };
-  }
-  if (value.type === "wheel") {
-    if (!isFiniteNumber(value.x) || !isFiniteNumber(value.y) || !isFiniteNumber(value.deltaX) || !isFiniteNumber(value.deltaY))
-      return null;
-    return { type: "wheel", x: value.x, y: value.y, deltaX: value.deltaX, deltaY: value.deltaY, modifiers };
-  }
-  if (value.type === "key") {
-    if (value.action !== "down" && value.action !== "up")
-      return null;
-    if (!isText(value.key) || !isText(value.code) || value.key.length > 64 || value.code.length > 64)
-      return null;
-    return { type: "key", action: value.action, key: value.key, code: value.code, modifiers };
-  }
-  return null;
-};
-var readSurfaceInputBatch = (body) => {
-  let parsed;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return null;
-  }
-  if (Object(parsed) !== parsed || parsed === null || !Array.isArray(parsed.events))
-    return null;
-  if (parsed.events.length > SURFACE_INPUT_BATCH_MAX)
-    return null;
-  const events = [];
-  for (const item of parsed.events) {
-    if (Object(item) !== item || item === null)
-      return null;
-    const event = readEvent(item);
-    if (!event)
-      return null;
-    events.push(event);
-  }
-  return { events };
-};
-var CONTROLLERS = new Set(SURFACE_CONTROLLERS);
-var readSurfaceControlNotice = (body) => {
-  let parsed;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return null;
-  }
-  if (Object(parsed) !== parsed || parsed === null)
-    return null;
-  const { controller } = parsed;
-  if (!isText(controller) || !CONTROLLERS.has(controller))
-    return null;
-  return { controller };
-};
-var readSurfaceResizeRequest = (body) => {
-  let parsed;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return null;
-  }
-  if (Object(parsed) !== parsed || parsed === null)
-    return null;
-  const { width, height } = parsed;
-  if (!isFiniteNumber(width) || !isFiniteNumber(height))
-    return null;
-  if (width < 1 || height < 1 || width > SURFACE_DIMENSION_MAX || height > SURFACE_DIMENSION_MAX)
-    return null;
-  return { width: Math.round(width), height: Math.round(height) };
-};
-
 // src/surface.js
 var BUTTON_NAMES = ["left", "middle", "right"];
 var KEY_CODES = Object.freeze({
@@ -5570,6 +5780,7 @@ var createSurface = (runtime) => {
   let closed = false;
   let startPromise = null;
   let target = 0;
+  let swallowEscapeUp = false;
   const finishWaiter = (waiter, value) => {
     if (!waiters.delete(waiter)) return;
     clearTimeout(waiter.timer);
@@ -5660,12 +5871,33 @@ var createSurface = (runtime) => {
         waiters.add(waiter);
       });
     },
-    async input(events) {
+    async input(events, theme = null) {
       const current = await start();
-      for (const event of events) await dispatchInput(current, event);
+      const menu = runtime.contextMenu;
+      for (const event of events) {
+        if (event.type === "key" && event.key === "Escape" && event.action === "up" && swallowEscapeUp) {
+          swallowEscapeUp = false;
+          continue;
+        }
+        const secondary = event.type === "pointer" && event.button === 2;
+        if (menu.isOpen) {
+          const dismissOnly = event.type === "wheel" || event.type === "key" && event.key === "Escape";
+          if (dismissOnly || event.type === "key" || secondary && event.action === "down") await menu.close();
+          if (dismissOnly) {
+            swallowEscapeUp = event.type === "key";
+            continue;
+          }
+        }
+        if (secondary && event.action === "down") await menu.observe(current).catch(() => {
+        });
+        await dispatchInput(current, event);
+        if (secondary && event.action === "up") await menu.settle(current, theme).catch(() => {
+        });
+      }
     },
     control(controller) {
       runtime.controller = controller;
+      void runtime.contextMenu.close();
     },
     resize({ width, height }) {
       return runtime.setPanelSize({ width, height });
@@ -5791,6 +6023,11 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     get nativeSelectCompatibilityError() {
       return activeTab()?.compatibility.error ?? "";
     },
+    // Text the viewer asked to copy from the page menu; the dock offers it through a host toast.
+    get copyRequest() {
+      if (!copyRequest || Date.now() - copyRequest.at > 1e4) return null;
+      return { id: copyRequest.id, text: copyRequest.text };
+    },
     get consoleProblems() {
       return (activeTab()?.problems ?? []).map((problem) => ({ ...problem }));
     },
@@ -5845,6 +6082,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     activeTargetId = current.targetId;
     activations += 1;
     current.lastActive = activations;
+    void contextMenu.close();
     surface.retarget();
     notifyTabs();
     await cdp.sendSession(current.sessionId, "Page.bringToFront").catch(() => {
@@ -5856,6 +6094,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     tabs.delete(targetId);
     sessions.delete(current.sessionId);
     clearTimeout(current.navigationTimer);
+    contextMenu.forget(current.sessionId);
     if (activeTargetId !== targetId) {
       notifyTabs();
       return;
@@ -5884,7 +6123,8 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       await Promise.all([
         cdp.sendSession(sessionId, "Page.enable"),
         cdp.sendSession(sessionId, "Runtime.enable"),
-        cdp.sendSession(sessionId, "Log.enable")
+        cdp.sendSession(sessionId, "Log.enable"),
+        cdp.sendSession(sessionId, "Runtime.addBinding", { name: MENU_BINDING, executionContextName: MENU_WORLD })
       ]);
       await applyViewport(cdp, sessionId, runtime.viewport);
       if (nativeSelectEnabled) await current.compatibility.setEnabled(true).catch(() => {
@@ -5922,6 +6162,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     if (event.method === "Page.frameNavigated" && event.params.frame?.id) {
       if (!event.params.frame.parentId) {
         current.mainFrameId = event.params.frame.id;
+        contextMenu.forget(current.sessionId);
         current.url = event.params.frame.url;
         void refreshNavigation(current);
       }
@@ -5942,6 +6183,9 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       void refreshNavigation(current);
     }
     if (event.method === "Page.screencastFrame") scheduleNavigationRefresh(current);
+    if (event.method === "Runtime.bindingCalled" && event.params.name === MENU_BINDING) {
+      contextMenu.handleBinding(current.sessionId, event.params);
+    }
     if (event.method === "Runtime.consoleAPICalled") {
       if (event.params.type !== "warning" && event.params.type !== "error") return;
       const message = event.params.args?.map((arg) => arg.value ?? arg.description).filter(Boolean).join(" ");
@@ -6044,6 +6288,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
   };
   runtime.command = async (name, parameters = {}) => {
     if (closed) throw new Error("Browser runtime is closed");
+    await contextMenu.close();
     if (name === "tab-new") {
       await openTab();
       return;
@@ -6088,6 +6333,20 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
   };
   const execute = createBrowserActions(runtime);
   const surface = createSurface(runtime);
+  let copyRequest = null;
+  const contextMenu = createContextMenu({
+    navigationState: () => ({ canGoBack: runtime.canGoBack, canGoForward: runtime.canGoForward }),
+    readSelection: () => surface.clipboard(),
+    onAction: (action, selection) => {
+      if (action === "back" || action === "forward" || action === "reload") {
+        void runtime.command(action).catch(() => {
+        });
+      } else if (action === "copy") {
+        copyRequest = { id: crypto2.randomUUID(), text: selection.length > GUEST_CLIPBOARD_TEXT_MAX ? null : selection, at: Date.now() };
+      }
+    }
+  });
+  runtime.contextMenu = contextMenu;
   runtime.perform = (action, parameters, callerSignal) => {
     if (closed) return Promise.reject(new Error("Browser runtime is closed"));
     if (runtime.controller === "user") {
@@ -6100,6 +6359,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       if (runtime.controller === "user") {
         throw new Error("The user controls the browser. Wait for them to hand control back.");
       }
+      await contextMenu.close();
       runtime.agentActive = true;
       try {
         const data = await execute(action, parameters, signal);
@@ -6113,7 +6373,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     return operation;
   };
   runtime.surfaceFrame = (request) => surface.frame(request);
-  runtime.surfaceInput = (events) => surface.input(events);
+  runtime.surfaceInput = (events, theme) => surface.input(events, theme);
   runtime.surfaceControl = (controller) => surface.control(controller);
   runtime.surfaceResize = (size) => surface.resize(size);
   runtime.surfaceClipboard = () => surface.clipboard();
@@ -6153,7 +6413,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
 };
 
 // src/service.js
-import crypto from "node:crypto";
+import crypto3 from "node:crypto";
 import http2 from "node:http";
 import net3 from "node:net";
 var BODY_MAX_BYTES = 17 * 1024 * 1024;
@@ -6174,7 +6434,7 @@ var authorized = (request, token) => {
   if (typeof header !== "string" || !header.startsWith("Bearer ")) return false;
   const provided = Buffer.from(header.slice(7));
   const expected = Buffer.from(token);
-  return provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
+  return provided.length === expected.length && crypto3.timingSafeEqual(provided, expected);
 };
 var withScheme = (address) => {
   if (/^[a-z][a-z\d+.-]*:\/\//i.test(address)) return address;
@@ -6317,10 +6577,13 @@ var createService = ({ runtime, token, port = 0 }) => {
     if (request.method === "POST" && url.pathname === "/browser/viewer") {
       const body = await readObjectBody(request);
       const ratio = body?.devicePixelRatio;
-      if (typeof ratio !== "number" || !Number.isFinite(ratio) || ratio < 0.25 || ratio > 8) {
-        return text(response, 400, "devicePixelRatio must be a number from 0.25 to 8\n");
+      const theme = body?.theme === void 0 ? void 0 : readMenuTheme(body.theme);
+      const validRatio = typeof ratio === "number" && Number.isFinite(ratio) && ratio >= 0.25 && ratio <= 8;
+      if (ratio !== void 0 && !validRatio || theme === null || ratio === void 0 && theme === void 0) {
+        return text(response, 400, "Send devicePixelRatio from 0.25 to 8, a host theme, or both\n");
       }
-      await runtime.setDevicePixelRatio(ratio);
+      if (theme) runtime.setViewerTheme(theme);
+      if (validRatio) await runtime.setDevicePixelRatio(ratio);
       return json(response, 200, runtime.state());
     }
     if (request.method === "POST" && url.pathname === "/browser/viewport") {

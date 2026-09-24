@@ -28,6 +28,7 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
   // The host reports the panel in device pixels; the dock reports its ratio.
   let surfaceViewport = null;
   let devicePixelRatio = 1;
+  let viewerTheme = null;
   let closed = false;
   let notice = null;
 
@@ -152,6 +153,7 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
         selectedScopeId,
         generation: viewGeneration,
         notice: notice ? { ...notice } : null,
+        copy: selected()?.runtime.copyRequest ?? null,
         scopes: Array.from(scopes.values(), (entry) => ({
           id: entry.id,
           directory: entry.directory,
@@ -212,6 +214,9 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
         requireGeneration(expectedGeneration);
         await requireSelected().runtime.configureViewport({ mode, source: 'viewer', width, height, mobile });
       });
+    },
+    setViewerTheme(theme) {
+      viewerTheme = theme;
     },
     setDevicePixelRatio(ratio) {
       return enqueue(async () => {
@@ -295,7 +300,7 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
       return enqueue(async () => {
         const runtime = requireSelected().runtime;
         await runtime.surfaceControl('user');
-        return runtime.surfaceInput(events);
+        return runtime.surfaceInput(events, viewerTheme);
       });
     },
     surfaceControl(nextController) {
