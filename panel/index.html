@@ -57,6 +57,10 @@
       .custom-size[hidden] { display: none; }
       .custom-size input { flex: 0 1 84px; margin-left: 0; padding: 0 8px; }
       .custom-size span { color: var(--oc-muted, currentColor); font-size: 12px; }
+      .problems { display: inline-flex; flex: 0 0 auto; height: 22px; align-items: center; gap: 6px; margin-left: 4px; padding: 0 8px; border-radius: 999px; background: var(--oc-hover, transparent); font-size: 11px; font-variant-numeric: tabular-nums; }
+      .problems[hidden], .problems span:empty { display: none; }
+      .problem-errors { color: var(--oc-error-text, var(--oc-error, currentColor)); }
+      .problem-warnings { color: var(--oc-warning-text, var(--oc-warning, currentColor)); }
       input:focus, button:focus-visible, select:focus-visible { outline: 2px solid var(--oc-focus, currentColor); outline-offset: 1px; }
       @media (forced-colors: active) {
         .status::before, .session-tabs .oc-sdk-tab[aria-selected="true"]::after, .select-compatibility[aria-pressed="true"], .mobile-toggle[aria-pressed="true"], .page-tab[data-active="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }

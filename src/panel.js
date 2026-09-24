@@ -171,6 +171,16 @@ setIcon(cancelSize, (svg) => {
   addLine(svg, { x1: '6', y1: '6', x2: '18', y2: '18' });
   addLine(svg, { x1: '18', y1: '6', x2: '6', y2: '18' });
 });
+// Console problems on the visible page; the full view is the Browser inspector page.
+const problems = document.createElement('span');
+problems.className = 'problems';
+problems.hidden = true;
+const errorCount = document.createElement('span');
+errorCount.className = 'problem-errors';
+const warningCount = document.createElement('span');
+warningCount.className = 'problem-warnings';
+problems.append(errorCount, warningCount);
+
 const customSize = document.createElement('form');
 customSize.className = 'custom-size';
 customSize.hidden = true;
@@ -280,7 +290,7 @@ pageTabsRow.append(pageTabs, newTab);
 
 const navigationRow = document.createElement('div');
 navigationRow.className = 'row navigation-row';
-navigationRow.append(back, forward, reload, address, customSize, viewportSelect, rotate, mobileToggle, selectCompatibility);
+navigationRow.append(back, forward, reload, address, customSize, problems, viewportSelect, rotate, mobileToggle, selectCompatibility);
 root.append(scopeRow, pageTabsRow, navigationRow);
 
 let state = null;
@@ -376,6 +386,14 @@ const render = () => {
     : 'Show native select menus in the shared browser';
   selectCompatibility.title = compatibilityLabel;
   selectCompatibility.setAttribute('aria-label', compatibilityLabel);
+
+  const { errors = 0, warnings = 0 } = selected?.problems ?? {};
+  problems.hidden = errors + warnings === 0;
+  errorCount.textContent = errors ? `✕ ${errors}` : '';
+  warningCount.textContent = warnings ? `⚠ ${warnings}` : '';
+  const problemsLabel = `${errors} ${errors === 1 ? 'error' : 'errors'} and ${warnings} ${warnings === 1 ? 'warning' : 'warnings'} in this page's console. Open Browser inspector from Extension pages to see them.`;
+  problems.title = problemsLabel;
+  problems.setAttribute('aria-label', problemsLabel);
 
   const viewport = selected?.viewport ?? null;
   const choice = viewportChoice(viewport);

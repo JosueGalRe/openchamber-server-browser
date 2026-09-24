@@ -1542,24 +1542,24 @@ var require_sender = __commonJS({
        * @public
        */
       ping(data, mask, cb) {
-        let byteLength;
+        let byteLength2;
         let readOnly;
         if (typeof data === "string") {
-          byteLength = Buffer.byteLength(data);
+          byteLength2 = Buffer.byteLength(data);
           readOnly = false;
         } else if (isBlob(data)) {
-          byteLength = data.size;
+          byteLength2 = data.size;
           readOnly = false;
         } else {
           data = toBuffer(data);
-          byteLength = data.length;
+          byteLength2 = data.length;
           readOnly = toBuffer.readOnly;
         }
-        if (byteLength > 125) {
+        if (byteLength2 > 125) {
           throw new RangeError("The data size must not be greater than 125 bytes");
         }
         const options = {
-          [kByteLength]: byteLength,
+          [kByteLength]: byteLength2,
           fin: true,
           generateMask: this._generateMask,
           mask,
@@ -1589,24 +1589,24 @@ var require_sender = __commonJS({
        * @public
        */
       pong(data, mask, cb) {
-        let byteLength;
+        let byteLength2;
         let readOnly;
         if (typeof data === "string") {
-          byteLength = Buffer.byteLength(data);
+          byteLength2 = Buffer.byteLength(data);
           readOnly = false;
         } else if (isBlob(data)) {
-          byteLength = data.size;
+          byteLength2 = data.size;
           readOnly = false;
         } else {
           data = toBuffer(data);
-          byteLength = data.length;
+          byteLength2 = data.length;
           readOnly = toBuffer.readOnly;
         }
-        if (byteLength > 125) {
+        if (byteLength2 > 125) {
           throw new RangeError("The data size must not be greater than 125 bytes");
         }
         const options = {
-          [kByteLength]: byteLength,
+          [kByteLength]: byteLength2,
           fin: true,
           generateMask: this._generateMask,
           mask,
@@ -1647,23 +1647,23 @@ var require_sender = __commonJS({
         const perMessageDeflate = this._extensions[PerMessageDeflate.extensionName];
         let opcode = options.binary ? 2 : 1;
         let rsv1 = options.compress;
-        let byteLength;
+        let byteLength2;
         let readOnly;
         if (typeof data === "string") {
-          byteLength = Buffer.byteLength(data);
+          byteLength2 = Buffer.byteLength(data);
           readOnly = false;
         } else if (isBlob(data)) {
-          byteLength = data.size;
+          byteLength2 = data.size;
           readOnly = false;
         } else {
           data = toBuffer(data);
-          byteLength = data.length;
+          byteLength2 = data.length;
           readOnly = toBuffer.readOnly;
         }
         if (this._firstFragment) {
           this._firstFragment = false;
           if (rsv1 && perMessageDeflate && perMessageDeflate.params[perMessageDeflate._isServer ? "server_no_context_takeover" : "client_no_context_takeover"]) {
-            rsv1 = byteLength >= perMessageDeflate._threshold;
+            rsv1 = byteLength2 >= perMessageDeflate._threshold;
           }
           this._compress = rsv1;
         } else {
@@ -1672,7 +1672,7 @@ var require_sender = __commonJS({
         }
         if (options.fin) this._firstFragment = true;
         const opts = {
-          [kByteLength]: byteLength,
+          [kByteLength]: byteLength2,
           fin: options.fin,
           generateMask: this._generateMask,
           mask: options.mask,
@@ -3643,6 +3643,560 @@ var require_websocket_server = __commonJS({
 import path3 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
+// src/inspector.js
+import crypto from "node:crypto";
+
+// src/inspector-format.js
+var REDACTED = "[REDACTED]";
+var BODY_LIMIT = 8e3;
+var sensitiveName = (name) => /auth|cookie|password|passwd|secret|token|credential|apikey|accesskey|privatekey|sessionid|signature|csrf|xsrf|^key$|^code$/i.test(String(name).replace(/[^a-z0-9]/gi, ""));
+var boundedString = (value, maxChars, fallback = "") => {
+  try {
+    return String.prototype.valueOf.call(value).slice(0, maxChars);
+  } catch {
+    return fallback;
+  }
+};
+var redactUrl = (value, maxChars = 2048) => {
+  const source = boundedString(value, Infinity).trim().replace(/[\t\n\r]/g, "");
+  if (!source) return "";
+  try {
+    const absolute = URL.canParse(source);
+    const url = new URL(source, "https://inspector.invalid");
+    if (!url.host && !["file:", "about:"].includes(url.protocol)) return `${url.protocol}[redacted]`.slice(0, maxChars);
+    url.username = "";
+    url.password = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (sensitiveName(key)) url.searchParams.set(key, REDACTED);
+    }
+    if (url.hash.includes("=")) {
+      const hash = url.hash.slice(1);
+      const queryStart = hash.indexOf("?") + 1;
+      const params = new URLSearchParams(hash.slice(queryStart));
+      for (const key of [...params.keys()]) if (sensitiveName(key)) params.set(key, REDACTED);
+      url.hash = hash.slice(0, queryStart) + params.toString();
+    }
+    const result = absolute ? url.href : /^[/\\]{2}/.test(source) ? url.href.slice(url.protocol.length) : source.split(/[?#]/, 1)[0] + url.search + url.hash;
+    return result.slice(0, maxChars);
+  } catch {
+    return "[Invalid URL]".slice(0, maxChars);
+  }
+};
+var redactTextUrls = (text2) => text2.replace(/\b(?:https?|wss?|file):\/\/[^\s<>"']+/gi, (url) => redactUrl(url));
+var formatHeaders = (headers) => {
+  const output = [];
+  let truncated = false;
+  if (headers == null || Object.getPrototypeOf(headers) !== Object.prototype) return { headers: output, truncated };
+  for (const [rawName, rawValue] of Object.entries(headers)) {
+    if (output.length === 64) {
+      truncated = true;
+      break;
+    }
+    const name = boundedString(rawName, 256);
+    const rawText = boundedString(rawValue, Infinity);
+    const value = sensitiveName(rawName) ? REDACTED : ["location", "referer", "content-location"].includes(rawName.toLowerCase()) ? redactUrl(rawText, Infinity) : redactTextUrls(rawText);
+    truncated ||= name.length !== rawName.length || value.length > 1024;
+    output.push({ name, value: value.slice(0, 1024) });
+  }
+  return { headers: output, truncated };
+};
+var formatRemoteObject = (remoteObject, maxChars = 4e3) => {
+  const remote = remoteObject ?? {};
+  let text2 = boundedString(remote.description, maxChars + 1, "undefined");
+  let truncated = false;
+  if (remote.type === "string") text2 = boundedString(remote.value, maxChars + 1, text2);
+  else if (remote.type === "undefined") text2 = "undefined";
+  else if (remote.type === "boolean") text2 = remote.value === true ? "true" : "false";
+  else if (remote.type === "number" || remote.type === "bigint") {
+    text2 = boundedString(remote.unserializableValue, maxChars + 1, Number.isFinite(remote.value) ? String(remote.value) : text2);
+  } else if (remote.subtype === "null") text2 = "null";
+  else if (Array.isArray(remote.preview?.properties)) {
+    const properties = remote.preview.properties.slice(0, 10).map((property) => {
+      const name = boundedString(property?.name, 128);
+      const value = sensitiveName(boundedString(property?.name, Infinity)) ? REDACTED : boundedString(property?.value, maxChars + 1, boundedString(property?.type, 64, "object"));
+      return `${name}: ${property?.type === "string" && value !== REDACTED ? JSON.stringify(value) : value}`;
+    });
+    truncated = remote.preview.overflow === true || remote.preview.properties.length > 10;
+    text2 = `${remote.subtype === "array" ? "[" : "{"}${properties.join(", ")}${remote.subtype === "array" ? "]" : "}"}`;
+  }
+  truncated ||= text2.length > maxChars;
+  text2 = redactTextUrls(text2);
+  return { text: text2.slice(0, maxChars), truncated: truncated || text2.length > maxChars };
+};
+var formatConsoleEvent = (method, params, id) => {
+  if (!["Runtime.consoleAPICalled", "Runtime.exceptionThrown"].includes(method)) return null;
+  const event = params ?? {};
+  const exception = method === "Runtime.exceptionThrown";
+  const details = event.exceptionDetails ?? {};
+  const frames = exception ? details.stackTrace?.callFrames : event.stackTrace?.callFrames;
+  const frame = Array.isArray(frames) ? frames[0] : null;
+  const args = Array.isArray(event.args) ? event.args : [];
+  const parts = exception ? [formatRemoteObject(details.exception ?? { type: "string", value: details.text })] : args.slice(0, 32).map((value) => formatRemoteObject(value));
+  const text2 = parts.map((part) => part.text).join(" ");
+  const levels = { debug: "debug", info: "info", warning: "warning", warn: "warning", error: "error", assert: "error" };
+  const consoleType = boundedString(event.type, 64);
+  const line = exception ? details.lineNumber ?? frame?.lineNumber : frame?.lineNumber;
+  return {
+    id: boundedString(id, 128),
+    timestamp: Number.isFinite(event.timestamp) && event.timestamp >= 0 && event.timestamp <= 864e13 ? event.timestamp : Date.now(),
+    level: exception ? "error" : Object.hasOwn(levels, consoleType) ? levels[consoleType] : "log",
+    text: text2.slice(0, 4e3),
+    source: redactUrl(exception ? details.url || frame?.url : frame?.url),
+    line: Number.isInteger(line) && line >= 0 ? line : null,
+    truncated: text2.length > 4e3 || parts.some((part) => part.truncated) || args.length > 32
+  };
+};
+var redactJsonValue = (value) => {
+  if (Array.isArray(value)) return value.map(redactJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sensitiveName(key) ? REDACTED : redactJsonValue(item)]));
+};
+var redactJsonBody = (text2) => {
+  try {
+    return JSON.stringify(redactJsonValue(JSON.parse(text2)), null, 2);
+  } catch {
+    return null;
+  }
+};
+var normalizeBody = (body, base64Encoded, mimeType) => {
+  const mime = boundedString(mimeType, 256).toLowerCase();
+  const type = mime.split(";", 1)[0].trim();
+  const unsupported = { text: null, truncated: false, supported: false };
+  if (!/^text\/|^(?:application\/(?:json|javascript|x-javascript|xml|x-www-form-urlencoded)|[^/]+\/[^;]+\+(?:json|xml))$/.test(type)) return unsupported;
+  if (/charset\s*=/.test(mime) && !/charset\s*=\s*["']?(?:utf-?8|us-ascii)(?:["';\s]|$)/.test(mime)) return unsupported;
+  let text2 = boundedString(body, Infinity, null);
+  if (text2 === null) return unsupported;
+  let truncated = false;
+  if (base64Encoded === true) {
+    const prefix = text2.slice(0, 42672);
+    if (text2.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(prefix)) return unsupported;
+    try {
+      truncated = text2.length > prefix.length;
+      text2 = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(prefix, "base64"), { stream: truncated });
+    } catch {
+      return unsupported;
+    }
+  }
+  if (type.endsWith("json") && text2) {
+    const redacted = truncated ? null : redactJsonBody(text2);
+    if (redacted === null) return unsupported;
+    text2 = redacted;
+  }
+  truncated ||= text2.length > BODY_LIMIT;
+  text2 = text2.slice(0, BODY_LIMIT + 1);
+  if (type === "application/x-www-form-urlencoded") {
+    text2 = text2.split("&").map((part) => {
+      const equals = part.indexOf("=");
+      if (equals < 0) return part;
+      const key = new URLSearchParams(part).keys().next().value;
+      return sensitiveName(key) ? `${part.slice(0, equals + 1)}${encodeURIComponent(REDACTED)}` : part;
+    }).join("&");
+  }
+  return { text: text2.slice(0, BODY_LIMIT), truncated: truncated || text2.length > BODY_LIMIT, supported: true };
+};
+
+// src/inspector.js
+var MAX_CONSOLE_ROWS = 300;
+var MAX_NETWORK_ROWS = 200;
+var MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
+var MAX_BATCH_BYTES = 48 * 1024;
+var MAX_BATCH_ROWS = 32;
+var MAX_REPLY_BYTES = 64 * 1024;
+var MAX_EXPRESSION_CHARS = 16e3;
+var OPERATION_TIMEOUT_MS = 5e3;
+var CAPTURE_IDLE_MS = 3e4;
+var MESSAGES = Object.freeze({
+  UNAVAILABLE: "The inspector needs an open browser tab",
+  INVALID_REQUEST: "The inspector request is invalid or another request is still running",
+  CAPTURE_GONE: "This inspector capture is no longer available",
+  EVALUATION_FAILED: "Could not run JavaScript in this page",
+  EVALUATION_TIMEOUT: "JavaScript evaluation exceeded the time limit",
+  REQUEST_GONE: "This captured request is no longer available",
+  REQUEST_FAILED: "Could not read the captured request",
+  CAPTURE_FAILED: "Could not start the browser inspector",
+  AGENT_ACTIVE: "The agent is using the browser; run JavaScript once its action finishes"
+});
+var InspectorError = class extends Error {
+  constructor(code) {
+    super(MESSAGES[code]);
+    this.code = code;
+  }
+};
+var byteLength = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
+var finiteOrNull = (value) => Number.isFinite(value) && value >= 0 ? value : null;
+var fitReply = (message) => {
+  while (byteLength(message) >= MAX_REPLY_BYTES) {
+    message.truncated = true;
+    if (message.requestHeaders?.length || message.responseHeaders?.length) {
+      const headers = message.requestHeaders.length >= message.responseHeaders.length ? message.requestHeaders : message.responseHeaders;
+      headers.pop();
+    } else if (message.requestBody?.length || message.responseBody?.length) {
+      const key = (message.requestBody?.length ?? 0) >= (message.responseBody?.length ?? 0) ? "requestBody" : "responseBody";
+      message[key] = message[key].slice(0, Math.floor(message[key].length / 2));
+    } else {
+      message.text = message.text.slice(0, Math.floor(message.text.length / 2));
+    }
+  }
+  return message;
+};
+var withDeadline = (operation) => new Promise((resolve) => {
+  const timer = setTimeout(() => resolve({ timedOut: true }), OPERATION_TIMEOUT_MS);
+  timer.unref?.();
+  operation.then((value) => resolve({ value }), (error) => resolve({ error })).finally(() => clearTimeout(timer));
+});
+var createCapture = ({ captureId, tab, startedAt }) => {
+  const consoleRows = /* @__PURE__ */ new Map();
+  const networkRows = /* @__PURE__ */ new Map();
+  const activeRequests = /* @__PURE__ */ new Map();
+  let revision = 0;
+  let retainedBytes = 0;
+  let nextId = 0;
+  let droppedConsole = 0;
+  let droppedNetwork = 0;
+  const store = (rows, entry) => {
+    const previous = rows.get(entry.row.id);
+    if (previous) retainedBytes -= previous.bytes;
+    revision += 1;
+    const stored = { ...entry, revision, bytes: byteLength(entry) };
+    rows.delete(entry.row.id);
+    rows.set(entry.row.id, stored);
+    retainedBytes += stored.bytes;
+  };
+  const evict = (rows, id) => {
+    const entry = rows.get(id);
+    if (!entry) return;
+    rows.delete(id);
+    retainedBytes -= entry.bytes;
+    if (rows === networkRows) {
+      if (activeRequests.get(entry.requestId) === id) activeRequests.delete(entry.requestId);
+      droppedNetwork += 1;
+    } else {
+      droppedConsole += 1;
+    }
+  };
+  const trim = () => {
+    while (consoleRows.size > MAX_CONSOLE_ROWS) evict(consoleRows, consoleRows.keys().next().value);
+    while (networkRows.size > MAX_NETWORK_ROWS) evict(networkRows, networkRows.keys().next().value);
+    while (retainedBytes > MAX_CAPTURE_BYTES && (consoleRows.size || networkRows.size)) {
+      const rows = consoleRows.size ? consoleRows : networkRows;
+      evict(rows, rows.keys().next().value);
+    }
+  };
+  const completeResponse = (entry, response, timestamp, state = "pending") => {
+    const headers = formatHeaders(response?.headers);
+    return {
+      ...entry,
+      responseHeaders: headers.headers,
+      truncated: entry.truncated || headers.truncated,
+      row: {
+        ...entry.row,
+        status: Number.isInteger(response?.status) ? finiteOrNull(response.status) : null,
+        statusText: boundedString(response?.statusText, 128),
+        mimeType: boundedString(response?.mimeType, 128),
+        encodedBytes: finiteOrNull(response?.encodedDataLength),
+        state,
+        durationMs: state === "complete" && Number.isFinite(timestamp) ? finiteOrNull(Math.max(0, (timestamp - entry.started) * 1e3)) : null,
+        fromCache: entry.row.fromCache || response?.fromDiskCache === true || response?.fromServiceWorker === true || response?.fromPrefetchCache === true
+      }
+    };
+  };
+  const event = (method, params) => {
+    if (method === "Runtime.consoleAPICalled" || method === "Runtime.exceptionThrown") {
+      if (Number.isFinite(params?.timestamp) && params.timestamp < startedAt) return;
+      const row = formatConsoleEvent(method, params, `${captureId}:c${++nextId}`);
+      if (!row) return;
+      store(consoleRows, { row });
+      trim();
+      return;
+    }
+    const requestId = boundedString(params?.requestId, 129);
+    if (!requestId || requestId.length > 128) return;
+    const current = networkRows.get(activeRequests.get(requestId));
+    if (method === "Network.requestWillBeSent") {
+      if (!params.request || !Number.isFinite(params.timestamp)) return;
+      if (current) {
+        if (!params.redirectResponse) return;
+        store(networkRows, { ...completeResponse(current, params.redirectResponse, params.timestamp, "complete"), redirected: true });
+      }
+      const headers = formatHeaders(params.request.headers);
+      const timestamp = params.wallTime * 1e3;
+      const row = {
+        id: `${captureId}:n${++nextId}`,
+        timestamp: Number.isFinite(timestamp) && timestamp >= 0 && timestamp <= 864e13 ? timestamp : Date.now(),
+        method: boundedString(params.request.method, 128),
+        url: redactUrl(params.request.url),
+        resourceType: boundedString(params.type, 128),
+        status: null,
+        statusText: "",
+        mimeType: "",
+        durationMs: null,
+        encodedBytes: null,
+        state: "pending",
+        failureText: null,
+        fromCache: false
+      };
+      activeRequests.set(requestId, row.id);
+      store(networkRows, {
+        row,
+        requestId,
+        started: params.timestamp,
+        requestHeaders: headers.headers,
+        responseHeaders: [],
+        hasPostData: params.request.hasPostData === true,
+        redirected: false,
+        truncated: headers.truncated
+      });
+      trim();
+      return;
+    }
+    if (!current) return;
+    if (method === "Network.responseReceived") {
+      store(networkRows, completeResponse(current, params.response, params.timestamp));
+    } else if (method === "Network.requestServedFromCache") {
+      store(networkRows, { ...current, row: { ...current.row, fromCache: true } });
+    } else if (method === "Network.loadingFinished" || method === "Network.loadingFailed") {
+      const failed = method === "Network.loadingFailed";
+      const networkError = boundedString(params.errorText, 1024);
+      store(networkRows, {
+        ...current,
+        row: {
+          ...current.row,
+          state: failed ? "failed" : "complete",
+          encodedBytes: failed ? current.row.encodedBytes : finiteOrNull(params.encodedDataLength),
+          durationMs: Number.isFinite(params.timestamp) ? finiteOrNull(Math.max(0, (params.timestamp - current.started) * 1e3)) : null,
+          failureText: failed ? params.canceled === true ? "Request canceled" : /^net::ERR_[A-Z0-9_]+$/.test(networkError) ? networkError : params.blockedReason ? "Request blocked" : "Request failed" : null
+        }
+      });
+    } else {
+      return;
+    }
+    trim();
+  };
+  const batch = (after) => {
+    const changed = [...consoleRows.values(), ...networkRows.values()].filter((entry) => entry.revision > after).sort((left, right) => left.revision - right.revision);
+    const reply = { cursor: after, more: false, console: [], network: [], droppedConsole, droppedNetwork };
+    let bytes = byteLength(reply);
+    for (const entry of changed) {
+      const rowBytes = byteLength(entry.row) + 1;
+      if (reply.console.length + reply.network.length === MAX_BATCH_ROWS || bytes + rowBytes > MAX_BATCH_BYTES) {
+        reply.more = true;
+        break;
+      }
+      (consoleRows.get(entry.row.id) === entry ? reply.console : reply.network).push(entry.row);
+      reply.cursor = entry.revision;
+      bytes += rowBytes;
+    }
+    return reply;
+  };
+  const clear = (scope) => {
+    const rows = scope === "console" ? consoleRows : networkRows;
+    for (const entry of rows.values()) retainedBytes -= entry.bytes;
+    rows.clear();
+    if (scope === "console") droppedConsole = 0;
+    else {
+      activeRequests.clear();
+      droppedNetwork = 0;
+    }
+  };
+  return {
+    captureId,
+    tab,
+    event,
+    batch,
+    clear,
+    request: (entryId) => networkRows.get(entryId) ?? null
+  };
+};
+var createInspector = ({ send }) => {
+  const captures = /* @__PURE__ */ new Map();
+  const networkUsers = /* @__PURE__ */ new Map();
+  const end = (capture) => {
+    if (captures.get(capture.captureId) !== capture) return;
+    captures.delete(capture.captureId);
+    clearTimeout(capture.idleTimer);
+    const users = (networkUsers.get(capture.tab.sessionId) ?? 1) - 1;
+    if (users > 0) {
+      networkUsers.set(capture.tab.sessionId, users);
+      return;
+    }
+    networkUsers.delete(capture.tab.sessionId);
+    void send(capture.tab.sessionId, "Network.disable").catch(() => {
+    });
+  };
+  const keepAlive = (capture) => {
+    clearTimeout(capture.idleTimer);
+    capture.idleTimer = setTimeout(() => end(capture), CAPTURE_IDLE_MS);
+    capture.idleTimer.unref?.();
+  };
+  const requireCapture = (captureId) => {
+    const capture = captures.get(captureId);
+    if (!capture) throw new InspectorError("CAPTURE_GONE");
+    keepAlive(capture);
+    return capture;
+  };
+  return {
+    async start(tab) {
+      if (!tab) throw new InspectorError("UNAVAILABLE");
+      const capture = createCapture({ captureId: crypto.randomUUID(), tab, startedAt: Date.now() });
+      capture.navigationRevision = 0;
+      capture.evaluating = false;
+      capture.reading = false;
+      const users = networkUsers.get(tab.sessionId) ?? 0;
+      networkUsers.set(tab.sessionId, users + 1);
+      captures.set(capture.captureId, capture);
+      keepAlive(capture);
+      if (users === 0) {
+        try {
+          await send(tab.sessionId, "Network.enable");
+        } catch {
+          end(capture);
+          throw new InspectorError("CAPTURE_FAILED");
+        }
+      }
+      return { captureId: capture.captureId };
+    },
+    // Page events of every tab; each capture keeps its own tab's.
+    event(sessionId, method, params) {
+      for (const capture of captures.values()) {
+        if (capture.tab.sessionId !== sessionId) continue;
+        const mainNavigation = method === "Page.frameNavigated" && params?.frame && !params.frame.parentId;
+        if (mainNavigation || method === "Runtime.executionContextsCleared" || method === "Page.navigatedWithinDocument" && params?.frameId === capture.tab.mainFrameId) {
+          capture.navigationRevision += 1;
+        }
+        capture.event(method, params);
+      }
+    },
+    events(captureId, after) {
+      const capture = requireCapture(captureId);
+      return { ...capture.batch(after), tab: { id: capture.tab.targetId, url: capture.tab.url, title: capture.tab.title } };
+    },
+    clear(captureId, scope) {
+      requireCapture(captureId).clear(scope);
+    },
+    stop(captureId) {
+      const capture = captures.get(captureId);
+      if (capture) end(capture);
+    },
+    // The tab went away or another one came forward.
+    endTab(sessionId) {
+      for (const capture of [...captures.values()]) if (capture.tab.sessionId === sessionId) end(capture);
+    },
+    async evaluate(captureId, expression) {
+      const capture = requireCapture(captureId);
+      if (typeof expression !== "string" || expression.length > MAX_EXPRESSION_CHARS || capture.evaluating) {
+        throw new InspectorError("INVALID_REQUEST");
+      }
+      capture.evaluating = true;
+      const navigationRevision = capture.navigationRevision;
+      const { sessionId } = capture.tab;
+      const objectGroup = `openchamber-inspector-${crypto.randomUUID()}`;
+      const release = () => {
+        void send(sessionId, "Runtime.releaseObjectGroup", { objectGroup }).catch(() => {
+        });
+      };
+      const pending = (async () => {
+        let result2 = await send(sessionId, "Runtime.evaluate", {
+          expression,
+          objectGroup,
+          awaitPromise: true,
+          returnByValue: false,
+          generatePreview: true,
+          timeout: 1e3,
+          silent: true,
+          replMode: true,
+          includeCommandLineAPI: true
+        });
+        if (result2?.result?.subtype === "promise" && !result2.exceptionDetails) {
+          result2 = await send(sessionId, "Runtime.awaitPromise", {
+            promiseObjectId: result2.result.objectId,
+            returnByValue: false,
+            generatePreview: true
+          });
+        }
+        return result2;
+      })();
+      pending.finally(release).catch(() => {
+      });
+      const outcome = await withDeadline(pending);
+      capture.evaluating = false;
+      if (outcome.timedOut) throw new InspectorError("EVALUATION_TIMEOUT");
+      if (outcome.error) {
+        throw new InspectorError(/timed out|timeout|execution was terminated/i.test(boundedString(outcome.error.message, 512)) ? "EVALUATION_TIMEOUT" : "EVALUATION_FAILED");
+      }
+      const result = outcome.value;
+      if (captures.get(captureId) !== capture || capture.navigationRevision !== navigationRevision || !result?.result && !result?.exceptionDetails) {
+        throw new InspectorError("EVALUATION_FAILED");
+      }
+      const exception = result.exceptionDetails;
+      const formatted = formatRemoteObject(exception?.exception ?? (exception ? { type: "string", value: exception.text } : result.result), 8e3);
+      return fitReply({ ...formatted, isError: Boolean(exception) });
+    },
+    async request(captureId, entryId, includeBody) {
+      const capture = requireCapture(captureId);
+      if (capture.reading) throw new InspectorError("INVALID_REQUEST");
+      const entry = capture.request(entryId);
+      if (!entry) throw new InspectorError("REQUEST_GONE");
+      const response = {
+        entryId,
+        requestHeaders: entry.requestHeaders.slice(),
+        responseHeaders: entry.responseHeaders.slice(),
+        requestBody: null,
+        responseBody: null,
+        bodyState: "not-requested",
+        truncated: entry.truncated
+      };
+      if (!includeBody) return fitReply(response);
+      if (entry.redirected) return fitReply({ ...response, bodyState: "unsupported" });
+      capture.reading = true;
+      const { sessionId } = capture.tab;
+      const outcome = await withDeadline((async () => {
+        let unavailable = false;
+        let unsupported = false;
+        const requestMime = entry.requestHeaders.find((header) => header.name.toLowerCase() === "content-type")?.value ?? "";
+        if (entry.hasPostData && !normalizeBody("", false, requestMime).supported) unsupported = true;
+        else if (entry.hasPostData) {
+          try {
+            const result = await send(sessionId, "Network.getRequestPostData", { requestId: entry.requestId });
+            const body = normalizeBody(result.postData, false, requestMime);
+            response.requestBody = body.text;
+            response.truncated ||= body.truncated;
+            unsupported ||= !body.supported;
+          } catch {
+            unavailable = true;
+          }
+        }
+        const current = capture.request(entryId);
+        if (!current) throw new InspectorError("REQUEST_GONE");
+        if (current.redirected) return { ...response, requestBody: null, bodyState: "unsupported" };
+        if (current.row.state !== "complete") unavailable = true;
+        else if (!normalizeBody("", false, current.row.mimeType).supported) unsupported = true;
+        else {
+          try {
+            const result = await send(sessionId, "Network.getResponseBody", { requestId: entry.requestId });
+            const body = normalizeBody(result.body, result.base64Encoded, current.row.mimeType);
+            response.responseBody = body.text;
+            response.truncated ||= body.truncated;
+            unsupported ||= !body.supported;
+          } catch {
+            unavailable = true;
+          }
+        }
+        response.bodyState = unavailable ? "unavailable" : unsupported ? "unsupported" : "available";
+        return response;
+      })());
+      capture.reading = false;
+      if (outcome.error instanceof InspectorError) throw outcome.error;
+      if (outcome.timedOut || outcome.error || captures.get(captureId) !== capture || !capture.request(entryId)) {
+        throw new InspectorError("REQUEST_FAILED");
+      }
+      return fitReply(outcome.value);
+    },
+    close() {
+      for (const capture of [...captures.values()]) end(capture);
+    }
+  };
+};
+
 // src/viewports.js
 var PRESETS = Object.freeze({
   mobile: Object.freeze({ width: 390, height: 844, mobile: true }),
@@ -3787,6 +4341,12 @@ var createBrowserManager = ({
     if (!entry) throw new Error("No browser scope is available yet");
     return entry;
   };
+  const requireInspectable = () => {
+    const entry = selected();
+    if (!entry) throw new InspectorError("UNAVAILABLE");
+    touch(entry);
+    return entry;
+  };
   const requireIdleSurface = () => {
     if (controller !== "none") {
       throw new Error("Dock controls are available only while the shared surface is idle");
@@ -3858,7 +4418,8 @@ var createBrowserManager = ({
           nativeSelectCompatibility: entry.runtime.nativeSelectCompatibility === true,
           nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? "",
           tabs: entry.runtime.tabs ?? [],
-          viewport: entry.runtime.viewportState ?? null
+          viewport: entry.runtime.viewportState ?? null,
+          problems: entry.runtime.problemCounts ?? { errors: 0, warnings: 0 }
         }))
       };
     },
@@ -4027,6 +4588,29 @@ var createBrowserManager = ({
         return requireSelected().runtime.surfaceResize(cssSize(size, devicePixelRatio));
       });
     },
+    // The inspector page follows the visible scope. Its calls stay out of the
+    // operation queue so polling never waits behind an agent action; a new
+    // selection answers CAPTURE_GONE and the page starts a fresh capture.
+    inspectorStart() {
+      return requireInspectable().runtime.inspectorStart();
+    },
+    inspectorEvents(captureId, after) {
+      return requireInspectable().runtime.inspector.events(captureId, after);
+    },
+    inspectorClear(captureId, scope) {
+      requireInspectable().runtime.inspector.clear(captureId, scope);
+    },
+    inspectorStop(captureId) {
+      selected()?.runtime.inspector.stop(captureId);
+    },
+    inspectorEvaluate(captureId, expression) {
+      const entry = requireInspectable();
+      if (controller === "agent") throw new InspectorError("AGENT_ACTIVE");
+      return entry.runtime.inspector.evaluate(captureId, expression);
+    },
+    inspectorRequest(captureId, entryId, includeBody) {
+      return requireInspectable().runtime.inspector.request(captureId, entryId, includeBody);
+    },
     surfaceClipboard() {
       return enqueue(() => requireSelected().runtime.surfaceClipboard());
     },
@@ -4048,7 +4632,7 @@ var createBrowserManager = ({
 };
 
 // src/browser-runtime.js
-import crypto2 from "node:crypto";
+import crypto3 from "node:crypto";
 
 // node_modules/@openchamber/sdk/dist/contract.js
 var GUEST_FILE_STAT_KINDS = ["file", "directory", "other", "missing"];
@@ -4975,7 +5559,7 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
 };
 
 // src/context-menu.js
-import crypto from "node:crypto";
+import crypto2 from "node:crypto";
 var MENU_WORLD = "openchamber-menu";
 var MENU_BINDING = "openchamberMenu";
 var THEME_PROPERTIES = Object.freeze({
@@ -5141,7 +5725,7 @@ var createContextMenu = ({ navigationState, readSelection, onAction }) => {
       const result = (await call(page, current.contextId, settleContextMenu)).result?.value;
       if (!result || result.handled) return;
       const { canGoBack, canGoForward } = navigationState();
-      const token = crypto.randomUUID();
+      const token = crypto2.randomUUID();
       await call(page, current.contextId, openContextMenu, {
         x: result.x,
         y: result.y,
@@ -6093,6 +6677,13 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       if (!copyRequest || Date.now() - copyRequest.at > 1e4) return null;
       return { id: copyRequest.id, text: copyRequest.text };
     },
+    get problemCounts() {
+      const problems = activeTab()?.problems ?? [];
+      return {
+        errors: problems.filter((problem) => problem.level === "error").length,
+        warnings: problems.filter((problem) => problem.level === "warning").length
+      };
+    },
     get consoleProblems() {
       return (activeTab()?.problems ?? []).map((problem) => ({ ...problem }));
     },
@@ -6144,6 +6735,8 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
   };
   const activate = async (current) => {
     if (activeTargetId === current.targetId || tabs.get(current.targetId) !== current) return;
+    const previous = activeTab();
+    if (previous) inspector.endTab(previous.sessionId);
     activeTargetId = current.targetId;
     activations += 1;
     current.lastActive = activations;
@@ -6160,6 +6753,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     sessions.delete(current.sessionId);
     clearTimeout(current.navigationTimer);
     contextMenu.forget(current.sessionId);
+    inspector.endTab(current.sessionId);
     if (activeTargetId !== targetId) {
       notifyTabs();
       return;
@@ -6224,6 +6818,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     }
     const current = sessions.get(event.sessionId);
     if (!current) return;
+    inspector.event(current.sessionId, event.method, event.params);
     if (event.method === "Page.frameNavigated" && event.params.frame?.id) {
       if (!event.params.frame.parentId) {
         current.mainFrameId = event.params.frame.id;
@@ -6407,11 +7002,17 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
         void runtime.command(action).catch(() => {
         });
       } else if (action === "copy") {
-        copyRequest = { id: crypto2.randomUUID(), text: selection.length > GUEST_CLIPBOARD_TEXT_MAX ? null : selection, at: Date.now() };
+        copyRequest = { id: crypto3.randomUUID(), text: selection.length > GUEST_CLIPBOARD_TEXT_MAX ? null : selection, at: Date.now() };
       }
     }
   });
   runtime.contextMenu = contextMenu;
+  const inspector = createInspector({ send: (sessionId, method, params) => cdp.sendSession(sessionId, method, params) });
+  runtime.inspector = inspector;
+  runtime.inspectorStart = async () => {
+    await runtime.ensurePage();
+    return inspector.start(activeTab());
+  };
   runtime.perform = (action, parameters, callerSignal) => {
     if (closed) return Promise.reject(new Error("Browser runtime is closed"));
     if (runtime.controller === "user") {
@@ -6455,6 +7056,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     closed = true;
     shutdownController.abort(new DOMException("Browser runtime stopped", "AbortError"));
     await surface.close();
+    inspector.close();
     await Promise.allSettled([...tabs.values()].map((current) => current.compatibility.close()));
     await pagePromise?.catch(() => {
     });
@@ -6478,7 +7080,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
 };
 
 // src/service.js
-import crypto3 from "node:crypto";
+import crypto4 from "node:crypto";
 import http2 from "node:http";
 import net3 from "node:net";
 var BODY_MAX_BYTES = 17 * 1024 * 1024;
@@ -6499,7 +7101,7 @@ var authorized = (request, token) => {
   if (typeof header !== "string" || !header.startsWith("Bearer ")) return false;
   const provided = Buffer.from(header.slice(7));
   const expected = Buffer.from(token);
-  return provided.length === expected.length && crypto3.timingSafeEqual(provided, expected);
+  return provided.length === expected.length && crypto4.timingSafeEqual(provided, expected);
 };
 var withScheme = (address) => {
   if (/^[a-z][a-z\d+.-]*:\/\//i.test(address)) return address;
@@ -6558,6 +7160,50 @@ var dockErrorStatus = (error) => {
   if (/surface is idle|browser view changed/i.test(message)) return 409;
   if (/no browser scope|no longer exists|no longer open/i.test(message)) return 404;
   return 400;
+};
+var INSPECTOR_STATUS = Object.freeze({
+  UNAVAILABLE: 409,
+  AGENT_ACTIVE: 409,
+  INVALID_REQUEST: 400,
+  CAPTURE_GONE: 410,
+  REQUEST_GONE: 410,
+  EVALUATION_FAILED: 422,
+  EVALUATION_TIMEOUT: 422,
+  REQUEST_FAILED: 502,
+  CAPTURE_FAILED: 502
+});
+var identityProperty = (value, name) => {
+  const text2 = stringProperty(value, name);
+  return text2 && text2.length <= 128 ? text2 : null;
+};
+var handleInspector = async (runtime, operation, request, url) => {
+  if (operation === "events") {
+    const captureId2 = url.searchParams.get("captureId");
+    const after = queryInteger(url, "after", 0, Number.MAX_SAFE_INTEGER);
+    if (request.method !== "GET" || !captureId2 || captureId2.length > 128 || after === null) return null;
+    return runtime.inspectorEvents(captureId2, after);
+  }
+  if (request.method !== "POST") return null;
+  const body = await readObjectBody(request);
+  if (operation === "start") return runtime.inspectorStart();
+  const captureId = identityProperty(body, "captureId");
+  if (!captureId) return null;
+  if (operation === "stop") {
+    runtime.inspectorStop(captureId);
+    return { ok: true };
+  }
+  if (operation === "clear") {
+    if (body.scope !== "console" && body.scope !== "network") return null;
+    runtime.inspectorClear(captureId, body.scope);
+    return { ok: true };
+  }
+  if (operation === "evaluate") {
+    if (typeof body.expression !== "string") return null;
+    return runtime.inspectorEvaluate(captureId, body.expression);
+  }
+  const entryId = identityProperty(body, "entryId");
+  if (!entryId || typeof body.includeBody !== "boolean") return null;
+  return runtime.inspectorRequest(captureId, entryId, body.includeBody);
 };
 var createService = ({ runtime, token, port = 0 }) => {
   if (!runtime?.perform || !runtime?.close) throw new Error("createService requires a browser runtime");
@@ -6693,6 +7339,17 @@ var createService = ({ runtime, token, port = 0 }) => {
         return json(response, 200, runtime.state());
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+    const inspectorOperation = /^\/inspector\/(start|events|clear|stop|evaluate|request)$/.exec(url.pathname)?.[1];
+    if (inspectorOperation) {
+      try {
+        const result = await handleInspector(runtime, inspectorOperation, request, url);
+        if (result === null) return json(response, 400, { ok: false, code: "INVALID_REQUEST", error: new InspectorError("INVALID_REQUEST").message });
+        return json(response, 200, result);
+      } catch (error) {
+        if (!(error instanceof InspectorError)) throw error;
+        return json(response, INSPECTOR_STATUS[error.code] ?? 400, { ok: false, code: error.code, error: error.message });
       }
     }
     if (request.method === "GET" && url.pathname === SURFACE_FRAME_PATH) {

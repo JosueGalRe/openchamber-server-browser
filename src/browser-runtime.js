@@ -4,6 +4,7 @@ import { createBrowserActions } from './browser-actions.js';
 import { connectCdp } from './cdp-client.js';
 import { createChromeProcess } from './chrome-process.js';
 import { MENU_BINDING, MENU_WORLD, createContextMenu } from './context-menu.js';
+import { createInspector } from './inspector.js';
 import { networkGrants, originGrants } from './config.js';
 import { createNativeSelectCompatibility } from './native-select-compatibility.js';
 import { createPolicyProxy } from './policy-proxy.js';
@@ -119,6 +120,13 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
       if (!copyRequest || Date.now() - copyRequest.at > 10_000) return null;
       return { id: copyRequest.id, text: copyRequest.text };
     },
+    get problemCounts() {
+      const problems = activeTab()?.problems ?? [];
+      return {
+        errors: problems.filter((problem) => problem.level === 'error').length,
+        warnings: problems.filter((problem) => problem.level === 'warning').length,
+      };
+    },
     get consoleProblems() {
       return (activeTab()?.problems ?? []).map((problem) => ({ ...problem }));
     },
@@ -177,6 +185,8 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
 
   const activate = async (current) => {
     if (activeTargetId === current.targetId || tabs.get(current.targetId) !== current) return;
+    const previous = activeTab();
+    if (previous) inspector.endTab(previous.sessionId);
     activeTargetId = current.targetId;
     activations += 1;
     current.lastActive = activations;
@@ -194,6 +204,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     sessions.delete(current.sessionId);
     clearTimeout(current.navigationTimer);
     contextMenu.forget(current.sessionId);
+    inspector.endTab(current.sessionId);
     if (activeTargetId !== targetId) {
       notifyTabs();
       return;
@@ -261,6 +272,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     }
     const current = sessions.get(event.sessionId);
     if (!current) return;
+    inspector.event(current.sessionId, event.method, event.params);
     if (event.method === 'Page.frameNavigated' && event.params.frame?.id) {
       if (!event.params.frame.parentId) {
         current.mainFrameId = event.params.frame.id;
@@ -472,6 +484,13 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
   });
   runtime.contextMenu = contextMenu;
 
+  const inspector = createInspector({ send: (sessionId, method, params) => cdp.sendSession(sessionId, method, params) });
+  runtime.inspector = inspector;
+  runtime.inspectorStart = async () => {
+    await runtime.ensurePage();
+    return inspector.start(activeTab());
+  };
+
   runtime.perform = (action, parameters, callerSignal) => {
     if (closed) return Promise.reject(new Error('Browser runtime is closed'));
     if (runtime.controller === 'user') {
@@ -517,6 +536,7 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
     closed = true;
     shutdownController.abort(new DOMException('Browser runtime stopped', 'AbortError'));
     await surface.close();
+    inspector.close();
     await Promise.allSettled([...tabs.values()].map((current) => current.compatibility.close()));
     await pagePromise?.catch(() => {});
     await actionQueue.catch(() => {});

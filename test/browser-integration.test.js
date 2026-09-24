@@ -50,6 +50,18 @@ const startWebFixture = async () => {
       response.end(html('<h1>Next page</h1><a href="/">Home</a>', 'Next'));
       return;
     }
+    if (request.url.startsWith('/api')) {
+      request.resume();
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ token: 'abc', ok: true }));
+      return;
+    }
+    if (request.url === '/inspect') {
+      response.end(html(`
+        <button id="surface" onclick="console.error('boom from page'); fetch('/api?token=secret', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'hunter2', name: 'ada' }) })">Run</button>
+      `, 'Inspect'));
+      return;
+    }
     if (request.url === '/menu') {
       response.end(html(`
         <div id="surface">Plain area</div>
@@ -517,4 +529,48 @@ test('shows the viewer menu only for right clicks the page leaves alone', { skip
   await rightClick(30, 30);
   await leftClick(60, 49);
   await waitFor(() => runtime.url === `${web.origin}/next`);
+});
+
+test('captures console and network for the inspector and runs JavaScript in the page', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a capture on a page that logs and posts when clicked.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/inspect` });
+  const { captureId } = await runtime.inspectorStart();
+
+  // When the user clicks, then the console error and the finished request are captured.
+  await runtime.surfaceInput([
+    { type: 'pointer', action: 'down', x: 30, y: 30, button: 0, buttons: 1, modifiers },
+    { type: 'pointer', action: 'up', x: 30, y: 30, button: 0, buttons: 0, modifiers },
+  ]);
+  const consoleRows = [];
+  const networkRows = new Map();
+  let cursor = 0;
+  await waitFor(() => {
+    const batch = runtime.inspector.events(captureId, cursor);
+    cursor = batch.cursor;
+    consoleRows.push(...batch.console);
+    for (const row of batch.network) networkRows.set(row.id, row);
+    return consoleRows.some((row) => row.text === 'boom from page' && row.level === 'error')
+      && [...networkRows.values()].some((row) => row.url.includes('/api') && row.state === 'complete');
+  });
+  const api = [...networkRows.values()].find((row) => row.url.includes('/api'));
+  assert.match(api.url, /token=%5BREDACTED%5D/);
+  assert.equal(runtime.problemCounts.errors, 1);
+
+  // Then its details redact credentials in both bodies.
+  const details = await runtime.inspector.request(captureId, api.id, true);
+  assert.equal(details.bodyState, 'available');
+  assert.deepEqual(JSON.parse(details.requestBody), { password: '[REDACTED]', name: 'ada' });
+  assert.deepEqual(JSON.parse(details.responseBody), { token: '[REDACTED]', ok: true });
+
+  // When JavaScript runs in the page, then promises resolve and exceptions come back as errors.
+  assert.deepEqual(await runtime.inspector.evaluate(captureId, 'await Promise.resolve(document.title)'), { text: 'Inspect', truncated: false, isError: false });
+  assert.equal((await runtime.inspector.evaluate(captureId, 'missingName')).isError, true);
+
+  // When another tab comes forward, then this capture is gone.
+  await runtime.command('tab-new');
+  assert.throws(() => runtime.inspector.events(captureId, cursor), (error) => error.code === 'CAPTURE_GONE');
 });

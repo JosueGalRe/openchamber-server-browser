@@ -1,3 +1,4 @@
+import { InspectorError } from './inspector.js';
 import { cssSize } from './viewports.js';
 
 const DEFAULT_MAX_SCOPES = 4;
@@ -139,6 +140,13 @@ export const createBrowserManager = ({
     return entry;
   };
 
+  const requireInspectable = () => {
+    const entry = selected();
+    if (!entry) throw new InspectorError('UNAVAILABLE');
+    touch(entry);
+    return entry;
+  };
+
   const requireIdleSurface = () => {
     if (controller !== 'none') {
       throw new Error('Dock controls are available only while the shared surface is idle');
@@ -214,6 +222,7 @@ export const createBrowserManager = ({
           nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? '',
           tabs: entry.runtime.tabs ?? [],
           viewport: entry.runtime.viewportState ?? null,
+          problems: entry.runtime.problemCounts ?? { errors: 0, warnings: 0 },
         })),
       };
     },
@@ -383,6 +392,29 @@ export const createBrowserManager = ({
         surfaceViewport = size;
         return requireSelected().runtime.surfaceResize(cssSize(size, devicePixelRatio));
       });
+    },
+    // The inspector page follows the visible scope. Its calls stay out of the
+    // operation queue so polling never waits behind an agent action; a new
+    // selection answers CAPTURE_GONE and the page starts a fresh capture.
+    inspectorStart() {
+      return requireInspectable().runtime.inspectorStart();
+    },
+    inspectorEvents(captureId, after) {
+      return requireInspectable().runtime.inspector.events(captureId, after);
+    },
+    inspectorClear(captureId, scope) {
+      requireInspectable().runtime.inspector.clear(captureId, scope);
+    },
+    inspectorStop(captureId) {
+      selected()?.runtime.inspector.stop(captureId);
+    },
+    inspectorEvaluate(captureId, expression) {
+      const entry = requireInspectable();
+      if (controller === 'agent') throw new InspectorError('AGENT_ACTIVE');
+      return entry.runtime.inspector.evaluate(captureId, expression);
+    },
+    inspectorRequest(captureId, entryId, includeBody) {
+      return requireInspectable().runtime.inspector.request(captureId, entryId, includeBody);
     },
     surfaceClipboard() {
       return enqueue(() => requireSelected().runtime.surfaceClipboard());

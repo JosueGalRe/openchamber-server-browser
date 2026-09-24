@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { InspectorError } from '../src/inspector.js';
 import { createService } from '../src/service.js';
 
 const TOKEN = 'test-service-token';
@@ -29,6 +30,13 @@ const createRuntime = () => {
     async selectScope(id, generation) { calls.push(['select', id, generation]); },
     async navigate(url, generation) { calls.push(['navigate', url, generation]); },
     async reload(generation) { calls.push(['reload', generation]); },
+    async inspectorStart() { calls.push(['inspector-start']); return { captureId: 'cap-1' }; },
+    inspectorEvents(captureId, after) {
+      calls.push(['inspector-events', captureId, after]);
+      if (captureId !== 'cap-1') throw new InspectorError('CAPTURE_GONE');
+      return { cursor: after, more: false, console: [], network: [] };
+    },
+    async inspectorEvaluate(captureId, expression) { calls.push(['inspector-evaluate', captureId, expression]); return { text: '2', isError: false, truncated: false }; },
     async openScope(scope, generation) { calls.push(['open-scope', scope, generation]); },
     setViewerTheme(theme) { calls.push(['theme', theme]); },
     async setDevicePixelRatio(ratio) { calls.push(['ratio', ratio]); },
@@ -344,4 +352,26 @@ test('opens a chat scope for the dock only with a complete, bounded context', as
 
   assert.deepEqual([missing.status, oversized.status, opened.status], [400, 400, 200]);
   assert.deepEqual(fixture.runtime.calls, [['open-scope', { directory: '/repo', sessionId: 'ses_1' }, 1]]);
+});
+
+test('routes inspector calls with validated identities and reports failures as codes', async (context) => {
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+  const post = (path, body) => fetch(`${fixture.origin}${path}`, {
+    method: 'POST', headers: authorization, body: JSON.stringify(body),
+  });
+
+  const started = await post('/inspector/start', {});
+  const events = await fetch(`${fixture.origin}/inspector/events?captureId=cap-1&after=4`, { headers: authorization });
+  const gone = await fetch(`${fixture.origin}/inspector/events?captureId=old&after=0`, { headers: authorization });
+  const evaluated = await post('/inspector/evaluate', { captureId: 'cap-1', expression: '1 + 1' });
+  const invalid = await post('/inspector/evaluate', { captureId: 'cap-1' });
+
+  assert.deepEqual(await started.json(), { captureId: 'cap-1' });
+  assert.equal(events.status, 200);
+  assert.equal(gone.status, 410);
+  assert.equal((await gone.json()).code, 'CAPTURE_GONE');
+  assert.deepEqual(await evaluated.json(), { text: '2', isError: false, truncated: false });
+  assert.equal(invalid.status, 400);
+  assert.deepEqual(fixture.runtime.calls.map((call) => call[0]), ['inspector-start', 'inspector-events', 'inspector-events', 'inspector-evaluate']);
 });

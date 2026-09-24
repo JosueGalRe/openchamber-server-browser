@@ -13,14 +13,14 @@ await Promise.all([
     legalComments: 'eof',
     banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" },
   }),
-  build({
-    entryPoints: ['src/panel.js'],
-    outfile: 'panel/main.js',
+  ...[['src/panel.js', 'panel/main.js'], ['src/inspector-page.js', 'panel/inspector.js']].map(([entry, outfile]) => build({
+    entryPoints: [entry],
+    outfile,
     bundle: true,
     platform: 'browser',
     format: 'iife',
     target: 'es2022',
     sourcemap: false,
     legalComments: 'eof',
-  }),
+  })),
 ]);

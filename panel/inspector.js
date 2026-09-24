@@ -105,15 +105,15 @@
   };
   var isAttachData = (value) => isJsonValue(value) && JSON.stringify(value).length <= GUEST_ATTACH_DATA_MAX;
   var clampBranch = (value) => value?.trim().slice(0, GUEST_ATTACH_BRANCH_MAX) ?? "";
-  var clampAttachRequest = (request2) => {
-    const id = request2.id.trim().slice(0, GUEST_ATTACH_ID_MAX);
-    const title = request2.title.trim().slice(0, GUEST_ATTACH_TITLE_MAX);
-    const url = request2.url.trim().slice(0, GUEST_ATTACH_URL_MAX);
-    const text = request2.text?.trim().slice(0, GUEST_ATTACH_TEXT_MAX);
-    const author = request2.author?.trim().slice(0, GUEST_ATTACH_AUTHOR_MAX);
-    const kind = request2.kind === "pull" ? "pull" : "issue";
+  var clampAttachRequest = (request) => {
+    const id = request.id.trim().slice(0, GUEST_ATTACH_ID_MAX);
+    const title = request.title.trim().slice(0, GUEST_ATTACH_TITLE_MAX);
+    const url = request.url.trim().slice(0, GUEST_ATTACH_URL_MAX);
+    const text = request.text?.trim().slice(0, GUEST_ATTACH_TEXT_MAX);
+    const author = request.author?.trim().slice(0, GUEST_ATTACH_AUTHOR_MAX);
+    const kind = request.kind === "pull" ? "pull" : "issue";
     const next = {
-      providerId: request2.providerId.trim(),
+      providerId: request.providerId.trim(),
       id,
       title: title || id,
       url,
@@ -126,33 +126,33 @@
       next.author = author;
     }
     if (kind === "pull") {
-      const head = clampBranch(request2.branches?.head);
-      const base = clampBranch(request2.branches?.base);
+      const head = clampBranch(request.branches?.head);
+      const base = clampBranch(request.branches?.base);
       if (head && base) {
         next.branches = { head, base };
       }
     }
-    if (isAttachData(request2.data)) {
-      next.data = request2.data;
+    if (isAttachData(request.data)) {
+      next.data = request.data;
     }
     return next;
   };
-  var clampStartSessionRequest = (request2) => {
-    const next = clampAttachRequest(request2);
-    if (request2.projectId)
-      next.projectId = request2.projectId;
-    if (request2.navigation)
-      next.navigation = request2.navigation;
-    if (request2.worktree) {
-      next.worktree = request2.worktree;
+  var clampStartSessionRequest = (request) => {
+    const next = clampAttachRequest(request);
+    if (request.projectId)
+      next.projectId = request.projectId;
+    if (request.navigation)
+      next.navigation = request.navigation;
+    if (request.worktree) {
+      next.worktree = request.worktree;
     }
     return next;
   };
-  var clampPromptRequest = (request2) => {
+  var clampPromptRequest = (request) => {
     const next = {
-      text: request2.text.trim().slice(0, GUEST_COMPOSE_TEXT_MAX)
+      text: request.text.trim().slice(0, GUEST_COMPOSE_TEXT_MAX)
     };
-    if (request2.send) {
+    if (request.send) {
       next.send = true;
     }
     return next;
@@ -431,15 +431,15 @@
         return Promise.reject(new HostRequestError("HOST_UNAVAILABLE", "No host frame. This page is not in an iframe."));
       }
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
+        const timer2 = setTimeout(() => {
           pending.delete(message.id);
           reject(new HostRequestError("HOST_TIMEOUT", "Host did not answer in time."));
         }, timeoutMs);
-        pending.set(message.id, { resolve, reject, timer });
+        pending.set(message.id, { resolve, reject, timer: timer2 });
         post(message);
       });
     };
-    const request2 = (message) => send(message).then(() => void 0);
+    const request = (message) => send(message).then(() => void 0);
     const envelope = { channel: OPENCHAMBER_SDK_CHANNEL, v: OPENCHAMBER_SDK_API_VERSION };
     const requireIdentity = (value, maximum = 1024) => {
       if (!value.trim() || value.length > maximum)
@@ -460,7 +460,7 @@
       const subscriptionId = nextId(ids);
       workspaceListeners.set(subscriptionId, listener);
       try {
-        await request2({ ...envelope, type: "workspace-subscribe", id: nextId(ids), payload: { subscriptionId, query } });
+        await request({ ...envelope, type: "workspace-subscribe", id: nextId(ids), payload: { subscriptionId, query } });
       } catch (error) {
         workspaceListeners.delete(subscriptionId);
         if (!disposed)
@@ -528,7 +528,7 @@
       }),
       openSession: async (sessionId) => {
         requireIdentity(sessionId);
-        await request2({ ...envelope, type: "open-session", id: nextId(ids), payload: { sessionId } });
+        await request({ ...envelope, type: "open-session", id: nextId(ids), payload: { sessionId } });
       },
       storage: {
         get: async (key) => {
@@ -619,7 +619,7 @@
         if (payload.copy && payload.copy !== true && (!payload.copy.text.length || payload.copy.text.length > GUEST_CLIPBOARD_TEXT_MAX)) {
           return Promise.reject(new HostRequestError("HOST_REJECTED", `Toast copy text must contain 1 to ${GUEST_CLIPBOARD_TEXT_MAX} characters.`));
         }
-        return request2({
+        return request({
           channel: OPENCHAMBER_SDK_CHANNEL,
           v: OPENCHAMBER_SDK_API_VERSION,
           type: "toast",
@@ -627,35 +627,35 @@
           payload: { ...payload, message }
         });
       },
-      openUrl: (url) => request2({
+      openUrl: (url) => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
         type: "open-url",
         id: nextId(ids),
         payload: { url }
       }),
-      openSurface: (surfaceId) => request2({
+      openSurface: (surfaceId) => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
         type: "open-surface",
         id: nextId(ids),
         payload: { surfaceId }
       }),
-      writeClipboard: (text) => request2({
+      writeClipboard: (text) => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
         type: "clipboard-write",
         id: nextId(ids),
         payload: { text }
       }),
-      compose: (payload) => request2({
+      compose: (payload) => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
         type: "compose",
         id: nextId(ids),
         payload
       }),
-      attach: (payload) => request2({
+      attach: (payload) => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
         type: "attach",
@@ -700,26 +700,26 @@
         }
         return result;
       }),
-      sessionLink: (payload) => request2({
+      sessionLink: (payload) => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
         type: "session-link",
         id: nextId(ids),
         payload: clampAttachRequest(payload)
       }),
-      close: () => request2({
+      close: () => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
         type: "close",
         id: nextId(ids)
       }),
-      oauthStart: () => request2({
+      oauthStart: () => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
         type: "oauth-start",
         id: nextId(ids)
       }),
-      oauthDisconnect: () => request2({
+      oauthDisconnect: () => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
         type: "oauth-disconnect",
@@ -847,7 +847,7 @@
           return result;
         });
       },
-      setBadge: (count) => request2({
+      setBadge: (count) => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
         type: "badge",
@@ -1005,6 +1005,19 @@
     const node = el("button", className);
     node.type = "button";
     return node;
+  };
+  var setText = (node, text) => {
+    const next = text ?? "";
+    if (node.textContent !== next) {
+      node.textContent = next;
+    }
+  };
+  var setAttr = (node, name, value) => {
+    if (value === void 0 || value === null || value === "") {
+      node.removeAttribute(name);
+    } else if (node.getAttribute(name) !== value) {
+      node.setAttribute(name, value);
+    }
   };
 
   // node_modules/@openchamber/sdk/dist/ui/style.js
@@ -1209,6 +1222,139 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
 .oc-sdk-text img { display: block; max-width: 100%; margin: 8px 0; border-radius: 8px; border: 1px solid ${mix(border, 60)}; }
 `;
 
+  // node_modules/@openchamber/sdk/dist/ui/button.js
+  var ring = () => {
+    const spinner = document.createElement("span");
+    spinner.className = "oc-sdk-spinner-ring";
+    spinner.setAttribute("aria-hidden", "true");
+    return spinner;
+  };
+  var mountButton = (root2, initial) => {
+    ensureStyle(UI_CSS);
+    let props = initial;
+    const node = button("oc-sdk oc-sdk-btn");
+    const spinner = ring();
+    const label = document.createElement("span");
+    node.append(label);
+    root2.append(node);
+    const paint = () => {
+      node.dataset.variant = props.variant ?? "default";
+      node.dataset.size = props.size ?? "default";
+      node.disabled = Boolean(props.disabled) || Boolean(props.loading);
+      node.dataset.loading = props.loading ? "true" : "false";
+      node.setAttribute("aria-busy", props.loading ? "true" : "false");
+      if (props.loading && spinner.parentNode !== node) {
+        node.prepend(spinner);
+      } else if (!props.loading && spinner.parentNode === node) {
+        spinner.remove();
+      }
+      setText(label, props.label);
+    };
+    const onClick = () => {
+      if (props.disabled || props.loading) {
+        return;
+      }
+      props.onClick();
+    };
+    node.addEventListener("click", onClick);
+    paint();
+    return {
+      update: (next) => {
+        props = { ...props, ...next };
+        paint();
+      },
+      dispose: () => {
+        node.removeEventListener("click", onClick);
+        node.remove();
+      }
+    };
+  };
+
+  // node_modules/@openchamber/sdk/dist/ui/icons.js
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var ICON_PATH = {
+    search: "M18.031 16.617l4.283 4.282-1.415 1.415-4.282-4.283A8.96 8.96 0 0 1 11 20c-4.968 0-9-4.032-9-9s4.032-9 9-9 9 4.032 9 9a8.96 8.96 0 0 1-1.969 5.617zm-2.006-.742A6.977 6.977 0 0 0 18 11c0-3.868-3.133-7-7-7-3.868 0-7 3.132-7 7 0 3.867 3.132 7 7 7a6.977 6.977 0 0 0 4.875-1.975l.15-.15z",
+    chevron: "M12 13.172l4.95-4.95 1.414 1.414L12 16 5.636 9.636 7.05 8.222z",
+    check: "M10 15.172l9.192-9.193 1.415 1.414L10 18l-6.364-6.364 1.414-1.414z",
+    close: "M12 10.586l4.95-4.95 1.414 1.414-4.95 4.95 4.95 4.95-1.414 1.414-4.95-4.95-4.95 4.95-1.414-1.414 4.95-4.95-4.95-4.95L7.05 5.636z"
+  };
+  var icon = (name, size, className) => {
+    const node = document.createElementNS(SVG_NS, "svg");
+    node.setAttribute("viewBox", "0 0 24 24");
+    node.setAttribute("width", String(size));
+    node.setAttribute("height", String(size));
+    node.setAttribute("aria-hidden", "true");
+    node.setAttribute("fill", "currentColor");
+    if (className) {
+      node.setAttribute("class", className);
+    }
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", ICON_PATH[name]);
+    node.append(path);
+    return node;
+  };
+
+  // node_modules/@openchamber/sdk/dist/ui/search.js
+  var mountSearchField = (root2, initial) => {
+    ensureStyle(UI_CSS);
+    let props = initial;
+    const wrap = el("div", "oc-sdk oc-sdk-search");
+    const input = el("input", "oc-sdk-input");
+    input.type = "text";
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    input.setAttribute("role", "searchbox");
+    const clear = button("oc-sdk-search-clear");
+    clear.append(icon("close", 14));
+    clear.tabIndex = -1;
+    wrap.append(icon("search", 16, "oc-sdk-search-icon"), input, clear);
+    root2.append(wrap);
+    const paint = () => {
+      const placeholder = props.placeholder ?? "Search";
+      setAttr(input, "placeholder", placeholder);
+      input.setAttribute("aria-label", props.label ?? placeholder);
+      clear.setAttribute("aria-label", "Clear search");
+      if (input.value !== props.value) {
+        input.value = props.value;
+      }
+      wrap.dataset.active = props.value.trim() === "" ? "false" : "true";
+    };
+    const clearValue = () => {
+      if (props.value !== "") {
+        props.onChange("");
+      }
+      input.focus();
+    };
+    const onInput = () => {
+      props.onChange(input.value);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape" && input.value !== "") {
+        event.preventDefault();
+        clearValue();
+      }
+    };
+    input.addEventListener("input", onInput);
+    input.addEventListener("keydown", onKeyDown);
+    clear.addEventListener("click", clearValue);
+    paint();
+    if (props.autofocus) {
+      input.focus();
+    }
+    return {
+      update: (next) => {
+        props = { ...props, ...next };
+        paint();
+      },
+      dispose: () => {
+        input.removeEventListener("input", onInput);
+        input.removeEventListener("keydown", onKeyDown);
+        clear.removeEventListener("click", clearValue);
+        wrap.remove();
+      }
+    };
+  };
+
   // node_modules/@openchamber/sdk/dist/ui/navigation.js
   var navigationKey = (event, axis = "vertical") => {
     const [next, previous] = axis === "vertical" ? ["ArrowDown", "ArrowUp"] : ["ArrowRight", "ArrowLeft"];
@@ -1303,634 +1449,635 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
     };
   };
 
-  // src/panel.js
+  // node_modules/@openchamber/sdk/dist/ui/empty.js
+  var mountEmpty = (root2, initial) => {
+    ensureStyle(UI_CSS);
+    let props = initial;
+    const shell = el("div", "oc-sdk oc-sdk-empty");
+    const title = el("h2", "oc-sdk-empty-title");
+    const body2 = el("p", "oc-sdk-empty-body");
+    const slot = el("div", "oc-sdk-empty-action");
+    shell.append(title, body2, slot);
+    root2.append(shell);
+    let action = null;
+    const paint = () => {
+      setText(title, props.title);
+      setText(body2, props.body);
+      body2.hidden = !props.body;
+      slot.hidden = !props.action;
+      if (!props.action) {
+        action?.dispose();
+        action = null;
+        return;
+      }
+      const next = { label: props.action.label, onClick: props.action.onClick };
+      if (action) {
+        action.update(next);
+      } else {
+        action = mountButton(slot, { ...next, variant: "outline", size: "sm" });
+      }
+    };
+    paint();
+    return {
+      update: (next) => {
+        props = { ...props, ...next };
+        paint();
+      },
+      dispose: () => {
+        action?.dispose();
+        action = null;
+        shell.remove();
+      }
+    };
+  };
+
+  // node_modules/@openchamber/sdk/dist/ui/banner.js
+  var mountBanner = (root2, initial) => {
+    ensureStyle(UI_CSS);
+    let props = initial;
+    const node = el("div", "oc-sdk oc-sdk-banner");
+    const text = el("div", "oc-sdk-banner-text");
+    const title = el("div", "oc-sdk-banner-title");
+    const body2 = el("div", "oc-sdk-banner-body");
+    const slot = el("div", "oc-sdk-banner-action");
+    text.append(title, body2);
+    node.append(text, slot);
+    root2.append(node);
+    let action = null;
+    const paint = () => {
+      node.dataset.tone = props.tone;
+      node.setAttribute("role", props.tone === "error" || props.tone === "warning" ? "alert" : "status");
+      setText(title, props.title);
+      setText(body2, props.body);
+      body2.hidden = !props.body;
+      slot.hidden = !props.action;
+      if (!props.action) {
+        action?.dispose();
+        action = null;
+        return;
+      }
+      const next = { label: props.action.label, onClick: props.action.onClick };
+      if (action) {
+        action.update(next);
+      } else {
+        action = mountButton(slot, { ...next, variant: "outline", size: "xs" });
+      }
+    };
+    paint();
+    return {
+      update: (next) => {
+        props = { ...props, ...next };
+        paint();
+      },
+      dispose: () => {
+        action?.dispose();
+        action = null;
+        node.remove();
+      }
+    };
+  };
+
+  // src/inspector-page.js
   var host = connectHost();
   var root = document.querySelector("#root");
-  if (!root) throw new Error("Missing panel root");
-  var scopeSelect = document.createElement("fieldset");
-  scopeSelect.className = "session-tabs";
-  scopeSelect.setAttribute("aria-label", "Browser sessions");
-  scopeSelect.addEventListener("keydown", (event) => {
-    if (scopeSelect.disabled) event.stopPropagation();
-  }, true);
-  var status = document.createElement("span");
-  status.className = "status";
+  if (!root) throw new Error("Missing inspector root");
+  var POLL_MS = 500;
+  var RETRY_MS = 2e3;
+  var MAX_CONSOLE_ROWS = 1e3;
+  var MAX_NETWORK_ROWS = 500;
+  var MAX_EXPRESSION_CHARS = 16e3;
+  var LEVELS = Object.freeze({ debug: "Debug", info: "Info", log: "Log", warning: "Warning", error: "Error" });
+  var EVALUATION_ERRORS = Object.freeze({
+    EVALUATION_TIMEOUT: "JavaScript timed out. The page may still be running it.",
+    EVALUATION_FAILED: "Could not run the JavaScript. Try again.",
+    INVALID_REQUEST: "Another command is still running, or the JavaScript is too long."
+  });
+  var REQUEST_ERRORS = Object.freeze({
+    REQUEST_GONE: "This request is no longer available.",
+    REQUEST_FAILED: "Could not load request details. Try again."
+  });
+  var BODY_STATES = Object.freeze({
+    "not-requested": "Bodies are loaded only when you request them.",
+    unavailable: "Bodies are no longer available for this request.",
+    unsupported: "Body preview is not supported for this response."
+  });
+  var element = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== void 0) node.textContent = text;
+    return node;
+  };
+  var call = async (method, path, { query, body: body2 } = {}) => {
+    const result = await host.serviceRequest({
+      method,
+      path,
+      ...query ? { query } : {},
+      ...body2 === void 0 ? {} : { body: JSON.stringify(body2) }
+    });
+    let value = null;
+    try {
+      value = JSON.parse(result.body);
+    } catch {
+    }
+    if (result.status === 200) return value;
+    throw Object.assign(new Error(value?.error ?? `The browser service answered ${result.status}`), { code: value?.code ?? "SERVICE_ERROR" });
+  };
+  var lastSegment = (url) => {
+    try {
+      const { pathname, host: urlHost } = new URL(url);
+      return pathname.split("/").filter(Boolean).at(-1) ?? urlHost;
+    } catch {
+      return url;
+    }
+  };
+  var formatBytes = (bytes) => {
+    if (!Number.isFinite(bytes)) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+  var formatTime = (timestamp) => new Date(timestamp).toLocaleTimeString([], { hour12: false });
+  var header = element("header", "header");
+  var titleRow = element("div", "title-row");
+  var status = element("p", "status", "Starting capture");
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
-  var setIcon = (button2, draw) => {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("aria-hidden", "true");
-    svg.setAttribute("focusable", "false");
-    svg.setAttribute("fill", "none");
-    svg.setAttribute("stroke", "currentColor");
-    svg.setAttribute("stroke-width", "1.75");
-    svg.setAttribute("stroke-linecap", "round");
-    svg.setAttribute("stroke-linejoin", "round");
-    draw(svg);
-    button2.append(svg);
-  };
-  var addLine = (svg, attributes) => {
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    for (const [name, value] of Object.entries(attributes)) line.setAttribute(name, value);
-    svg.append(line);
-  };
-  var addPath = (svg, d) => {
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", d);
-    svg.append(path);
-  };
-  var back = document.createElement("button");
-  back.type = "button";
-  back.className = "toolbar-button";
-  back.title = "Back";
-  back.setAttribute("aria-label", "Back");
-  setIcon(back, (svg) => {
-    addPath(svg, "m15 18-6-6 6-6");
-    addLine(svg, { x1: "9", y1: "12", x2: "20", y2: "12" });
+  titleRow.append(element("h1", "", "Browser inspector"), status);
+  var toolbar = element("div", "toolbar");
+  var tabsHost = element("div");
+  var filterHost = element("div", "filter");
+  var clearHost = element("div");
+  var dropped = element("span", "dropped");
+  toolbar.append(tabsHost, filterHost, clearHost, dropped);
+  var hint = element("p", "hint", "Capture starts when you open the inspector. Closing it clears captured data.");
+  header.append(titleRow, toolbar, hint);
+  var bannerHost = element("div", "banner");
+  var body = element("main", "body");
+  var emptyHost = element("div", "empty");
+  emptyHost.hidden = true;
+  mountEmpty(emptyHost, {
+    title: "Open a page in Server Browser to inspect it",
+    body: "The inspector follows the tab visible in Server Browser and checks again every two seconds."
   });
-  var forward = document.createElement("button");
-  forward.type = "button";
-  forward.className = "toolbar-button";
-  forward.title = "Forward";
-  forward.setAttribute("aria-label", "Forward");
-  setIcon(forward, (svg) => {
-    addPath(svg, "m9 18 6-6-6-6");
-    addLine(svg, { x1: "4", y1: "12", x2: "15", y2: "12" });
-  });
-  var reload = document.createElement("button");
-  reload.type = "button";
-  reload.className = "toolbar-button";
-  var reloadShowsStop = null;
-  var drawReload = (loading) => {
-    if (reloadShowsStop === loading) return;
-    reloadShowsStop = loading;
-    reload.replaceChildren();
-    reload.title = loading ? "Stop loading" : "Reload";
-    reload.setAttribute("aria-label", reload.title);
-    setIcon(reload, loading ? (svg) => {
-      addLine(svg, { x1: "6", y1: "6", x2: "18", y2: "18" });
-      addLine(svg, { x1: "18", y1: "6", x2: "6", y2: "18" });
-    } : (svg) => {
-      addPath(svg, "M20 11a8 8 0 1 0-2.34 5.66");
-      addPath(svg, "M20 4v7h-7");
-    });
-  };
-  drawReload(false);
-  var selectCompatibility = document.createElement("button");
-  selectCompatibility.type = "button";
-  selectCompatibility.className = "toolbar-button select-compatibility";
-  selectCompatibility.setAttribute("aria-pressed", "false");
-  setIcon(selectCompatibility, (svg) => {
-    addPath(svg, "M5 6.5h14v11H5z");
-    addPath(svg, "m9 10 3 3 3-3");
-  });
-  var address = document.createElement("input");
-  address.type = "url";
-  address.placeholder = "https://example.com";
-  address.autocomplete = "off";
-  address.spellcheck = false;
-  address.setAttribute("aria-label", "Address");
-  var VIEWPORT_PRESETS = Object.freeze({
-    mobile: Object.freeze({ label: "Mobile", width: 390, height: 844, mobile: true }),
-    tablet: Object.freeze({ label: "Tablet", width: 768, height: 1024, mobile: false }),
-    desktop: Object.freeze({ label: "Desktop", width: 1440, height: 900, mobile: false })
-  });
-  var viewportSelect = document.createElement("select");
-  viewportSelect.className = "viewport-select";
-  viewportSelect.setAttribute("aria-label", "Viewport size");
-  var customOption = new Option("Custom size\u2026", "custom");
-  viewportSelect.append(
-    new Option("Fit panel", "auto"),
-    ...Object.entries(VIEWPORT_PRESETS).map(([id, preset]) => new Option(`${preset.label} ${preset.width} \xD7 ${preset.height}`, id)),
-    customOption
-  );
-  var rotate = document.createElement("button");
-  rotate.type = "button";
-  rotate.className = "toolbar-button";
-  rotate.title = "Rotate the viewport";
-  rotate.setAttribute("aria-label", rotate.title);
-  setIcon(rotate, (svg) => {
-    addPath(svg, "M4 12a8 8 0 0 1 13.66-5.66L20 8.5");
-    addPath(svg, "M20 3.5v5h-5");
-    addPath(svg, "M20 12a8 8 0 0 1-13.66 5.66L4 15.5");
-    addPath(svg, "M4 20.5v-5h5");
-  });
-  var mobileToggle = document.createElement("button");
-  mobileToggle.type = "button";
-  mobileToggle.className = "toolbar-button mobile-toggle";
-  mobileToggle.title = "Emulate a mobile device";
-  mobileToggle.setAttribute("aria-label", mobileToggle.title);
-  mobileToggle.setAttribute("aria-pressed", "false");
-  setIcon(mobileToggle, (svg) => {
-    addPath(svg, "M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z");
-    addLine(svg, { x1: "11", y1: "18", x2: "13", y2: "18" });
-  });
-  var sizeInput = (label) => {
-    const input = document.createElement("input");
-    input.type = "number";
-    input.min = "1";
-    input.max = "3840";
-    input.step = "1";
-    input.required = true;
-    input.setAttribute("aria-label", label);
-    return input;
-  };
-  var widthInput = sizeInput("Viewport width");
-  var heightInput = sizeInput("Viewport height");
-  var times = document.createElement("span");
-  times.textContent = "\xD7";
-  times.setAttribute("aria-hidden", "true");
-  var applySize = document.createElement("button");
-  applySize.type = "submit";
-  applySize.className = "toolbar-button";
-  applySize.title = "Apply this size";
-  applySize.setAttribute("aria-label", applySize.title);
-  setIcon(applySize, (svg) => addPath(svg, "m5 12 5 5 9-10"));
-  var cancelSize = document.createElement("button");
-  cancelSize.type = "button";
-  cancelSize.className = "toolbar-button";
-  cancelSize.title = "Cancel";
-  cancelSize.setAttribute("aria-label", cancelSize.title);
-  setIcon(cancelSize, (svg) => {
-    addLine(svg, { x1: "6", y1: "6", x2: "18", y2: "18" });
-    addLine(svg, { x1: "18", y1: "6", x2: "6", y2: "18" });
-  });
-  var problems = document.createElement("span");
-  problems.className = "problems";
-  problems.hidden = true;
-  var errorCount = document.createElement("span");
-  errorCount.className = "problem-errors";
-  var warningCount = document.createElement("span");
-  warningCount.className = "problem-warnings";
-  problems.append(errorCount, warningCount);
-  var customSize = document.createElement("form");
-  customSize.className = "custom-size";
-  customSize.hidden = true;
-  customSize.append(widthInput, times, heightInput, applySize, cancelSize);
-  var viewportChoice = (viewport) => {
-    if (!viewport || viewport.mode === "auto") return "auto";
-    const preset = Object.entries(VIEWPORT_PRESETS).find(([, candidate]) => candidate.width === viewport.width && candidate.height === viewport.height);
-    return preset ? preset[0] : "custom";
-  };
-  var pageTabs = document.createElement("div");
-  pageTabs.className = "page-tabs";
-  pageTabs.setAttribute("role", "tablist");
-  pageTabs.setAttribute("aria-label", "Pages");
-  var newTab = document.createElement("button");
-  newTab.type = "button";
-  newTab.className = "new-tab";
-  newTab.title = "New tab";
-  newTab.setAttribute("aria-label", "New tab");
-  setIcon(newTab, (svg) => {
-    addLine(svg, { x1: "12", y1: "5", x2: "12", y2: "19" });
-    addLine(svg, { x1: "5", y1: "12", x2: "19", y2: "12" });
-  });
-  var pageLabel = (tab) => {
-    if (tab.title) return tab.title;
-    if (tab.url === "about:blank") return "New tab";
-    try {
-      return new URL(tab.url).host || tab.url;
-    } catch {
-      return tab.url;
-    }
-  };
-  var pageTabsSignature = "";
-  var renderPageTabs = (selected, disabled) => {
-    newTab.disabled = disabled;
-    const items = selected?.tabs ?? [];
-    const signature = JSON.stringify([items.map((tab) => [tab.id, pageLabel(tab), tab.url, tab.active]), disabled]);
-    if (signature === pageTabsSignature) return;
-    pageTabsSignature = signature;
-    const focused = pageTabs.contains(document.activeElement) ? document.activeElement : null;
-    pageTabs.replaceChildren(...items.map((tab) => {
-      const item = document.createElement("div");
-      item.className = "page-tab";
-      item.dataset.active = String(tab.active);
-      const select = document.createElement("button");
-      select.type = "button";
-      select.className = "page-tab-select";
-      select.setAttribute("role", "tab");
-      select.setAttribute("aria-selected", String(tab.active));
-      select.tabIndex = tab.active ? 0 : -1;
-      select.dataset.id = tab.id;
-      select.disabled = disabled;
-      select.title = tab.url === "about:blank" ? pageLabel(tab) : `${pageLabel(tab)}
-${tab.url}`;
-      const label = document.createElement("span");
-      label.textContent = pageLabel(tab);
-      select.append(label);
-      const close = document.createElement("button");
-      close.type = "button";
-      close.className = "page-tab-close";
-      close.tabIndex = tab.active ? 0 : -1;
-      close.dataset.id = tab.id;
-      close.disabled = disabled;
-      close.title = `Close ${pageLabel(tab)}`;
-      close.setAttribute("aria-label", close.title);
-      setIcon(close, (svg) => {
-        addLine(svg, { x1: "7", y1: "7", x2: "17", y2: "17" });
-        addLine(svg, { x1: "17", y1: "7", x2: "7", y2: "17" });
-      });
-      item.append(select, close);
-      return item;
-    }));
-    if (focused?.dataset.id) {
-      pageTabs.querySelector(`.${focused.className}[data-id="${CSS.escape(focused.dataset.id)}"]`)?.focus();
-    }
-  };
-  var chatDirectory = null;
-  var chatSession = null;
-  var followPending = true;
-  var currentChat = () => chatDirectory && chatSession?.id ? { directory: chatDirectory, sessionId: chatSession.id, title: chatSession.title || chatSession.id } : null;
-  var scopeForChat = (chat) => chat ? state?.scopes.find((scope) => scope.directory === chat.directory && scope.sessionId === chat.sessionId) ?? null : null;
-  var chatButton = document.createElement("button");
-  chatButton.type = "button";
-  chatButton.className = "chat-button";
-  chatButton.textContent = "Open for this chat";
-  chatButton.hidden = true;
-  var scopeRow = document.createElement("div");
-  scopeRow.className = "row scope-row";
-  scopeRow.append(scopeSelect, chatButton, status);
-  var pageTabsRow = document.createElement("div");
-  pageTabsRow.className = "row page-tabs-row";
-  pageTabsRow.append(pageTabs, newTab);
-  var navigationRow = document.createElement("div");
-  navigationRow.className = "row navigation-row";
-  navigationRow.append(back, forward, reload, address, customSize, problems, viewportSelect, rotate, mobileToggle, selectCompatibility);
-  root.append(scopeRow, pageTabsRow, navigationRow);
-  var state = null;
-  var requestPending = false;
-  var refreshPending = false;
-  var commandError = null;
-  var serviceError = null;
-  var addressDirty = false;
-  var tabsSignature = "";
-  var pendingTabFocusId = null;
-  var tabs = mountTabs(scopeSelect, {
-    items: [],
-    activeId: "",
-    trackBackground: true,
-    onChange: (scopeId) => {
-      if (!state || requestPending || state.controller !== "none") return;
-      pendingTabFocusId = scopeId;
-      void request("/browser/select", { scopeId, generation: state.generation }).then((succeeded) => {
-        if (succeeded) addressDirty = false;
-        else pendingTabFocusId = null;
-        render();
-      });
+  var consoleView = element("section", "view console-view");
+  consoleView.setAttribute("aria-label", "Console");
+  var consoleList = element("div", "console-list");
+  consoleList.setAttribute("role", "log");
+  consoleList.setAttribute("aria-label", "Console messages");
+  var repl = element("form", "repl");
+  var expressionInput = element("textarea", "mono");
+  expressionInput.rows = 2;
+  expressionInput.placeholder = "Run JavaScript in the page";
+  expressionInput.spellcheck = false;
+  expressionInput.setAttribute("aria-label", "JavaScript to run in the page");
+  var replError = element("p", "repl-error");
+  replError.setAttribute("role", "alert");
+  var replActions = element("div", "repl-actions");
+  var previousHost = element("div");
+  var nextHost = element("div");
+  var runHost = element("div");
+  replActions.append(previousHost, nextHost, runHost, element("p", "hint", "Ctrl/Cmd+Enter to run. Enter adds a new line."));
+  repl.append(expressionInput, replError, replActions);
+  consoleView.append(consoleList, repl);
+  var networkView = element("section", "view network-view");
+  networkView.setAttribute("aria-label", "Network");
+  networkView.hidden = true;
+  var networkLayout = element("div", "network-layout");
+  var networkList = element("div", "network-list");
+  networkList.tabIndex = 0;
+  networkList.setAttribute("role", "listbox");
+  networkList.setAttribute("aria-label", "Captured requests");
+  var networkHead = element("div", "network-head");
+  networkHead.setAttribute("aria-hidden", "true");
+  for (const label of ["Method", "Status", "URL", "Type", "Size", "Time"]) networkHead.append(element("span", "", label));
+  networkList.append(networkHead);
+  var details = element("aside", "details");
+  details.hidden = true;
+  details.setAttribute("aria-label", "Request details");
+  networkLayout.append(networkList, details);
+  networkView.append(networkLayout);
+  body.append(emptyHost, consoleView, networkView);
+  root.append(header, bannerHost, body);
+  var captureId = null;
+  var cursor = 0;
+  var view = "console";
+  var filter = "";
+  var polling = false;
+  var starting = false;
+  var timer = null;
+  var tabLabel = "";
+  var noticeUntil = 0;
+  var droppedConsole = 0;
+  var droppedNetwork = 0;
+  var consoleCount = 0;
+  var running = false;
+  var selectedRequest = null;
+  var detailsToken = 0;
+  var networkRows = /* @__PURE__ */ new Map();
+  var history = [];
+  var historyIndex = 0;
+  var tabs = mountTabs(tabsHost, {
+    items: [{ id: "console", label: "Console", count: 0 }, { id: "network", label: "Network", count: 0 }],
+    activeId: view,
+    onChange: (next) => {
+      view = next;
+      consoleView.hidden = view !== "console";
+      networkView.hidden = view !== "network";
+      tabs.update({ activeId: view });
+      renderCounts();
     }
   });
-  scopeSelect.querySelector('[role="tablist"]').setAttribute("aria-label", "Browser sessions");
-  var parseState = (body) => {
-    const value = JSON.parse(body);
-    if (!value || typeof value !== "object" || !Array.isArray(value.scopes)) throw new Error("Invalid browser state");
-    if (!Number.isInteger(value.generation) || value.generation < 0) throw new Error("Invalid browser generation");
-    return value;
-  };
-  var scopeLabel = (scope) => {
-    const parts = String(scope.directory ?? "").split(/[\\/]/).filter(Boolean);
-    const directory = parts.at(-1) ?? "project";
-    const session = String(scope.sessionId ?? "unknown");
-    return `${directory} \xB7 ${session.length > 12 ? `${session.slice(0, 12)}\u2026` : session}`;
-  };
-  var errorFromBody = (body) => {
-    try {
-      const error = JSON.parse(body)?.error;
-      return typeof error === "string" && error ? error : null;
-    } catch (error) {
-      if (error instanceof SyntaxError) return null;
-      throw error;
+  var filterField = mountSearchField(filterHost, {
+    value: "",
+    placeholder: "Filter messages or requests",
+    label: "Filter inspector entries",
+    onChange: (value) => {
+      filter = value.trim().toLowerCase();
+      filterField.update({ value });
+      for (const row of consoleList.children) row.hidden = !matches(row);
+      for (const entry of networkRows.values()) entry.element.hidden = !matches(entry.element);
     }
+  });
+  var matches = (node) => !filter || node.dataset.search.includes(filter);
+  var renderCounts = () => {
+    tabs.update({ items: [
+      { id: "console", label: "Console", count: consoleCount },
+      { id: "network", label: "Network", count: networkRows.size }
+    ] });
+    const omitted = view === "console" ? droppedConsole : droppedNetwork;
+    dropped.textContent = omitted > 0 ? `Entries omitted: ${omitted}` : "";
   };
-  var render = () => {
-    const scopes = state?.scopes ?? [];
-    const selected = scopes.find((scope) => scope.id === state?.selectedScopeId) ?? null;
-    const idle = state?.controller === "none";
-    scopeSelect.disabled = requestPending || scopes.length < 2 || !idle;
-    const chat = currentChat();
-    chatButton.hidden = !chat || Boolean(scopeForChat(chat));
-    chatButton.disabled = requestPending || !idle;
-    if (chat) chatButton.title = `Open a browser for ${chat.title}`;
-    const items = scopes.map((scope) => ({ id: String(scope.id), label: scopeLabel(scope) }));
-    const activeId = selected ? String(selected.id) : "";
-    const signature = JSON.stringify([items, activeId]);
-    if (signature !== tabsSignature) {
-      const focusedId = pendingTabFocusId ?? document.activeElement?.dataset.id;
-      tabs.update({ items, activeId });
-      tabsSignature = signature;
-      for (const button2 of scopeSelect.querySelectorAll('[role="tab"]')) {
-        if (button2.dataset.id === focusedId) {
-          button2.focus();
-          pendingTabFocusId = null;
-        }
+  var setStatus = (text) => {
+    if (Date.now() < noticeUntil) return;
+    status.textContent = text;
+  };
+  var banner = null;
+  var showBanner = (props) => {
+    banner?.dispose();
+    banner = props ? mountBanner(bannerHost, props) : null;
+  };
+  var showEmpty = (empty) => {
+    emptyHost.hidden = !empty;
+    consoleView.hidden = empty || view !== "console";
+    networkView.hidden = empty || view !== "network";
+  };
+  var appendConsole = (row) => {
+    const pinned = consoleList.scrollHeight - consoleList.scrollTop - consoleList.clientHeight < 24;
+    const item = element("div", "console-row");
+    const kind = row.kind ?? "message";
+    item.dataset.kind = kind;
+    item.dataset.level = row.isError ? "error" : row.level ?? "log";
+    const label = kind === "command" ? "\u203A" : kind === "result" ? "\u2039" : LEVELS[row.level] ?? "Log";
+    const level = element("span", "level", label);
+    if (kind !== "message") level.setAttribute("aria-label", kind === "command" ? "Command" : row.isError ? "Error result" : "Result");
+    const text = element("pre", "text mono", row.text);
+    const meta = element("span", "meta");
+    if (row.truncated) meta.append(element("span", "tag", "Truncated"));
+    if (row.source) {
+      const source = element("span", "", `${lastSegment(row.source)}${Number.isInteger(row.line) ? `:${row.line + 1}` : ""}`);
+      source.title = row.source;
+      meta.append(source);
+    }
+    if (row.timestamp) meta.append(element("span", "", formatTime(row.timestamp)));
+    item.append(level, text, meta);
+    item.dataset.search = `${row.text}
+${row.source ?? ""}`.toLowerCase();
+    item.hidden = !matches(item);
+    consoleList.append(item);
+    while (consoleList.childElementCount > MAX_CONSOLE_ROWS) consoleList.firstElementChild.remove();
+    if (pinned) consoleList.scrollTop = consoleList.scrollHeight;
+  };
+  var clearConsole = () => {
+    consoleList.replaceChildren();
+    consoleCount = 0;
+  };
+  var statusLabel = (row) => {
+    if (row.state === "pending") return "Pending";
+    if (row.state === "failed") return "Failed";
+    return row.status === null ? "" : String(row.status);
+  };
+  var renderNetworkRow = (entry) => {
+    const { row } = entry;
+    const cells = [
+      element("span", "mono", row.method),
+      element("span", "status", statusLabel(row)),
+      element("span", "mono", row.url),
+      element("span", "", row.fromCache ? `${row.resourceType} (cache)` : row.resourceType),
+      element("span", "numeric", formatBytes(row.encodedBytes)),
+      element("span", "numeric", Number.isFinite(row.durationMs) ? `${Math.round(row.durationMs)} ms` : "")
+    ];
+    cells[1].title = row.failureText ?? row.statusText ?? "";
+    cells[2].title = row.url;
+    entry.element.replaceChildren(...cells);
+    entry.element.dataset.state = row.state;
+    entry.element.dataset.search = `${row.method} ${statusLabel(row)} ${row.url}`.toLowerCase();
+    entry.element.setAttribute("aria-label", `${row.method} ${row.url} ${statusLabel(row)}`);
+    entry.element.hidden = !matches(entry.element);
+  };
+  var upsertNetwork = (row) => {
+    let entry = networkRows.get(row.id);
+    if (!entry) {
+      const item = element("div", "network-row");
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", "false");
+      item.id = `request-${networkRows.size}-${Date.now()}`;
+      item.addEventListener("click", () => selectRequest(row.id));
+      entry = { row, element: item };
+      networkRows.set(row.id, entry);
+      networkList.append(item);
+      while (networkRows.size > MAX_NETWORK_ROWS) {
+        const [oldestId, oldest] = networkRows.entries().next().value;
+        oldest.element.remove();
+        networkRows.delete(oldestId);
+        if (selectedRequest === oldestId) closeDetails();
       }
     }
-    for (const button2 of scopeSelect.querySelectorAll('[role="tab"]')) {
-      const scope = scopes.find((item) => String(item.id) === button2.dataset.id);
-      const page = scope.title || (scope.url === "about:blank" ? "" : scope.url);
-      button2.title = `${page ? `${page} \u2014 ` : ""}${scope.directory} \xB7 ${scope.sessionId}`;
-    }
-    if (!addressDirty) address.value = selected?.url === "about:blank" ? "" : String(selected?.url ?? "");
-    const disabled = requestPending || !selected || !idle;
-    renderPageTabs(selected, disabled);
-    back.disabled = disabled || !selected.canGoBack;
-    forward.disabled = disabled || !selected.canGoForward;
-    drawReload(selected?.isLoading === true);
-    reload.disabled = disabled;
-    address.disabled = disabled;
-    selectCompatibility.disabled = disabled;
-    const compatibilityEnabled = selected?.nativeSelectCompatibility === true;
-    selectCompatibility.setAttribute("aria-pressed", String(compatibilityEnabled));
-    const compatibilityLabel = compatibilityEnabled ? "Disable visible native select menus" : "Show native select menus in the shared browser";
-    selectCompatibility.title = compatibilityLabel;
-    selectCompatibility.setAttribute("aria-label", compatibilityLabel);
-    const { errors = 0, warnings = 0 } = selected?.problems ?? {};
-    problems.hidden = errors + warnings === 0;
-    errorCount.textContent = errors ? `\u2715 ${errors}` : "";
-    warningCount.textContent = warnings ? `\u26A0 ${warnings}` : "";
-    const problemsLabel = `${errors} ${errors === 1 ? "error" : "errors"} and ${warnings} ${warnings === 1 ? "warning" : "warnings"} in this page's console. Open Browser inspector from Extension pages to see them.`;
-    problems.title = problemsLabel;
-    problems.setAttribute("aria-label", problemsLabel);
-    const viewport = selected?.viewport ?? null;
-    const choice = viewportChoice(viewport);
-    customOption.textContent = choice === "custom" ? `Custom ${viewport.width} \xD7 ${viewport.height}` : "Custom size\u2026";
-    if (customSize.hidden) viewportSelect.value = choice;
-    viewportSelect.disabled = disabled || !viewport;
-    viewportSelect.title = viewport?.mode === "fixed" && viewport.source === "agent" ? "The agent chose this viewport. Pick another size to take it over." : "Viewport size";
-    rotate.disabled = disabled || viewport?.mode !== "fixed";
-    mobileToggle.disabled = disabled || !viewport;
-    mobileToggle.setAttribute("aria-pressed", String(viewport?.mobile === true));
-    let statusState = "ready";
-    let statusMessage = "";
-    let statusTitle = "Click or type in the page to take control. Enter an address and press Enter to navigate.";
-    const notice = state?.notice ? `${scopeLabel(state.notice)}: ${state.notice.message}` : null;
-    if (commandError || serviceError || notice || selected?.nativeSelectCompatibilityError) {
-      statusState = "error";
-      statusMessage = commandError ?? serviceError ?? notice ?? selected.nativeSelectCompatibilityError;
-      statusTitle = statusMessage;
-    } else if (!selected) {
-      statusState = "waiting";
-      statusMessage = currentChat() ? "Open this chat's browser or ask the agent to use openchamber_web" : "Ask the agent to open a page with openchamber_web";
-      statusTitle = "The browser starts with the agent's first browser action in a chat, or when you open it for the chat you are viewing.";
-    } else if (state.controller === "user") {
-      statusState = "user";
-      statusTitle = "A viewer has control of the page. Release control to change sessions or use the browser toolbar. The SDK cannot identify which viewer is using this toolbar.";
-    } else if (!idle) {
-      statusState = "agent";
-      statusTitle = "Waiting for the agent action to finish";
-    }
-    status.dataset.state = statusState;
-    status.dataset.message = statusMessage ? "true" : "false";
-    status.textContent = statusMessage;
-    status.title = statusTitle;
-    status.setAttribute("aria-label", statusTitle);
-    scopeSelect.title = scopeSelect.disabled ? statusTitle : "";
+    entry.row = row;
+    renderNetworkRow(entry);
+    if (selectedRequest === row.id) renderGeneral(row);
   };
-  var request = async (path, payload) => {
-    requestPending = true;
-    commandError = null;
-    render();
-    try {
-      const result = await host.serviceRequest({
-        method: "POST",
-        path,
-        body: JSON.stringify(payload)
-      });
-      if (result.status < 200 || result.status >= 300) {
-        throw new Error(errorFromBody(result.body) ?? `Service returned ${result.status}`);
-      }
-      state = parseState(result.body);
-      return true;
-    } catch (error) {
-      commandError = error instanceof Error ? error.message : "Browser command failed";
-      return false;
-    } finally {
-      requestPending = false;
-      render();
-    }
+  var clearNetwork = () => {
+    for (const entry of networkRows.values()) entry.element.remove();
+    networkRows.clear();
+    closeDetails();
   };
-  var viewerTheme = null;
-  var reportedViewer = null;
-  var syncViewer = () => {
-    const payload = JSON.stringify({ devicePixelRatio: window.devicePixelRatio || 1, ...viewerTheme ? { theme: viewerTheme } : {} });
-    if (payload === reportedViewer) return;
-    reportedViewer = payload;
-    void host.serviceRequest({ method: "POST", path: "/browser/viewer", body: payload }).then((result) => {
-      if (result.status !== 200) reportedViewer = null;
-    }, () => {
-      reportedViewer = null;
-    });
+  var generalSection = element("section");
+  var requestHeadersSection = element("section");
+  var responseHeadersSection = element("section");
+  var bodiesSection = element("section");
+  var detailsTitle = element("h2", "mono");
+  var closeDetailsButton = element("button", "icon-button", "\u2715");
+  closeDetailsButton.type = "button";
+  closeDetailsButton.title = "Close request details";
+  closeDetailsButton.setAttribute("aria-label", closeDetailsButton.title);
+  var detailsHead = element("div", "details-head");
+  detailsHead.append(detailsTitle, closeDetailsButton);
+  details.append(detailsHead, generalSection, requestHeadersSection, responseHeadersSection, bodiesSection);
+  var pairs = (entries) => {
+    const list = element("dl", "pairs");
+    for (const [name, value] of entries) list.append(element("dt", "", name), element("dd", "", value));
+    return list;
   };
-  var lastCopyId = null;
-  var offerCopy = (copy) => {
-    if (!copy || copy.id === lastCopyId) return;
-    lastCopyId = copy.id;
-    const toast = copy.text === null ? { kind: "error", message: "This selection is too long to copy from the menu. Use Ctrl/Cmd+C instead." } : copy.text ? { kind: "info", message: "The selected text is ready to copy.", copy: { text: copy.text } } : { kind: "info", message: "Select text on the page to copy it." };
-    void host.toast(toast).catch(() => {
-    });
+  var renderGeneral = (row) => {
+    detailsTitle.textContent = row.url;
+    generalSection.replaceChildren(element("h3", "", "General"), pairs([
+      ["Method", row.method],
+      ["URL", row.url],
+      ["Status", row.status === null ? statusLabel(row) : `${row.status} ${row.statusText}`.trim()],
+      ["Type", row.resourceType || "Unavailable"],
+      ["Content type", row.mimeType || "Unavailable"],
+      ["State", row.state === "complete" ? "Complete" : row.state === "failed" ? "Failed" : "Pending"],
+      ["Duration", Number.isFinite(row.durationMs) ? `${Math.round(row.durationMs)} ms` : "Unavailable"],
+      ["Transferred", formatBytes(row.encodedBytes) || "Unavailable"],
+      ["From cache", row.fromCache ? "Yes" : "No"],
+      ...row.failureText ? [["Failure", row.failureText]] : []
+    ]));
   };
-  var refresh = async () => {
-    if (refreshPending || requestPending) return;
-    refreshPending = true;
-    try {
-      const result = await host.serviceRequest({ method: "GET", path: "/browser/state" });
-      if (result.status === 200) {
-        state = parseState(result.body);
-        serviceError = null;
-        syncViewer();
-        offerCopy(state.copy);
-        followChat();
-        render();
-      }
-    } catch (error) {
-      serviceError = error instanceof Error ? error.message : "Browser service unavailable";
-      render();
-    } finally {
-      refreshPending = false;
-    }
+  var headerSection = (section, title, headers) => {
+    section.replaceChildren(element("h3", "", title), headers.length ? pairs(headers.map(({ name, value }) => [name, value])) : element("p", "note", "No headers available."));
   };
-  back.addEventListener("click", () => {
-    if (!state) return;
-    void request("/browser/back", { generation: state.generation }).then((succeeded) => {
-      if (!succeeded) return;
-      addressDirty = false;
-      render();
+  var renderBodies = (result, loading = false) => {
+    const load = element("div");
+    bodiesSection.replaceChildren(element("h3", "", "Bodies"), load);
+    mountButton(load, {
+      label: "Load bodies",
+      size: "sm",
+      variant: "outline",
+      loading,
+      disabled: loading || result?.bodyState === "available",
+      onClick: () => loadDetails(selectedRequest, true)
     });
-  });
-  forward.addEventListener("click", () => {
-    if (!state) return;
-    void request("/browser/forward", { generation: state.generation }).then((succeeded) => {
-      if (!succeeded) return;
-      addressDirty = false;
-      render();
-    });
-  });
-  reload.addEventListener("click", () => {
-    if (!state) return;
-    const loading = state.scopes.find((scope) => scope.id === state.selectedScopeId)?.isLoading === true;
-    void request(loading ? "/browser/stop" : "/browser/reload", { generation: state.generation }).then((succeeded) => {
-      if (!succeeded) return;
-      addressDirty = false;
-      render();
-    });
-  });
-  var followChat = () => {
-    if (!followPending || !state || requestPending) return;
-    const scope = scopeForChat(currentChat());
-    if (!scope) return;
-    if (scope.id === state.selectedScopeId) {
-      followPending = false;
+    if (!result) return;
+    if (result.bodyState !== "available") {
+      bodiesSection.append(element("p", "note", BODY_STATES[result.bodyState] ?? ""));
       return;
     }
-    if (state.controller !== "none") return;
-    followPending = false;
-    void request("/browser/select", { scopeId: scope.id, generation: state.generation }).then((succeeded) => {
-      if (succeeded) addressDirty = false;
-      render();
-    });
+    for (const [label, text] of [["Request body", result.requestBody], ["Response body", result.responseBody]]) {
+      bodiesSection.append(element("h3", "", label));
+      bodiesSection.append(text === null ? element("p", "note", "No body available.") : element("pre", "body-text mono", text));
+    }
+    if (result.truncated) bodiesSection.append(element("p", "note", "Preview truncated."));
   };
-  chatButton.addEventListener("click", () => {
-    const chat = currentChat();
-    if (!state || !chat) return;
-    void request("/browser/scope", { directory: chat.directory, sessionId: chat.sessionId, generation: state.generation }).then((succeeded) => {
-      if (succeeded) addressDirty = false;
-      render();
-    });
-  });
-  host.onDirectory((directory) => {
-    if (directory === chatDirectory) return;
-    chatDirectory = directory;
-    followPending = true;
-    render();
-  });
-  host.onSession((session) => {
-    if (session?.id !== chatSession?.id) followPending = true;
-    chatSession = session;
-    render();
-  });
-  var tabCommand = (path, payload) => {
-    if (!state) return;
-    void request(path, { ...payload, generation: state.generation }).then((succeeded) => {
-      if (!succeeded) return;
-      addressDirty = false;
-      render();
-    });
+  var loadDetails = async (entryId, includeBody) => {
+    const token = ++detailsToken;
+    if (includeBody) renderBodies(null, true);
+    try {
+      const result = await call("POST", "/inspector/request", { body: { captureId, entryId, includeBody } });
+      if (token !== detailsToken || selectedRequest !== entryId) return;
+      headerSection(requestHeadersSection, "Request headers", result.requestHeaders);
+      headerSection(responseHeadersSection, "Response headers", result.responseHeaders);
+      renderBodies(result);
+    } catch (error) {
+      if (token !== detailsToken || selectedRequest !== entryId) return;
+      renderBodies(null);
+      bodiesSection.append(element("p", "note", REQUEST_ERRORS[error.code] ?? error.message));
+    }
   };
-  pageTabs.addEventListener("click", (event) => {
-    const button2 = event.target.closest("button");
-    if (!button2?.dataset.id) return;
-    if (button2.classList.contains("page-tab-close")) tabCommand("/browser/tabs/close", { tabId: button2.dataset.id });
-    else if (button2.getAttribute("aria-selected") !== "true") tabCommand("/browser/tabs/select", { tabId: button2.dataset.id });
+  var selectRequest = (entryId) => {
+    const entry = networkRows.get(entryId);
+    if (!entry) return;
+    if (selectedRequest) networkRows.get(selectedRequest)?.element.setAttribute("aria-selected", "false");
+    selectedRequest = entryId;
+    entry.element.setAttribute("aria-selected", "true");
+    entry.element.scrollIntoView({ block: "nearest" });
+    networkList.setAttribute("aria-activedescendant", entry.element.id);
+    details.hidden = false;
+    networkLayout.classList.add("with-details");
+    renderGeneral(entry.row);
+    requestHeadersSection.replaceChildren();
+    responseHeadersSection.replaceChildren();
+    renderBodies(null);
+    void loadDetails(entryId, false);
+  };
+  function closeDetails() {
+    if (selectedRequest) networkRows.get(selectedRequest)?.element.setAttribute("aria-selected", "false");
+    selectedRequest = null;
+    detailsToken += 1;
+    details.hidden = true;
+    networkLayout.classList.remove("with-details");
+    networkList.removeAttribute("aria-activedescendant");
+  }
+  closeDetailsButton.addEventListener("click", () => {
+    closeDetails();
+    networkList.focus();
   });
-  pageTabs.addEventListener("keydown", (event) => {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" || !event.target.matches(".page-tab-select")) return;
-    const buttons = [...pageTabs.querySelectorAll(".page-tab-select")];
-    const step = event.key === "ArrowRight" ? 1 : -1;
+  networkList.addEventListener("keydown", (event) => {
+    const visible = [...networkRows.keys()].filter((id) => !networkRows.get(id).element.hidden);
+    if (event.key === "Escape") {
+      closeDetails();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
     event.preventDefault();
-    buttons[(buttons.indexOf(event.target) + step + buttons.length) % buttons.length]?.focus();
-  });
-  newTab.addEventListener("click", () => tabCommand("/browser/tabs/new", {}));
-  selectCompatibility.addEventListener("click", () => {
-    if (!state) return;
-    const selected = state.scopes.find((scope) => scope.id === state.selectedScopeId);
-    if (!selected) return;
-    void request("/browser/select-compatibility", {
-      enabled: selected.nativeSelectCompatibility !== true,
-      generation: state.generation
-    });
-  });
-  address.addEventListener("input", () => {
-    addressDirty = true;
-  });
-  var navigate = () => {
-    if (!state || !address.value.trim()) return;
-    const url = address.value.trim();
-    void request("/browser/navigate", { url, generation: state.generation }).then((succeeded) => {
-      if (!succeeded) return;
-      addressDirty = false;
-      render();
-    });
-  };
-  address.addEventListener("keydown", (event) => {
+    if (!visible.length) return;
+    const index = visible.indexOf(selectedRequest);
     if (event.key === "Enter") {
+      selectRequest(visible[Math.max(0, index)]);
+      return;
+    }
+    const next = event.key === "ArrowDown" ? Math.min(visible.length - 1, index + 1) : Math.max(0, index - 1);
+    selectRequest(visible[index === -1 ? 0 : next]);
+  });
+  var resetRows = () => {
+    clearConsole();
+    clearNetwork();
+    droppedConsole = 0;
+    droppedNetwork = 0;
+    cursor = 0;
+    renderCounts();
+  };
+  var schedule = (delay) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      void tick();
+    }, delay);
+  };
+  var startCapture = async () => {
+    if (starting) return;
+    starting = true;
+    captureId = null;
+    resetRows();
+    try {
+      const started = await call("POST", "/inspector/start", { body: {} });
+      captureId = started.captureId;
+      showEmpty(false);
+      showBanner(null);
+      schedule(0);
+    } catch (error) {
+      if (error.code === "UNAVAILABLE") {
+        showEmpty(true);
+        setStatus("No browser page is visible");
+        schedule(RETRY_MS);
+      } else if (error.code === "CAPTURE_FAILED") {
+        setStatus(error.message);
+        showBanner({ tone: "error", title: "Could not start capture", body: error.message, action: { label: "Try again", onClick: () => {
+          void startCapture();
+        } } });
+      } else {
+        setStatus(error.message);
+        schedule(RETRY_MS);
+      }
+    } finally {
+      starting = false;
+    }
+  };
+  async function tick() {
+    if (document.visibilityState !== "visible" || polling || starting) return;
+    if (!captureId) {
+      await startCapture();
+      return;
+    }
+    polling = true;
+    let next = POLL_MS;
+    try {
+      const batch = await call("GET", "/inspector/events", { query: { captureId, after: String(cursor) } });
+      cursor = batch.cursor;
+      droppedConsole = batch.droppedConsole;
+      droppedNetwork = batch.droppedNetwork;
+      for (const row of batch.console) appendConsole(row);
+      consoleCount += batch.console.length;
+      for (const row of batch.network) upsertNetwork(row);
+      renderCounts();
+      tabLabel = batch.tab?.title || batch.tab?.url || "the visible tab";
+      setStatus(`Capturing ${tabLabel}`);
+      if (batch.more) next = 0;
+    } catch (error) {
+      if (error.code === "CAPTURE_GONE") {
+        captureId = null;
+        status.textContent = "Capturing a new tab";
+        noticeUntil = Date.now() + 2e3;
+        next = 0;
+      } else if (error.code === "UNAVAILABLE") {
+        captureId = null;
+        showEmpty(true);
+        setStatus("No browser page is visible");
+        next = RETRY_MS;
+      } else {
+        setStatus(error.message);
+        next = RETRY_MS;
+      }
+    } finally {
+      polling = false;
+    }
+    schedule(next);
+  }
+  mountButton(clearHost, {
+    label: "Clear",
+    size: "sm",
+    variant: "ghost",
+    onClick: () => {
+      const scope = view;
+      if (scope === "console") clearConsole();
+      else clearNetwork();
+      if (scope === "console") droppedConsole = 0;
+      else droppedNetwork = 0;
+      renderCounts();
+      if (captureId) void call("POST", "/inspector/clear", { body: { captureId, scope } }).catch(() => {
+      });
+    }
+  });
+  var recall = (step) => {
+    if (!history.length) return;
+    historyIndex = Math.min(history.length, Math.max(0, historyIndex + step));
+    expressionInput.value = history[historyIndex] ?? "";
+    expressionInput.focus();
+  };
+  mountButton(previousHost, { label: "Previous command", size: "sm", variant: "ghost", onClick: () => recall(-1) });
+  mountButton(nextHost, { label: "Next command", size: "sm", variant: "ghost", onClick: () => recall(1) });
+  var runButton = mountButton(runHost, { label: "Run", size: "sm", onClick: () => {
+    void run();
+  } });
+  async function run() {
+    const expression = expressionInput.value;
+    replError.textContent = "";
+    if (running || !expression.trim()) return;
+    if (expression.length > MAX_EXPRESSION_CHARS) {
+      replError.textContent = "Enter JavaScript with at most 16,000 characters.";
+      return;
+    }
+    if (!captureId) {
+      replError.textContent = "The inspector is not capturing a page yet.";
+      return;
+    }
+    running = true;
+    runButton.update({ label: "Running", loading: true });
+    history.push(expression);
+    historyIndex = history.length;
+    appendConsole({ kind: "command", text: expression });
+    try {
+      const result = await call("POST", "/inspector/evaluate", { body: { captureId, expression } });
+      appendConsole({ kind: "result", text: result.text, isError: result.isError, truncated: result.truncated });
+      expressionInput.value = "";
+    } catch (error) {
+      appendConsole({ kind: "result", isError: true, text: EVALUATION_ERRORS[error.code] ?? error.message });
+    } finally {
+      running = false;
+      runButton.update({ label: "Run", loading: false });
+    }
+  }
+  repl.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void run();
+  });
+  expressionInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
-      navigate();
-      return;
+      void run();
     }
-    if (event.key !== "Escape") return;
-    addressDirty = false;
-    render();
   });
-  var selectedViewport = () => state?.scopes.find((scope) => scope.id === state.selectedScopeId)?.viewport ?? null;
-  var setViewport = (viewport) => {
-    if (!state) return;
-    void request("/browser/viewport", { ...viewport, generation: state.generation });
-  };
-  var closeCustomSize = () => {
-    customSize.hidden = true;
-    address.hidden = false;
-    render();
-  };
-  viewportSelect.addEventListener("change", () => {
-    const current = selectedViewport();
-    if (!current) return;
-    if (viewportSelect.value === "custom") {
-      widthInput.value = String(current.width);
-      heightInput.value = String(current.height);
-      address.hidden = true;
-      customSize.hidden = false;
-      widthInput.focus();
-      widthInput.select();
-      return;
-    }
-    const preset = VIEWPORT_PRESETS[viewportSelect.value];
-    setViewport(preset ? { mode: "fixed", width: preset.width, height: preset.height, mobile: preset.mobile } : { mode: "auto", mobile: current.mobile });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") schedule(0);
   });
-  rotate.addEventListener("click", () => {
-    const current = selectedViewport();
-    if (current?.mode !== "fixed") return;
-    setViewport({ mode: "fixed", width: current.height, height: current.width, mobile: current.mobile });
-  });
-  mobileToggle.addEventListener("click", () => {
-    const current = selectedViewport();
-    if (!current) return;
-    setViewport(current.mode === "fixed" ? { mode: "fixed", width: current.width, height: current.height, mobile: !current.mobile } : { mode: "auto", mobile: !current.mobile });
-  });
-  customSize.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const current = selectedViewport();
-    if (!current || !customSize.reportValidity()) return;
-    customSize.hidden = true;
-    address.hidden = false;
-    setViewport({ mode: "fixed", width: Number(widthInput.value), height: Number(heightInput.value), mobile: current.mobile });
-  });
-  cancelSize.addEventListener("click", closeCustomSize);
-  customSize.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    closeCustomSize();
+  window.addEventListener("pagehide", () => {
+    if (captureId) void call("POST", "/inspector/stop", { body: { captureId } }).catch(() => {
+    });
   });
   var mounted = false;
   host.onReady((context) => {
     applyHostReady(context, document.documentElement);
-    const { tokens } = context.theme;
-    viewerTheme = {
-      mode: context.theme.mode,
-      elevated: tokens.elevated,
-      elevatedForeground: tokens.elevatedForeground,
-      border: tokens.border,
-      hover: tokens.hover,
-      muted: tokens.muted,
-      font: tokens.font,
-      radius: tokens.radius
-    };
     if (mounted) return;
     mounted = true;
-    render();
-    void refresh();
-    window.setInterval(() => {
-      void refresh();
-    }, 1e3);
+    renderCounts();
+    schedule(0);
   });
 })();

@@ -21,6 +21,7 @@ import {
   readSurfaceResizeRequest,
 } from '@openchamber/sdk';
 import { readMenuTheme } from './context-menu.js';
+import { InspectorError } from './inspector.js';
 import { MAX_VIEWPORT_DIMENSION } from './viewports.js';
 
 const BODY_MAX_BYTES = 17 * 1024 * 1024;
@@ -120,6 +121,55 @@ const dockErrorStatus = (error) => {
   if (/surface is idle|browser view changed/i.test(message)) return 409;
   if (/no browser scope|no longer exists|no longer open/i.test(message)) return 404;
   return 400;
+};
+
+const INSPECTOR_STATUS = Object.freeze({
+  UNAVAILABLE: 409,
+  AGENT_ACTIVE: 409,
+  INVALID_REQUEST: 400,
+  CAPTURE_GONE: 410,
+  REQUEST_GONE: 410,
+  EVALUATION_FAILED: 422,
+  EVALUATION_TIMEOUT: 422,
+  REQUEST_FAILED: 502,
+  CAPTURE_FAILED: 502,
+});
+
+const identityProperty = (value, name) => {
+  const text = stringProperty(value, name);
+  return text && text.length <= 128 ? text : null;
+};
+
+// Console, network, and JavaScript for the inspector page. Errors carry a code
+// the page can act on, such as CAPTURE_GONE to start a fresh capture.
+const handleInspector = async (runtime, operation, request, url) => {
+  if (operation === 'events') {
+    const captureId = url.searchParams.get('captureId');
+    const after = queryInteger(url, 'after', 0, Number.MAX_SAFE_INTEGER);
+    if (request.method !== 'GET' || !captureId || captureId.length > 128 || after === null) return null;
+    return runtime.inspectorEvents(captureId, after);
+  }
+  if (request.method !== 'POST') return null;
+  const body = await readObjectBody(request);
+  if (operation === 'start') return runtime.inspectorStart();
+  const captureId = identityProperty(body, 'captureId');
+  if (!captureId) return null;
+  if (operation === 'stop') {
+    runtime.inspectorStop(captureId);
+    return { ok: true };
+  }
+  if (operation === 'clear') {
+    if (body.scope !== 'console' && body.scope !== 'network') return null;
+    runtime.inspectorClear(captureId, body.scope);
+    return { ok: true };
+  }
+  if (operation === 'evaluate') {
+    if (typeof body.expression !== 'string') return null;
+    return runtime.inspectorEvaluate(captureId, body.expression);
+  }
+  const entryId = identityProperty(body, 'entryId');
+  if (!entryId || typeof body.includeBody !== 'boolean') return null;
+  return runtime.inspectorRequest(captureId, entryId, body.includeBody);
 };
 
 export const createService = ({ runtime, token, port = 0 }) => {
@@ -267,6 +317,18 @@ export const createService = ({ runtime, token, port = 0 }) => {
         return json(response, 200, runtime.state());
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+
+    const inspectorOperation = /^\/inspector\/(start|events|clear|stop|evaluate|request)$/.exec(url.pathname)?.[1];
+    if (inspectorOperation) {
+      try {
+        const result = await handleInspector(runtime, inspectorOperation, request, url);
+        if (result === null) return json(response, 400, { ok: false, code: 'INVALID_REQUEST', error: new InspectorError('INVALID_REQUEST').message });
+        return json(response, 200, result);
+      } catch (error) {
+        if (!(error instanceof InspectorError)) throw error;
+        return json(response, INSPECTOR_STATUS[error.code] ?? 400, { ok: false, code: error.code, error: error.message });
       }
     }
 
