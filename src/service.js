@@ -241,7 +241,13 @@ export const createService = ({ runtime, token, port = 0 }) => {
     }
 
     if (request.method === 'GET' && url.pathname === SURFACE_CLIPBOARD_PATH) {
-      return json(response, 200, { text: await runtime.surfaceClipboard() });
+      const copied = await runtime.surfaceClipboard();
+      // An answer is written to the viewer's clipboard; nothing copied must not clear it.
+      if (!copied) {
+        response.writeHead(204);
+        return response.end();
+      }
+      return json(response, 200, { text: copied });
     }
     return text(response, 404, 'Not found\n');
   };

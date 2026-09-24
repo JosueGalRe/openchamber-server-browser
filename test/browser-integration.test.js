@@ -41,6 +41,17 @@ const startWebFixture = async () => {
       response.end(html('<h1>Next page</h1><a href="/">Home</a>', 'Next'));
       return;
     }
+    if (request.url === '/copy') {
+      response.end(html(`
+        <input id="secret" type="password" value="hunter2">
+        <div id="host"></div>
+        <iframe id="frame" srcdoc="<textarea id='inner'>frame text</textarea>"></iframe>
+        <script>
+          document.querySelector('#host').attachShadow({ mode: 'open' }).innerHTML = '<input id="shadowed" value="shadow text">';
+        </script>
+      `, 'Copy'));
+      return;
+    }
     if (request.url === '/keys') {
       response.end(html(`
         <textarea id="notes"></textarea>
@@ -257,4 +268,23 @@ test('types editing keys, Enter, select-all, and composed characters like a loca
   assert.equal(afterHome, '[0,0]');
   assert.equal(afterSelectAll, '[0,11]');
   assert.equal(await evaluate('document.querySelector("#submits").textContent'), '1');
+});
+
+test('copies the focused selection through shadow roots and same-origin frames but never a password', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a page with a password field, an open shadow root, and a same-origin frame.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/copy` });
+  const page = await runtime.ensurePage();
+  const select = (expression) => page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', { expression });
+
+  // When text is selected in each place, then only readable selections are copied.
+  await select('const s = document.querySelector("#host").shadowRoot.querySelector("#shadowed"); s.focus(); s.setSelectionRange(0, 6)');
+  assert.equal(await runtime.surfaceClipboard(), 'shadow');
+  await select('const t = document.querySelector("#frame").contentDocument.querySelector("#inner"); t.focus(); t.setSelectionRange(0, 5)');
+  assert.equal(await runtime.surfaceClipboard(), 'frame');
+  await select('const p = document.querySelector("#secret"); p.focus(); p.select()');
+  assert.equal(await runtime.surfaceClipboard(), '');
 });

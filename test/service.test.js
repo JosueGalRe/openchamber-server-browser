@@ -251,3 +251,16 @@ test('native select compatibility route parses a boolean and uses dock generatio
   assert.equal(enabled.status, 200);
   assert.deepEqual(fixture.runtime.calls, [['select-compatibility', true, 1]]);
 });
+
+
+test('answers no content when nothing was copied so the viewer keeps its clipboard', async (context) => {
+  const runtime = createRuntime();
+  runtime.surfaceClipboard = async () => '';
+  const fixture = await startFixture(runtime);
+  context.after(() => fixture.service.close());
+
+  const clipboard = await fetch(`${fixture.origin}/surface/clipboard`, { headers: authorization });
+
+  assert.equal(clipboard.status, 204);
+  assert.equal(await clipboard.text(), '');
+});

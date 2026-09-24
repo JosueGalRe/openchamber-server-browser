@@ -5463,11 +5463,34 @@ var dispatchInput = async (page, event) => {
   });
 };
 var clipboardExpression = `(() => {
-  var active = document.activeElement;
-  if (active && typeof active.value === 'string' && typeof active.selectionStart === 'number') {
-    return active.value.slice(active.selectionStart, active.selectionEnd);
+  let root = document;
+  let ownerDocument = document;
+  for (let depth = 0; depth < 64; depth += 1) {
+    const active = root.activeElement;
+    if (active?.tagName === 'IFRAME' || active?.tagName === 'FRAME') {
+      const childDocument = active.contentDocument;
+      if (!childDocument) return '';
+      root = childDocument;
+      ownerDocument = childDocument;
+      continue;
+    }
+    if (active?.shadowRoot) {
+      root = active.shadowRoot;
+      continue;
+    }
+    let text;
+    if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') {
+      if (active.type === 'password' || !Number.isInteger(active.selectionStart)
+        || !Number.isInteger(active.selectionEnd)
+        || active.selectionEnd - active.selectionStart > ${SURFACE_TEXT_MAX}) return '';
+      text = active.value.slice(active.selectionStart, active.selectionEnd);
+    } else {
+      const selection = root.getSelection?.() ?? ownerDocument.getSelection();
+      text = selection?.toString() ?? '';
+    }
+    return text.length > ${SURFACE_TEXT_MAX} ? '' : text;
   }
-  return String(window.getSelection ? window.getSelection() : '');
+  return '';
 })()`;
 var createSurface = (runtime) => {
   const waiters = /* @__PURE__ */ new Set();
@@ -5989,7 +6012,12 @@ var createService = ({ runtime, token, port = 0 }) => {
       return json(response, 200, await runtime.surfaceResize(parsed));
     }
     if (request.method === "GET" && url.pathname === SURFACE_CLIPBOARD_PATH) {
-      return json(response, 200, { text: await runtime.surfaceClipboard() });
+      const copied = await runtime.surfaceClipboard();
+      if (!copied) {
+        response.writeHead(204);
+        return response.end();
+      }
+      return json(response, 200, { text: copied });
     }
     return text(response, 404, "Not found\n");
   };

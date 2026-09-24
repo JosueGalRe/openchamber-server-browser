@@ -1,4 +1,4 @@
-import { SURFACE_FRAME_MAX_BYTES } from '@openchamber/sdk';
+import { SURFACE_FRAME_MAX_BYTES, SURFACE_TEXT_MAX } from '@openchamber/sdk';
 
 const BUTTON_NAMES = ['left', 'middle', 'right'];
 const KEY_CODES = Object.freeze({
@@ -70,12 +70,37 @@ const dispatchInput = async (page, event) => {
   });
 };
 
+// Follows focus through open shadow roots and same-origin frames. Password
+// fields, inaccessible frames, and oversized selections copy nothing.
 const clipboardExpression = `(() => {
-  var active = document.activeElement;
-  if (active && typeof active.value === 'string' && typeof active.selectionStart === 'number') {
-    return active.value.slice(active.selectionStart, active.selectionEnd);
+  let root = document;
+  let ownerDocument = document;
+  for (let depth = 0; depth < 64; depth += 1) {
+    const active = root.activeElement;
+    if (active?.tagName === 'IFRAME' || active?.tagName === 'FRAME') {
+      const childDocument = active.contentDocument;
+      if (!childDocument) return '';
+      root = childDocument;
+      ownerDocument = childDocument;
+      continue;
+    }
+    if (active?.shadowRoot) {
+      root = active.shadowRoot;
+      continue;
+    }
+    let text;
+    if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') {
+      if (active.type === 'password' || !Number.isInteger(active.selectionStart)
+        || !Number.isInteger(active.selectionEnd)
+        || active.selectionEnd - active.selectionStart > ${SURFACE_TEXT_MAX}) return '';
+      text = active.value.slice(active.selectionStart, active.selectionEnd);
+    } else {
+      const selection = root.getSelection?.() ?? ownerDocument.getSelection();
+      text = selection?.toString() ?? '';
+    }
+    return text.length > ${SURFACE_TEXT_MAX} ? '' : text;
   }
-  return String(window.getSelection ? window.getSelection() : '');
+  return '';
 })()`;
 
 export const createSurface = (runtime) => {
