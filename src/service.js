@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
+import net from 'node:net';
 import {
   BROWSER_PROVIDER_PATH,
   SURFACE_AGENT_ACTIVE_HEADER,
@@ -42,6 +43,14 @@ const authorized = (request, token) => {
   const provided = Buffer.from(header.slice(7));
   const expected = Buffer.from(token);
   return provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
+};
+
+// Typed dock addresses follow the omnibox: bare IPs and localhost are usually
+// plain-HTTP dev servers, other hosts default to HTTPS.
+const withScheme = (address) => {
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(address)) return address;
+  const host = address.split(/[/?#]/, 1)[0].replace(/:\d*$/, '').replace(/^\[(.*)\]$/, '$1').toLowerCase();
+  return `${host === 'localhost' || net.isIP(host) ? 'http' : 'https'}://${address}`;
 };
 
 const readBody = async (request) => {
@@ -150,7 +159,7 @@ export const createService = ({ runtime, token, port = 0 }) => {
       const generation = generationProperty(body);
       if (!target || generation === null) return text(response, 400, 'url and generation are required\n');
       try {
-        await runtime.navigate(target, generation);
+        await runtime.navigate(withScheme(target), generation);
         return json(response, 200, runtime.state());
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });

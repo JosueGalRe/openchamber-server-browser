@@ -2231,7 +2231,7 @@ var require_websocket = __commonJS({
     var EventEmitter = __require("events");
     var https = __require("https");
     var http3 = __require("http");
-    var net2 = __require("net");
+    var net3 = __require("net");
     var tls = __require("tls");
     var { randomBytes, createHash } = __require("crypto");
     var { Duplex, Readable } = __require("stream");
@@ -2962,12 +2962,12 @@ var require_websocket = __commonJS({
     }
     function netConnect(options) {
       options.path = options.socketPath;
-      return net2.connect(options);
+      return net3.connect(options);
     }
     function tlsConnect(options) {
       options.path = void 0;
       if (!options.servername && options.servername !== "") {
-        options.servername = net2.isIP(options.host) ? "" : options.host;
+        options.servername = net3.isIP(options.host) ? "" : options.host;
       }
       return tls.connect(options);
     }
@@ -5737,6 +5737,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], configPath
 // src/service.js
 import crypto from "node:crypto";
 import http2 from "node:http";
+import net2 from "node:net";
 var BODY_MAX_BYTES = 17 * 1024 * 1024;
 var json = (response, status, body) => {
   const bytes = Buffer.from(JSON.stringify(body));
@@ -5756,6 +5757,11 @@ var authorized = (request, token) => {
   const provided = Buffer.from(header.slice(7));
   const expected = Buffer.from(token);
   return provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
+};
+var withScheme = (address) => {
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(address)) return address;
+  const host = address.split(/[/?#]/, 1)[0].replace(/:\d*$/, "").replace(/^\[(.*)\]$/, "$1").toLowerCase();
+  return `${host === "localhost" || net2.isIP(host) ? "http" : "https"}://${address}`;
 };
 var readBody = async (request) => {
   const contentLength = Number(request.headers["content-length"] ?? 0);
@@ -5845,7 +5851,7 @@ var createService = ({ runtime, token, port = 0 }) => {
       const generation = generationProperty(body);
       if (!target || generation === null) return text(response, 400, "url and generation are required\n");
       try {
-        await runtime.navigate(target, generation);
+        await runtime.navigate(withScheme(target), generation);
         return json(response, 200, runtime.state());
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });

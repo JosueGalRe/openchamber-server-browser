@@ -144,6 +144,28 @@ test('serves dock state and serializes scope and navigation commands', async (co
   ]);
 });
 
+test('adds a scheme to typed dock addresses', async (context) => {
+  // Given a running service.
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+
+  // When the dock navigates to addresses typed with and without a scheme.
+  for (const url of ['192.168.1.20:3100/app', 'localhost:5173', '[::1]:8080', 'example.com/docs', 'http://plain.test']) {
+    await fetch(`${fixture.origin}/browser/navigate`, {
+      method: 'POST', headers: authorization, body: JSON.stringify({ url, generation: 1 }),
+    });
+  }
+
+  // Then IPs and localhost use HTTP, other hosts use HTTPS, and explicit schemes are kept.
+  assert.deepEqual(fixture.runtime.calls.map(([, url]) => url), [
+    'http://192.168.1.20:3100/app',
+    'http://localhost:5173',
+    'http://[::1]:8080',
+    'https://example.com/docs',
+    'http://plain.test',
+  ]);
+});
+
 test('rejects malformed dock requests before invoking the manager', async (context) => {
   // Given a running service.
   const fixture = await startFixture();
