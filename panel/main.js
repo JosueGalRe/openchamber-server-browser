@@ -1531,9 +1531,19 @@ ${tab.url}`;
       pageTabs.querySelector(`.${focused.className}[data-id="${CSS.escape(focused.dataset.id)}"]`)?.focus();
     }
   };
+  var chatDirectory = null;
+  var chatSession = null;
+  var followPending = true;
+  var currentChat = () => chatDirectory && chatSession?.id ? { directory: chatDirectory, sessionId: chatSession.id, title: chatSession.title || chatSession.id } : null;
+  var scopeForChat = (chat) => chat ? state?.scopes.find((scope) => scope.directory === chat.directory && scope.sessionId === chat.sessionId) ?? null : null;
+  var chatButton = document.createElement("button");
+  chatButton.type = "button";
+  chatButton.className = "chat-button";
+  chatButton.textContent = "Open for this chat";
+  chatButton.hidden = true;
   var scopeRow = document.createElement("div");
   scopeRow.className = "row scope-row";
-  scopeRow.append(scopeSelect, status);
+  scopeRow.append(scopeSelect, chatButton, status);
   var pageTabsRow = document.createElement("div");
   pageTabsRow.className = "row page-tabs-row";
   pageTabsRow.append(pageTabs, newTab);
@@ -1590,6 +1600,10 @@ ${tab.url}`;
     const selected = scopes.find((scope) => scope.id === state?.selectedScopeId) ?? null;
     const idle = state?.controller === "none";
     scopeSelect.disabled = requestPending || scopes.length < 2 || !idle;
+    const chat = currentChat();
+    chatButton.hidden = !chat || Boolean(scopeForChat(chat));
+    chatButton.disabled = requestPending || !idle;
+    if (chat) chatButton.title = `Open a browser for ${chat.title}`;
     const items = scopes.map((scope) => ({ id: String(scope.id), label: scopeLabel(scope) }));
     const activeId = selected ? String(selected.id) : "";
     const signature = JSON.stringify([items, activeId]);
@@ -1642,8 +1656,8 @@ ${tab.url}`;
       statusTitle = statusMessage;
     } else if (!selected) {
       statusState = "waiting";
-      statusMessage = "Ask the agent to open a page with openchamber_web";
-      statusTitle = "The browser starts with the agent's first browser action in a chat. Ask the agent to open a page with the openchamber_web tool.";
+      statusMessage = currentChat() ? "Open this chat's browser or ask the agent to use openchamber_web" : "Ask the agent to open a page with openchamber_web";
+      statusTitle = "The browser starts with the agent's first browser action in a chat, or when you open it for the chat you are viewing.";
     } else if (state.controller === "user") {
       statusState = "user";
       statusTitle = "A viewer has control of the page. Release control to change sessions or use the browser toolbar. The SDK cannot identify which viewer is using this toolbar.";
@@ -1711,6 +1725,7 @@ ${tab.url}`;
         serviceError = null;
         syncViewer();
         offerCopy(state.copy);
+        followChat();
         render();
       }
     } catch (error) {
@@ -1744,6 +1759,40 @@ ${tab.url}`;
       addressDirty = false;
       render();
     });
+  });
+  var followChat = () => {
+    if (!followPending || !state || requestPending) return;
+    const scope = scopeForChat(currentChat());
+    if (!scope) return;
+    if (scope.id === state.selectedScopeId) {
+      followPending = false;
+      return;
+    }
+    if (state.controller !== "none") return;
+    followPending = false;
+    void request("/browser/select", { scopeId: scope.id, generation: state.generation }).then((succeeded) => {
+      if (succeeded) addressDirty = false;
+      render();
+    });
+  };
+  chatButton.addEventListener("click", () => {
+    const chat = currentChat();
+    if (!state || !chat) return;
+    void request("/browser/scope", { directory: chat.directory, sessionId: chat.sessionId, generation: state.generation }).then((succeeded) => {
+      if (succeeded) addressDirty = false;
+      render();
+    });
+  });
+  host.onDirectory((directory) => {
+    if (directory === chatDirectory) return;
+    chatDirectory = directory;
+    followPending = true;
+    render();
+  });
+  host.onSession((session) => {
+    if (session?.id !== chatSession?.id) followPending = true;
+    chatSession = session;
+    render();
   });
   var tabCommand = (path, payload) => {
     if (!state) return;

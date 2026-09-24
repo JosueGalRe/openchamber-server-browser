@@ -22,6 +22,9 @@
       .session-tabs .oc-sdk-tab span { overflow: hidden; text-overflow: ellipsis; }
       .status { display: flex; min-width: 8px; max-width: 40%; align-items: center; gap: 6px; overflow: hidden; color: var(--oc-muted, currentColor); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
       .status[data-state="waiting"] { max-width: none; }
+      .chat-button { flex: 0 0 auto; height: 22px; padding: 0 10px; border: 1px solid var(--oc-border, currentColor); border-radius: 999px; background: transparent; color: var(--oc-fg, inherit); font-size: 11px; white-space: nowrap; cursor: pointer; }
+      .chat-button[hidden] { display: none; }
+      .chat-button:hover:not(:disabled) { background: var(--oc-hover, transparent); }
       .status::before { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--oc-muted, currentColor); content: ""; opacity: .65; }
       .status[data-state="ready"]::before { background: var(--oc-success, var(--oc-muted, currentColor)); }
       .status[data-state="user"]::before { background: var(--oc-primary, var(--oc-focus, currentColor)); opacity: 1; }

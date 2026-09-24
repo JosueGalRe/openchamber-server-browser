@@ -3862,6 +3862,22 @@ var createBrowserManager = ({
         }))
       };
     },
+    // A viewer opens the browser of the chat it is looking at, before any agent
+    // action. The dock reports that chat; the host does not attest it per request.
+    openScope(context, expectedGeneration) {
+      return enqueue(async () => {
+        if (closed) throw new Error("Browser manager is closed");
+        requireIdleSurface();
+        requireGeneration(expectedGeneration);
+        const entry = await ensureScope(context);
+        touch(entry);
+        if (selectedScopeId === entry.id) return;
+        if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+        requireIdleSurface();
+        select(entry);
+        notice = null;
+      });
+    },
     selectScope(id, expectedGeneration) {
       return enqueue(async () => {
         requireIdleSurface();
@@ -6566,6 +6582,21 @@ var createService = ({ runtime, token, port = 0 }) => {
     }
     if (request.method === "GET" && url.pathname === "/browser/state") {
       return json(response, 200, runtime.state());
+    }
+    if (request.method === "POST" && url.pathname === "/browser/scope") {
+      const body = await readObjectBody(request);
+      const directory = stringProperty(body, "directory");
+      const sessionId = stringProperty(body, "sessionId");
+      const generation = generationProperty(body);
+      if (!directory || directory.length > 4096 || !sessionId || sessionId.length > 256 || generation === null) {
+        return text(response, 400, "directory, sessionId, and generation are required\n");
+      }
+      try {
+        await runtime.openScope({ directory, sessionId }, generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
     }
     if (request.method === "POST" && url.pathname === "/browser/select") {
       const body = await readObjectBody(request);

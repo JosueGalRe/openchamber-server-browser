@@ -151,6 +151,22 @@ export const createService = ({ runtime, token, port = 0 }) => {
       return json(response, 200, runtime.state());
     }
 
+    if (request.method === 'POST' && url.pathname === '/browser/scope') {
+      const body = await readObjectBody(request);
+      const directory = stringProperty(body, 'directory');
+      const sessionId = stringProperty(body, 'sessionId');
+      const generation = generationProperty(body);
+      if (!directory || directory.length > 4096 || !sessionId || sessionId.length > 256 || generation === null) {
+        return text(response, 400, 'directory, sessionId, and generation are required\n');
+      }
+      try {
+        await runtime.openScope({ directory, sessionId }, generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+
     if (request.method === 'POST' && url.pathname === '/browser/select') {
       const body = await readObjectBody(request);
       const id = stringProperty(body, 'scopeId');

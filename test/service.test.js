@@ -29,6 +29,7 @@ const createRuntime = () => {
     async selectScope(id, generation) { calls.push(['select', id, generation]); },
     async navigate(url, generation) { calls.push(['navigate', url, generation]); },
     async reload(generation) { calls.push(['reload', generation]); },
+    async openScope(scope, generation) { calls.push(['open-scope', scope, generation]); },
     setViewerTheme(theme) { calls.push(['theme', theme]); },
     async setDevicePixelRatio(ratio) { calls.push(['ratio', ratio]); },
     async setViewport(viewport, generation) { calls.push(['viewport', viewport, generation]); },
@@ -328,4 +329,19 @@ test('accepts the host theme for the page menu and rejects an unknown mode', asy
 
   assert.deepEqual([badMode.status, empty.status, themed.status], [400, 400, 200]);
   assert.deepEqual(fixture.runtime.calls, [['theme', { dark: true, properties: { '--menu-background': '#101010' } }]]);
+});
+
+test('opens a chat scope for the dock only with a complete, bounded context', async (context) => {
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+  const post = (path, body) => fetch(`${fixture.origin}${path}`, {
+    method: 'POST', headers: authorization, body: JSON.stringify(body),
+  });
+
+  const missing = await post('/browser/scope', { directory: '/repo', generation: 1 });
+  const oversized = await post('/browser/scope', { directory: '/repo', sessionId: 's'.repeat(257), generation: 1 });
+  const opened = await post('/browser/scope', { directory: '/repo', sessionId: 'ses_1', generation: 1 });
+
+  assert.deepEqual([missing.status, oversized.status, opened.status], [400, 400, 200]);
+  assert.deepEqual(fixture.runtime.calls, [['open-scope', { directory: '/repo', sessionId: 'ses_1' }, 1]]);
 });

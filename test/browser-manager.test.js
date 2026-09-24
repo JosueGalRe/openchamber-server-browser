@@ -503,3 +503,25 @@ test('expires idle scopes and makes room by evicting the least recently active i
   assert.deepEqual(manager.state().scopes.map((scope) => scope.sessionId), ['ses_three']);
   assert.deepEqual(runtimes.get('ses_two').calls.at(-1), ['close']);
 });
+
+test('opens the viewed chat\'s browser from the dock without waiting for an agent action', async () => {
+  // Given one scope created by an agent action.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+
+  // When the dock opens another chat's browser, then that scope exists and becomes visible.
+  await manager.openScope(context('/repo', 'ses_two'), manager.state().generation);
+  assert.equal(manager.state().selectedScopeId, manager.state().scopes[1].id);
+  assert.equal(runtimes.get('ses_two').calls.some(([kind]) => kind === 'perform'), false);
+
+  // When it is opened again, then nothing is duplicated.
+  await manager.openScope(context('/repo', 'ses_two'), manager.state().generation);
+  assert.equal(manager.state().scopes.length, 2);
+
+  // Then stale views, missing context, and a busy surface are refused.
+  await assert.rejects(manager.openScope(context('/repo', 'ses_three'), manager.state().generation + 1), /view changed/i);
+  await assert.rejects(manager.openScope({ directory: '/repo', sessionId: '' }, manager.state().generation), /project and chat context/i);
+  manager.surfaceControl('user');
+  await assert.rejects(manager.openScope(context('/repo', 'ses_three'), manager.state().generation), /idle/i);
+});

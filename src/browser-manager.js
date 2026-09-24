@@ -217,6 +217,22 @@ export const createBrowserManager = ({
         })),
       };
     },
+    // A viewer opens the browser of the chat it is looking at, before any agent
+    // action. The dock reports that chat; the host does not attest it per request.
+    openScope(context, expectedGeneration) {
+      return enqueue(async () => {
+        if (closed) throw new Error('Browser manager is closed');
+        requireIdleSurface();
+        requireGeneration(expectedGeneration);
+        const entry = await ensureScope(context);
+        touch(entry);
+        if (selectedScopeId === entry.id) return;
+        if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+        requireIdleSurface();
+        select(entry);
+        notice = null;
+      });
+    },
     selectScope(id, expectedGeneration) {
       return enqueue(async () => {
         requireIdleSurface();
