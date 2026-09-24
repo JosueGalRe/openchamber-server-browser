@@ -156,7 +156,7 @@ test('runs every browser action and the shared surface against real Chrome', { s
   const scrolled = await runtime.perform('browser.scroll', { direction: 'bottom' });
   const capture = await runtime.perform('browser.capture', { label: 'fixture' });
   const resized = await runtime.perform('browser.resize', { viewport: 'mobile' });
-  await runtime.perform('browser.open', { url: `${web.origin}/next` });
+  await runtime.perform('browser.open', { url: `${web.origin}/next`, tabId: opened.tabId });
   const back = await runtime.perform('browser.back', {});
   const forward = await runtime.perform('browser.forward', {});
 
@@ -464,6 +464,54 @@ test('follows pages the site opens as tabs and returns to the opener when they c
   assert.equal((await runtime.perform('browser.snapshot', {})).title, 'Tabs');
 });
 
+test('lets the agent name tabs by id without moving the viewer off its tab', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a new browser, whose first page loads in the blank tab the viewer sees.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  const first = await runtime.perform('browser.open', { url: `${web.origin}/next` });
+  const shown = first.tabId;
+  assert.deepEqual(runtime.tabs.map((tab) => [tab.id, tab.active]), [[shown, true]]);
+  const before = await runtime.surfaceFrame({ after: 0, wait: 10_000 });
+  assert.ok(before, 'the viewer got no frame of its page');
+
+  // When the agent opens another page, then it gets a background tab and the viewer stays put.
+  const opened = await runtime.perform('browser.open', { url: `${web.origin}/` });
+  assert.notEqual(opened.tabId, shown);
+  assert.equal(opened.title, 'Fixture');
+  const snapshot = await runtime.perform('browser.snapshot', {});
+  assert.equal(snapshot.title, 'Next');
+  assert.deepEqual(snapshot.tabs, [
+    { id: shown, title: 'Next', url: `${web.origin}/next`, active: true },
+    { id: opened.tabId, title: 'Fixture', url: `${web.origin}/`, active: false },
+  ]);
+
+  // When actions name the background tab, then they run there.
+  await runtime.perform('browser.type', { tabId: opened.tabId, selector: '#name', value: 'from the agent', submit: false });
+  await runtime.perform('browser.click', { tabId: opened.tabId, selector: '#mark' });
+  assert.match((await runtime.perform('browser.snapshot', { tabId: opened.tabId })).text, /from the agent/);
+  const capture = await runtime.perform('browser.capture', { tabId: opened.tabId });
+  assert.equal(capture.title, 'Fixture');
+  assert.ok(capture.base64.length > 100);
+  await runtime.perform('browser.open', { tabId: opened.tabId, url: `${web.origin}/title` });
+  await runtime.perform('browser.back', { tabId: opened.tabId });
+  assert.equal((await runtime.perform('browser.snapshot', { tabId: opened.tabId })).title, 'Fixture');
+  assert.equal(runtime.url, `${web.origin}/next`);
+  assert.equal(runtime.tabs.find((tab) => tab.active).id, shown);
+
+  // When an id is not one this browser issued, then the action is refused instead of running elsewhere.
+  await assert.rejects(runtime.perform('browser.click', { tabId: 'missing', selector: '#mark' }), /no tab "missing"/);
+
+  // Then the viewer's page stayed in front and kept streaming the whole time.
+  const page = await runtime.ensurePage();
+  const evaluate = async (expression) => (await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', { expression, returnByValue: true })).result.value;
+  assert.equal(await evaluate('document.visibilityState'), 'visible');
+  const next = runtime.surfaceFrame({ after: before.sequence, wait: 10_000 });
+  await evaluate('document.body.style.background = "rgb(10, 120, 200)"');
+  assert.ok(await next, 'the viewer stopped getting frames of its page');
+});
+
 test('streams frames when the viewer\'s first frame request opens the page', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
   // Given a scope with no page yet, like one opened from the dock for a chat.
   const web = await startWebFixture();
@@ -524,8 +572,8 @@ test('shows the viewer menu only for right clicks the page leaves alone', { skip
   });
   context.after(() => manager.close());
   const chat = { directory: '/repo', sessionId: 'ses_menu' };
-  await manager.perform('browser.open', { url: `${web.origin}/next` }, undefined, chat);
-  await manager.perform('browser.open', { url: `${web.origin}/menu` }, undefined, chat);
+  const first = await manager.perform('browser.open', { url: `${web.origin}/next` }, undefined, chat);
+  await manager.perform('browser.open', { url: `${web.origin}/menu`, tabId: first.tabId }, undefined, chat);
   const page = await runtime.ensurePage();
   const evaluate = async (expression) => (await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', {
     expression,

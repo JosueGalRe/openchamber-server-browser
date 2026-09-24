@@ -5242,9 +5242,9 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
   if (action === "browser.open") {
     const url = new URL(parameters.url);
     if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Open an absolute http(s) URL");
-    const page2 = await runtime.ensurePage();
+    const page2 = await runtime.agentOpenPage(parameters.tabId);
     if (parameters.viewport) await runtime.applyAgentViewport(parameters.viewport);
-    runtime.clearConsoleProblems();
+    runtime.clearConsoleProblems(page2.targetId);
     const load = startLoadWait(page2, OPEN_SETTLE_MS, signal);
     let navigation;
     try {
@@ -5256,16 +5256,17 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
     }
     const settled = await load.promise;
     const info = await readPageInfo(page2, signal);
-    return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport) };
+    return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport), tabId: page2.targetId };
   }
-  const page = await runtime.ensurePage();
+  const page = await runtime.agentPage(parameters.tabId);
   if (action === "browser.snapshot") {
     const data = await runPageScript(page, buildSnapshotScript(parameters), signal);
-    const problems = runtime.consoleProblems;
+    const problems = runtime.consoleProblems(page.targetId);
     return {
       ...data,
       viewport: viewportSummary(runtime.viewport),
-      ...problems.length > 0 ? { consoleProblems: problems } : {}
+      ...problems.length > 0 ? { consoleProblems: problems } : {},
+      tabs: runtime.tabs.map(({ id, title, url, active }) => ({ id, title, url, active }))
     };
   }
   if (action === "browser.click") return runPageScript(page, buildClickScript(parameters), signal);
@@ -6717,6 +6718,8 @@ var createBrowserRuntime = ({
   const tabs = /* @__PURE__ */ new Map();
   const sessions = /* @__PURE__ */ new Map();
   const attaching = /* @__PURE__ */ new Map();
+  const backgroundTargets = /* @__PURE__ */ new Set();
+  let targetCreation = Promise.resolve();
   const tabListeners = /* @__PURE__ */ new Set();
   let activeTargetId = null;
   let activations = 0;
@@ -6795,11 +6798,11 @@ var createBrowserRuntime = ({
         warnings: problems.filter((problem) => problem.level === "warning").length
       };
     },
-    get consoleProblems() {
-      return (activeTab()?.problems ?? []).map((problem) => ({ ...problem }));
+    consoleProblems(targetId = activeTargetId) {
+      return (tabs.get(targetId)?.problems ?? []).map((problem) => ({ ...problem }));
     },
-    clearConsoleProblems() {
-      const current = activeTab();
+    clearConsoleProblems(targetId = activeTargetId) {
+      const current = tabs.get(targetId);
       if (current) current.problems.length = 0;
     }
   };
@@ -6908,7 +6911,10 @@ var createBrowserRuntime = ({
   const handleTargetEvent = (event) => {
     const info = event.params.targetInfo;
     if (event.method === "Target.targetCreated" && isScopePage(info, contextId)) {
-      void attachTab(info.targetId, info.openerId ?? null).then(activate).catch(() => {
+      void attachTab(info.targetId, info.openerId ?? null).then(async (current) => {
+        await targetCreation;
+        return backgroundTargets.delete(current.targetId) ? current : activate(current);
+      }).catch(() => {
       });
     } else if (event.method === "Target.targetInfoChanged" && info) {
       const current = tabs.get(info.targetId);
@@ -7007,13 +7013,18 @@ var createBrowserRuntime = ({
     });
     await startupPromise;
   };
-  const openTab = async () => {
+  const openTab = async ({ background = false } = {}) => {
     await ensureStarted();
-    const target = await cdp.send("Target.createTarget", { url: "about:blank", browserContextId: contextId });
-    if (typeof target.targetId !== "string") throw new Error("Chrome returned no page target id");
-    const current = await attachTab(target.targetId);
+    const creation = cdp.send("Target.createTarget", { url: "about:blank", browserContextId: contextId, background }).then((target) => {
+      if (typeof target.targetId !== "string") throw new Error("Chrome returned no page target id");
+      if (background) backgroundTargets.add(target.targetId);
+      return target;
+    });
+    targetCreation = creation.catch(() => {
+    });
+    const current = await attachTab((await creation).targetId);
     if (closed) throw new Error("Browser runtime is closed");
-    await activate(current);
+    if (!background) await activate(current);
     return current;
   };
   runtime.ensurePage = async () => {
@@ -7024,6 +7035,23 @@ var createBrowserRuntime = ({
       pagePromise = null;
     });
     return pageOf(await pagePromise);
+  };
+  const agentTab = async (tabId) => {
+    if (tabId === void 0) {
+      await runtime.ensurePage();
+      return activeTab();
+    }
+    const current = tabs.get(tabId);
+    if (!current) throw new Error(`This chat's browser has no tab ${JSON.stringify(String(tabId))}. Use an id from browser.snapshot's tabs.`);
+    return current;
+  };
+  runtime.agentPage = async (tabId) => pageOf(await agentTab(tabId));
+  runtime.agentOpenPage = async (tabId) => {
+    const current = await agentTab(tabId);
+    if (tabId !== void 0 || current.url === "about:blank" && !current.canGoBack && !current.canGoForward) {
+      return pageOf(current);
+    }
+    return pageOf(await openTab({ background: true }));
   };
   runtime.setNativeSelectCompatibility = async (enabled) => {
     await runtime.ensurePage();
@@ -7141,7 +7169,7 @@ var createBrowserRuntime = ({
       runtime.agentActive = true;
       try {
         const data = await execute(action, parameters, signal);
-        await activeTab()?.compatibility.whenIdle();
+        await (tabs.get(data?.tabId ?? parameters?.tabId) ?? activeTab())?.compatibility.whenIdle();
         return data;
       } finally {
         runtime.agentActive = false;

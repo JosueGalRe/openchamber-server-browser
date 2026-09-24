@@ -105,9 +105,9 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
   if (action === 'browser.open') {
     const url = new URL(parameters.url);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Open an absolute http(s) URL');
-    const page = await runtime.ensurePage();
+    const page = await runtime.agentOpenPage(parameters.tabId);
     if (parameters.viewport) await runtime.applyAgentViewport(parameters.viewport);
-    runtime.clearConsoleProblems();
+    runtime.clearConsoleProblems(page.targetId);
     const load = startLoadWait(page, OPEN_SETTLE_MS, signal);
     let navigation;
     try {
@@ -119,17 +119,18 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
     }
     const settled = await load.promise;
     const info = await readPageInfo(page, signal);
-    return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport) };
+    return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport), tabId: page.targetId };
   }
 
-  const page = await runtime.ensurePage();
+  const page = await runtime.agentPage(parameters.tabId);
   if (action === 'browser.snapshot') {
     const data = await runPageScript(page, buildSnapshotScript(parameters), signal);
-    const problems = runtime.consoleProblems;
+    const problems = runtime.consoleProblems(page.targetId);
     return {
       ...data,
       viewport: viewportSummary(runtime.viewport),
       ...(problems.length > 0 ? { consoleProblems: problems } : {}),
+      tabs: runtime.tabs.map(({ id, title, url, active }) => ({ id, title, url, active })),
     };
   }
   if (action === 'browser.click') return runPageScript(page, buildClickScript(parameters), signal);

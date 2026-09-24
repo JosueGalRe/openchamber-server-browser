@@ -53,6 +53,8 @@ export const createBrowserRuntime = ({
   const tabs = new Map();
   const sessions = new Map();
   const attaching = new Map();
+  const backgroundTargets = new Set();
+  let targetCreation = Promise.resolve();
   const tabListeners = new Set();
   let activeTargetId = null;
   let activations = 0;
@@ -137,11 +139,11 @@ export const createBrowserRuntime = ({
         warnings: problems.filter((problem) => problem.level === 'warning').length,
       };
     },
-    get consoleProblems() {
-      return (activeTab()?.problems ?? []).map((problem) => ({ ...problem }));
+    consoleProblems(targetId = activeTargetId) {
+      return (tabs.get(targetId)?.problems ?? []).map((problem) => ({ ...problem }));
     },
-    clearConsoleProblems() {
-      const current = activeTab();
+    clearConsoleProblems(targetId = activeTargetId) {
+      const current = tabs.get(targetId);
       if (current) current.problems.length = 0;
     },
   };
@@ -260,8 +262,14 @@ export const createBrowserRuntime = ({
   const handleTargetEvent = (event) => {
     const info = event.params.targetInfo;
     if (event.method === 'Target.targetCreated' && isScopePage(info, contextId)) {
-      // Pages the site opens (popups, target=_blank) come to the front like in a browser.
-      void attachTab(info.targetId, info.openerId ?? null).then(activate).catch(() => {});
+      // Pages the site opens (popups, target=_blank) come to the front like in a
+      // browser; a tab the agent opened in the background stays behind.
+      void attachTab(info.targetId, info.openerId ?? null)
+        .then(async (current) => {
+          await targetCreation;
+          return backgroundTargets.delete(current.targetId) ? current : activate(current);
+        })
+        .catch(() => {});
     } else if (event.method === 'Target.targetInfoChanged' && info) {
       const current = tabs.get(info.targetId);
       if (!current) return;
@@ -363,13 +371,20 @@ export const createBrowserRuntime = ({
     await startupPromise;
   };
 
-  const openTab = async () => {
+  const openTab = async ({ background = false } = {}) => {
     await ensureStarted();
-    const target = await cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: contextId });
-    if (typeof target.targetId !== 'string') throw new Error('Chrome returned no page target id');
-    const current = await attachTab(target.targetId);
+    // The target-created handler waits for this, so it knows a background tab
+    // before it could bring the tab forward.
+    const creation = cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: contextId, background })
+      .then((target) => {
+        if (typeof target.targetId !== 'string') throw new Error('Chrome returned no page target id');
+        if (background) backgroundTargets.add(target.targetId);
+        return target;
+      });
+    targetCreation = creation.catch(() => {});
+    const current = await attachTab((await creation).targetId);
     if (closed) throw new Error('Browser runtime is closed');
-    await activate(current);
+    if (!background) await activate(current);
     return current;
   };
 
@@ -379,6 +394,30 @@ export const createBrowserRuntime = ({
     if (current) return pageOf(current);
     if (!pagePromise) pagePromise = openTab().finally(() => { pagePromise = null; });
     return pageOf(await pagePromise);
+  };
+
+  // Agent actions name a tab from browser.snapshot's tabs or act on the one the
+  // viewer sees. An id this browser did not issue is refused, never replaced by
+  // another tab.
+  const agentTab = async (tabId) => {
+    if (tabId === undefined) {
+      await runtime.ensurePage();
+      return activeTab();
+    }
+    const current = tabs.get(tabId);
+    if (!current) throw new Error(`This chat's browser has no tab ${JSON.stringify(String(tabId))}. Use an id from browser.snapshot's tabs.`);
+    return current;
+  };
+  runtime.agentPage = async (tabId) => pageOf(await agentTab(tabId));
+
+  // browser.open without a tab never replaces the viewer's page: it opens a
+  // background tab, unless the viewer is on an untouched blank tab.
+  runtime.agentOpenPage = async (tabId) => {
+    const current = await agentTab(tabId);
+    if (tabId !== undefined || (current.url === 'about:blank' && !current.canGoBack && !current.canGoForward)) {
+      return pageOf(current);
+    }
+    return pageOf(await openTab({ background: true }));
   };
 
   // The active tab decides; other tabs follow on a best-effort basis.
@@ -520,7 +559,7 @@ export const createBrowserRuntime = ({
       runtime.agentActive = true;
       try {
         const data = await execute(action, parameters, signal);
-        await activeTab()?.compatibility.whenIdle();
+        await (tabs.get(data?.tabId ?? parameters?.tabId) ?? activeTab())?.compatibility.whenIdle();
         return data;
       } finally {
         runtime.agentActive = false;
