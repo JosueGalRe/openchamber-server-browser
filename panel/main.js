@@ -1626,7 +1626,7 @@ ${tab.url}`;
     activeId: "",
     trackBackground: true,
     onChange: (scopeId) => {
-      if (!state || requestPending || state.controller !== "none") return;
+      if (!state || requestPending || !dockUsable()) return;
       pendingTabFocusId = scopeId;
       void request("/browser/select", { scopeId, generation: state.generation }).then((succeeded) => {
         if (succeeded) addressDirty = false;
@@ -1657,14 +1657,15 @@ ${tab.url}`;
       throw error;
     }
   };
+  var dockUsable = () => state?.controller === "none" || state?.viewerInControl === true;
   var render = () => {
     const scopes = state?.scopes ?? [];
     const selected = scopes.find((scope) => scope.id === state?.selectedScopeId) ?? null;
-    const idle = state?.controller === "none";
-    scopeSelect.disabled = requestPending || scopes.length < 2 || !idle;
+    const usable = dockUsable();
+    scopeSelect.disabled = requestPending || scopes.length < 2 || !usable;
     const chat = currentChat();
     chatButton.hidden = !chat || Boolean(scopeForChat(chat));
-    chatButton.disabled = requestPending || !idle;
+    chatButton.disabled = requestPending || !usable;
     if (chat) chatButton.title = `Open a browser for ${chat.title}`;
     const items = scopes.map((scope) => ({ id: String(scope.id), label: scopeLabel(scope) }));
     const activeId = selected ? String(selected.id) : "";
@@ -1686,7 +1687,7 @@ ${tab.url}`;
       button2.title = `${page ? `${page} \u2014 ` : ""}${scope.directory} \xB7 ${scope.sessionId}`;
     }
     if (!addressDirty) address.value = selected?.url === "about:blank" ? "" : String(selected?.url ?? "");
-    const disabled = requestPending || !selected || !idle;
+    const disabled = requestPending || !selected || !usable;
     renderPageTabs(selected, disabled);
     back.disabled = disabled || !selected.canGoBack;
     forward.disabled = disabled || !selected.canGoForward;
@@ -1729,8 +1730,8 @@ ${tab.url}`;
       statusTitle = "The browser starts with the agent's first browser action in a chat, or when you open it for the chat you are viewing.";
     } else if (state.controller === "user") {
       statusState = "user";
-      statusTitle = "A viewer has control of the page. Release control to change sessions or use the browser toolbar. The SDK cannot identify which viewer is using this toolbar.";
-    } else if (!idle) {
+      statusTitle = state.viewerInControl ? "You have control of the page, so this toolbar acts on it too." : "Another viewer has control of the page. The toolbar works again once they hand it back.";
+    } else if (!usable) {
       statusState = "agent";
       statusTitle = "Waiting for the agent action to finish";
     }
@@ -1844,7 +1845,7 @@ ${tab.url}`;
       followPending = false;
       return;
     }
-    if (state.controller !== "none") return;
+    if (!dockUsable()) return;
     followPending = false;
     void request("/browser/select", { scopeId: scope.id, generation: state.generation }).then((succeeded) => {
       if (succeeded) addressDirty = false;

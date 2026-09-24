@@ -139,6 +139,55 @@ test('serializes dock navigation and rejects it while any viewer owns control', 
   assert.equal(runtimes.get('ses_one').url, 'https://allowed.test');
 });
 
+test('lets the viewer in control use the dock while other viewers only watch', async () => {
+  // Given a selected scope that viewer A controls.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.open', { url: 'https://one.test' }, undefined, context('/repo', 'ses_one'));
+  await manager.surfaceControl('user', 'viewer-a');
+
+  // When viewer B's dock navigates, then it is refused and B only watches.
+  await assert.rejects(manager.navigate('https://b.test', manager.state().generation, { viewer: 'viewer-b' }), /surface is idle/i);
+  assert.equal(manager.state({ viewer: 'viewer-b' }).viewerInControl, false);
+
+  // When viewer A's dock navigates, then the command runs for the viewer in control.
+  assert.equal(manager.state({ viewer: 'viewer-a' }).viewerInControl, true);
+  await manager.navigate('https://a.test', manager.state().generation, { viewer: 'viewer-a' });
+  assert.equal(runtimes.get('ses_one').url, 'https://a.test');
+
+  // When A hands control back and C's input arrives ahead of its control notice, then C's dock can act.
+  await manager.surfaceControl('none');
+  assert.equal(manager.state({ viewer: 'viewer-a' }).viewerInControl, false);
+  await manager.surfaceInput([{ type: 'text', text: 'c' }], { viewer: 'viewer-c', frameSeq: 0 });
+  assert.equal(manager.state({ viewer: 'viewer-c' }).viewerInControl, true);
+});
+
+test('refuses input and dock commands made on a picture of an earlier view', async () => {
+  // Given a frame the viewer drew from the first chat's browser.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_two'));
+  const first = await manager.surfaceFrame({ after: 0, wait: 0 });
+  const inputs = () => runtimes.get('ses_two').calls.filter(([kind]) => kind === 'input').map(([, events]) => events[0].text);
+
+  // When the view switches to the second chat, then input and a dock command made on that frame are refused.
+  await manager.selectScope(manager.state().scopes[1].id, manager.state().generation);
+  await assert.rejects(manager.surfaceInput([{ type: 'text', text: 'late' }], { viewer: 'viewer-a', frameSeq: first.sequence }), /view changed/);
+  await manager.surfaceControl('none');
+  await assert.rejects(manager.reload(manager.state().generation, { frameSeq: first.sequence }), /view changed/);
+
+  // When the viewer draws the new view, or has drawn nothing yet, then its input applies.
+  const second = await manager.surfaceFrame({ after: first.sequence, wait: 0 });
+  await manager.surfaceInput([{ type: 'text', text: 'seen' }], { viewer: 'viewer-a', frameSeq: second.sequence });
+  await manager.surfaceInput([{ type: 'text', text: 'blind' }], { viewer: 'viewer-a', frameSeq: 0 });
+
+  // When the page brings another tab forward, then input made on the old tab's frame is refused.
+  runtimes.get('ses_two').tabs = [{ id: 'tab-2', active: true }];
+  await assert.rejects(manager.surfaceInput([{ type: 'text', text: 'other-tab' }], { viewer: 'viewer-a', frameSeq: second.sequence }), /view changed/);
+  assert.deepEqual(inputs(), ['seen', 'blind']);
+});
+
 test('preserves every scope and refuses new work at the configured bound', async () => {
   // Given a manager bounded to two browser runtimes.
   const { factory, runtimes } = createRuntimeFactory();

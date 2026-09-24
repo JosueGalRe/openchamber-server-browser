@@ -31,6 +31,8 @@ export const createBrowserManager = ({
   const scopes = new Map();
   let selectedScopeId = null;
   let controller = 'none';
+  // The viewer holding control, from the host's control notices and its input.
+  let controllingViewer = null;
   let operationQueue = Promise.resolve();
   let frameState = null;
   let frameSequence = 0;
@@ -62,6 +64,21 @@ export const createBrowserManager = ({
   };
 
   const selected = () => selectedScopeId ? scopes.get(selectedScopeId) ?? null : null;
+
+  // Viewers act on the picture they last drew, named by our frame sequence. A
+  // view is the visible scope and its active tab; input or a dock command made
+  // on a frame of an earlier view is refused so it cannot land in this one.
+  let view = { key: null, firstSequence: 1 };
+  const observeView = () => {
+    const entry = selected();
+    const key = entry ? JSON.stringify([entry.id, entry.runtime.tabs?.find((tab) => tab.active)?.id ?? null]) : null;
+    if (key !== view.key) view = { key, firstSequence: frameSequence + 1 };
+  };
+  const shownEarlierView = (frameSeq) => {
+    observeView();
+    // 0 means the viewer has drawn nothing yet, so it acted on no picture.
+    return Number.isInteger(frameSeq) && frameSeq > 0 && frameSeq < view.firstSequence;
+  };
 
   const finishSelectionWaiter = (waiter, error = null) => {
     if (!selectionWaiters.delete(waiter)) return;
@@ -152,10 +169,13 @@ export const createBrowserManager = ({
     return entry;
   };
 
-  const requireIdleSurface = () => {
-    if (controller !== 'none') {
-      throw new Error('Dock controls are available only while the shared surface is idle');
+  // Dock commands run while nobody holds the picture, or for the viewer that
+  // does, and never for a toolbar that acted on a picture of an earlier view.
+  const requireDockAccess = ({ viewer = null, frameSeq = null } = {}) => {
+    if (controller !== 'none' && !(controller === 'user' && viewer !== null && viewer === controllingViewer)) {
+      throw new Error('Dock controls are available only while the shared surface is idle or to the viewer in control');
     }
+    if (shownEarlierView(frameSeq)) throw new Error('The browser view changed before the dock command ran');
   };
 
   const requireGeneration = (expectedGeneration) => {
@@ -164,8 +184,8 @@ export const createBrowserManager = ({
     }
   };
 
-  const dockCommand = (name, parameters, expectedGeneration) => enqueue(async () => {
-    requireIdleSurface();
+  const dockCommand = (name, parameters, expectedGeneration, access) => enqueue(async () => {
+    requireDockAccess(access);
     requireGeneration(expectedGeneration);
     const entry = requireSelected();
     touch(entry);
@@ -206,9 +226,11 @@ export const createBrowserManager = ({
         }
       });
     },
-    state() {
+    state({ viewer = null } = {}) {
       return {
         controller,
+        // Whether the viewer asking holds control, so its dock can act.
+        viewerInControl: controller === 'user' && viewer !== null && viewer === controllingViewer,
         selectedScopeId,
         generation: viewGeneration,
         notice: notice ? { ...notice } : null,
@@ -233,61 +255,61 @@ export const createBrowserManager = ({
     },
     // A viewer opens the browser of the chat it is looking at, before any agent
     // action. The dock reports that chat; the host does not attest it per request.
-    openScope(context, expectedGeneration) {
+    openScope(context, expectedGeneration, access) {
       return enqueue(async () => {
         if (closed) throw new Error('Browser manager is closed');
-        requireIdleSurface();
+        requireDockAccess(access);
         requireGeneration(expectedGeneration);
         const entry = await ensureScope(context);
         touch(entry);
         if (selectedScopeId === entry.id) return;
         if (surfaceSize) await entry.runtime.surfaceResize(surfaceSize);
-        requireIdleSurface();
+        requireDockAccess(access);
         select(entry);
         notice = null;
       });
     },
-    selectScope(id, expectedGeneration) {
+    selectScope(id, expectedGeneration, access) {
       return enqueue(async () => {
-        requireIdleSurface();
+        requireDockAccess(access);
         requireGeneration(expectedGeneration);
         const entry = scopes.get(id);
         if (!entry) throw new Error('The selected browser scope no longer exists');
         if (surfaceSize) await entry.runtime.surfaceResize(surfaceSize);
-        requireIdleSurface();
+        requireDockAccess(access);
         requireGeneration(expectedGeneration);
         select(entry);
         touch(entry);
         notice = null;
       });
     },
-    navigate(url, expectedGeneration) {
-      return dockCommand('navigate', { url }, expectedGeneration);
+    navigate(url, expectedGeneration, access) {
+      return dockCommand('navigate', { url }, expectedGeneration, access);
     },
-    reload(expectedGeneration) {
-      return dockCommand('reload', {}, expectedGeneration);
+    reload(expectedGeneration, access) {
+      return dockCommand('reload', {}, expectedGeneration, access);
     },
-    back(expectedGeneration) {
-      return dockCommand('back', {}, expectedGeneration);
+    back(expectedGeneration, access) {
+      return dockCommand('back', {}, expectedGeneration, access);
     },
-    forward(expectedGeneration) {
-      return dockCommand('forward', {}, expectedGeneration);
+    forward(expectedGeneration, access) {
+      return dockCommand('forward', {}, expectedGeneration, access);
     },
-    stop(expectedGeneration) {
-      return dockCommand('stop', {}, expectedGeneration);
+    stop(expectedGeneration, access) {
+      return dockCommand('stop', {}, expectedGeneration, access);
     },
-    newTab(expectedGeneration) {
-      return dockCommand('tab-new', {}, expectedGeneration);
+    newTab(expectedGeneration, access) {
+      return dockCommand('tab-new', {}, expectedGeneration, access);
     },
-    selectTab(tabId, expectedGeneration) {
-      return dockCommand('tab-select', { tabId }, expectedGeneration);
+    selectTab(tabId, expectedGeneration, access) {
+      return dockCommand('tab-select', { tabId }, expectedGeneration, access);
     },
-    closeTab(tabId, expectedGeneration) {
-      return dockCommand('tab-close', { tabId }, expectedGeneration);
+    closeTab(tabId, expectedGeneration, access) {
+      return dockCommand('tab-close', { tabId }, expectedGeneration, access);
     },
-    setViewport({ mode, width, height, mobile }, expectedGeneration) {
+    setViewport({ mode, width, height, mobile }, expectedGeneration, access) {
       return enqueue(async () => {
-        requireIdleSurface();
+        requireDockAccess(access);
         requireGeneration(expectedGeneration);
         const entry = requireSelected();
         touch(entry);
@@ -308,16 +330,16 @@ export const createBrowserManager = ({
         if (entry) await entry.runtime.surfaceResize(surfaceSize);
       });
     },
-    setNativeSelectCompatibility(enabled, expectedGeneration) {
+    setNativeSelectCompatibility(enabled, expectedGeneration, access) {
       return enqueue(async () => {
-        requireIdleSurface();
+        requireDockAccess(access);
         requireGeneration(expectedGeneration);
         const entry = requireSelected();
         touch(entry);
         const previous = entry.runtime.nativeSelectCompatibility === true;
         await entry.runtime.setNativeSelectCompatibility(enabled);
         try {
-          requireIdleSurface();
+          requireDockAccess(access);
           requireGeneration(expectedGeneration);
         } catch (error) {
           await entry.runtime.setNativeSelectCompatibility(previous);
@@ -369,6 +391,7 @@ export const createBrowserManager = ({
       if (!frame || selectedScopeId !== entry.id || viewGeneration !== generation) return null;
       const published = frameState?.scopeId === entry.id ? frameState : null;
       if (published && frame.sequence <= published.sourceSequence) return null;
+      observeView();
       frameSequence = Math.max(frameSequence + 1, after + 1);
       const wrapped = { ...frame, sequence: frameSequence };
       frameState = {
@@ -379,19 +402,23 @@ export const createBrowserManager = ({
       };
       return wrapped;
     },
-    surfaceInput(events) {
+    surfaceInput(events, { viewer = null, frameSeq = null } = {}) {
       controller = 'user';
+      // The host sends input only from the viewer in control, ahead of its control notice.
+      if (viewer) controllingViewer = viewer;
       return enqueue(async () => {
         const entry = requireSelected();
+        if (shownEarlierView(frameSeq)) throw new Error('The browser view changed before this input arrived');
         touch(entry);
         const { runtime } = entry;
         await runtime.surfaceControl('user');
         return runtime.surfaceInput(events, viewerTheme);
       });
     },
-    surfaceControl(nextController) {
+    surfaceControl(nextController, viewer = null) {
       return enqueue(() => {
         controller = nextController;
+        controllingViewer = nextController === 'user' ? viewer ?? controllingViewer : null;
         return selected()?.runtime.surfaceControl(nextController);
       });
     },

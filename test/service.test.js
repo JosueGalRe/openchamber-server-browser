@@ -375,3 +375,52 @@ test('routes inspector calls with validated identities and reports failures as c
   assert.equal(invalid.status, 400);
   assert.deepEqual(fixture.runtime.calls.map((call) => call[0]), ['inspector-start', 'inspector-events', 'inspector-events', 'inspector-evaluate']);
 });
+
+test('hands the host\'s viewer headers to dock commands, input, and control notices', async (context) => {
+  // Given a runtime that records what each request says about its viewer.
+  const runtime = createRuntime();
+  const seen = [];
+  runtime.state = (access) => {
+    seen.push(['state', access]);
+    return { controller: 'user', selectedScopeId: null, generation: 1, scopes: [] };
+  };
+  runtime.navigate = async (url, generation, access) => { seen.push(['navigate', access]); };
+  runtime.surfaceInput = async (events, access) => {
+    seen.push(['input', access]);
+    if (access.frameSeq === 3) throw new Error('The browser view changed before this input arrived');
+  };
+  runtime.surfaceControl = async (controller, viewer) => { seen.push(['control', controller, viewer]); };
+  const fixture = await startFixture(runtime);
+  context.after(() => fixture.service.close());
+  const fromViewer = (headers) => ({ ...authorization, 'x-surface-viewer': 'viewer-a', ...headers });
+  const input = (frameSeq) => fetch(`${fixture.origin}/surface/input`, {
+    method: 'POST', headers: fromViewer({ 'x-surface-frame-seq': frameSeq }), body: JSON.stringify({ events: [{ type: 'text', text: 'a' }] }),
+  });
+
+  // When the dock of the viewer in control navigates, another viewer's dock reads state, and a window without a viewer does too.
+  await fetch(`${fixture.origin}/browser/navigate`, {
+    method: 'POST',
+    headers: fromViewer({ 'x-surface-viewer-controls': '1', 'x-surface-frame-seq': '7' }),
+    body: JSON.stringify({ url: 'example.test', generation: 1 }),
+  });
+  await fetch(`${fixture.origin}/browser/state`, { headers: fromViewer({ 'x-surface-viewer-controls': '0', 'x-surface-frame-seq': '7' }) });
+  await fetch(`${fixture.origin}/browser/state`, { headers: authorization });
+
+  // When input arrives on a current frame and on a stale one, and control changes hands.
+  const current = await input('7');
+  const stale = await input('3');
+  await fetch(`${fixture.origin}/surface/control`, { method: 'POST', headers: authorization, body: JSON.stringify({ controller: 'user', viewer: 'viewer-a' }) });
+
+  // Then only a viewer the host says is in control acts for it, and stale input answers 409.
+  assert.deepEqual(seen, [
+    ['navigate', { viewer: 'viewer-a', frameSeq: 7 }],
+    ['state', { viewer: 'viewer-a', frameSeq: 7 }],
+    ['state', { viewer: null, frameSeq: 7 }],
+    ['state', { viewer: null, frameSeq: null }],
+    ['input', { viewer: 'viewer-a', frameSeq: 7 }],
+    ['input', { viewer: 'viewer-a', frameSeq: 3 }],
+    ['control', 'user', 'viewer-a'],
+  ]);
+  assert.equal(current.status, 204);
+  assert.equal(stale.status, 409);
+});

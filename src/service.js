@@ -7,6 +7,7 @@ import {
   SURFACE_CLIPBOARD_PATH,
   SURFACE_CONTROL_PATH,
   SURFACE_FRAME_PATH,
+  SURFACE_FRAME_SEQ_HEADER,
   SURFACE_FRAME_WAIT_MS,
   SURFACE_HEIGHT_HEADER,
   SURFACE_INPUT_PATH,
@@ -14,6 +15,8 @@ import {
   SURFACE_SEQ_HEADER,
   SURFACE_TITLE_HEADER,
   SURFACE_TITLE_MAX,
+  SURFACE_VIEWER_CONTROLS_HEADER,
+  SURFACE_VIEWER_HEADER,
   SURFACE_WIDTH_HEADER,
   readBrowserProviderRequest,
   readSurfaceControlNotice,
@@ -140,6 +143,24 @@ const identityProperty = (value, name) => {
   return text && text.length <= 128 ? text : null;
 };
 
+// The host sets these on requests from a window with a live viewer: which
+// viewer, whether it holds control, and our number of the frame it last drew.
+const viewerOf = (request) => {
+  const viewer = request.headers[SURFACE_VIEWER_HEADER];
+  return typeof viewer === 'string' && viewer.length > 0 && viewer.length <= 128 ? viewer : null;
+};
+
+const frameSeqOf = (request) => {
+  const value = request.headers[SURFACE_FRAME_SEQ_HEADER];
+  return typeof value === 'string' && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+};
+
+// A dock request acts for its viewer only while the host says that viewer holds control.
+const dockAccess = (request) => ({
+  viewer: request.headers[SURFACE_VIEWER_CONTROLS_HEADER] === '1' ? viewerOf(request) : null,
+  frameSeq: frameSeqOf(request),
+});
+
 // Console, network, and JavaScript for the inspector page. Errors carry a code
 // the page can act on, such as CAPTURE_GONE to start a fresh capture.
 const handleInspector = async (runtime, operation, request, url) => {
@@ -196,9 +217,10 @@ export const createService = ({ runtime, token, port = 0 }) => {
         return json(response, 200, { ok: false, error: errorMessage(error) });
       }
     }
+    const access = dockAccess(request);
 
     if (request.method === 'GET' && url.pathname === '/browser/state') {
-      return json(response, 200, runtime.state());
+      return json(response, 200, runtime.state(access));
     }
 
     if (request.method === 'POST' && url.pathname === '/browser/scope') {
@@ -210,8 +232,8 @@ export const createService = ({ runtime, token, port = 0 }) => {
         return text(response, 400, 'directory, sessionId, and generation are required\n');
       }
       try {
-        await runtime.openScope({ directory, sessionId }, generation);
-        return json(response, 200, runtime.state());
+        await runtime.openScope({ directory, sessionId }, generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -223,8 +245,8 @@ export const createService = ({ runtime, token, port = 0 }) => {
       const generation = generationProperty(body);
       if (!id || generation === null) return text(response, 400, 'scopeId and generation are required\n');
       try {
-        await runtime.selectScope(id, generation);
-        return json(response, 200, runtime.state());
+        await runtime.selectScope(id, generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -236,8 +258,8 @@ export const createService = ({ runtime, token, port = 0 }) => {
       const generation = generationProperty(body);
       if (!target || generation === null) return text(response, 400, 'url and generation are required\n');
       try {
-        await runtime.navigate(withScheme(target), generation);
-        return json(response, 200, runtime.state());
+        await runtime.navigate(withScheme(target), generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -249,11 +271,11 @@ export const createService = ({ runtime, token, port = 0 }) => {
       const generation = generationProperty(body);
       if (generation === null) return text(response, 400, 'generation is required\n');
       try {
-        if (url.pathname === '/browser/back') await runtime.back(generation);
-        else if (url.pathname === '/browser/forward') await runtime.forward(generation);
-        else if (url.pathname === '/browser/stop') await runtime.stop(generation);
-        else await runtime.reload(generation);
-        return json(response, 200, runtime.state());
+        if (url.pathname === '/browser/back') await runtime.back(generation, access);
+        else if (url.pathname === '/browser/forward') await runtime.forward(generation, access);
+        else if (url.pathname === '/browser/stop') await runtime.stop(generation, access);
+        else await runtime.reload(generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -268,10 +290,10 @@ export const createService = ({ runtime, token, port = 0 }) => {
         return text(response, 400, 'generation is required, and tabId to select or close a tab\n');
       }
       try {
-        if (tabOperation === 'new') await runtime.newTab(generation);
-        else if (tabOperation === 'select') await runtime.selectTab(tabId, generation);
-        else await runtime.closeTab(tabId, generation);
-        return json(response, 200, runtime.state());
+        if (tabOperation === 'new') await runtime.newTab(generation, access);
+        else if (tabOperation === 'select') await runtime.selectTab(tabId, generation, access);
+        else await runtime.closeTab(tabId, generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -298,8 +320,8 @@ export const createService = ({ runtime, token, port = 0 }) => {
         return text(response, 400, `generation, mode, and mobile are required, and a fixed size needs width and height from 1 to ${MAX_VIEWPORT_DIMENSION}\n`);
       }
       try {
-        await runtime.setViewport(viewport, generation);
-        return json(response, 200, runtime.state());
+        await runtime.setViewport(viewport, generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -313,8 +335,8 @@ export const createService = ({ runtime, token, port = 0 }) => {
         return text(response, 400, 'enabled and generation are required\n');
       }
       try {
-        await runtime.setNativeSelectCompatibility(enabled, generation);
-        return json(response, 200, runtime.state());
+        await runtime.setNativeSelectCompatibility(enabled, generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -358,7 +380,14 @@ export const createService = ({ runtime, token, port = 0 }) => {
     if (request.method === 'POST' && url.pathname === SURFACE_INPUT_PATH) {
       const parsed = readSurfaceInputBatch(await readBody(request));
       if (!parsed) return text(response, 400, 'Invalid surface input batch\n');
-      await runtime.surfaceInput(parsed.events);
+      try {
+        await runtime.surfaceInput(parsed.events, { viewer: viewerOf(request), frameSeq: access.frameSeq });
+      } catch (error) {
+        // Made on a picture of an earlier view; the host tells the viewer it was not applied.
+        if (!/browser view changed/i.test(errorMessage(error))) throw error;
+        response.writeHead(409);
+        return response.end();
+      }
       response.writeHead(204);
       return response.end();
     }
@@ -366,7 +395,7 @@ export const createService = ({ runtime, token, port = 0 }) => {
     if (request.method === 'POST' && url.pathname === SURFACE_CONTROL_PATH) {
       const parsed = readSurfaceControlNotice(await readBody(request));
       if (!parsed) return text(response, 400, 'Invalid surface control notice\n');
-      await runtime.surfaceControl(parsed.controller);
+      await runtime.surfaceControl(parsed.controller, parsed.viewer ?? null);
       response.writeHead(204);
       return response.end();
     }

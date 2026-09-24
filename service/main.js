@@ -4246,6 +4246,7 @@ var createBrowserManager = ({
   const scopes = /* @__PURE__ */ new Map();
   let selectedScopeId = null;
   let controller = "none";
+  let controllingViewer = null;
   let operationQueue = Promise.resolve();
   let frameState = null;
   let frameSequence = 0;
@@ -4268,6 +4269,16 @@ var createBrowserManager = ({
     if (entry) entry.lastActivityAt = now();
   };
   const selected = () => selectedScopeId ? scopes.get(selectedScopeId) ?? null : null;
+  let view = { key: null, firstSequence: 1 };
+  const observeView = () => {
+    const entry = selected();
+    const key = entry ? JSON.stringify([entry.id, entry.runtime.tabs?.find((tab) => tab.active)?.id ?? null]) : null;
+    if (key !== view.key) view = { key, firstSequence: frameSequence + 1 };
+  };
+  const shownEarlierView = (frameSeq) => {
+    observeView();
+    return Number.isInteger(frameSeq) && frameSeq > 0 && frameSeq < view.firstSequence;
+  };
   const finishSelectionWaiter = (waiter, error = null) => {
     if (!selectionWaiters.delete(waiter)) return;
     clearTimeout(waiter.timer);
@@ -4348,18 +4359,19 @@ var createBrowserManager = ({
     touch(entry);
     return entry;
   };
-  const requireIdleSurface = () => {
-    if (controller !== "none") {
-      throw new Error("Dock controls are available only while the shared surface is idle");
+  const requireDockAccess = ({ viewer = null, frameSeq = null } = {}) => {
+    if (controller !== "none" && !(controller === "user" && viewer !== null && viewer === controllingViewer)) {
+      throw new Error("Dock controls are available only while the shared surface is idle or to the viewer in control");
     }
+    if (shownEarlierView(frameSeq)) throw new Error("The browser view changed before the dock command ran");
   };
   const requireGeneration = (expectedGeneration) => {
     if (expectedGeneration !== viewGeneration) {
       throw new Error("The browser view changed before the dock command ran");
     }
   };
-  const dockCommand = (name, parameters, expectedGeneration) => enqueue(async () => {
-    requireIdleSurface();
+  const dockCommand = (name, parameters, expectedGeneration, access) => enqueue(async () => {
+    requireDockAccess(access);
     requireGeneration(expectedGeneration);
     const entry = requireSelected();
     touch(entry);
@@ -4399,9 +4411,11 @@ var createBrowserManager = ({
         }
       });
     },
-    state() {
+    state({ viewer = null } = {}) {
       return {
         controller,
+        // Whether the viewer asking holds control, so its dock can act.
+        viewerInControl: controller === "user" && viewer !== null && viewer === controllingViewer,
         selectedScopeId,
         generation: viewGeneration,
         notice: notice ? { ...notice } : null,
@@ -4426,61 +4440,61 @@ var createBrowserManager = ({
     },
     // A viewer opens the browser of the chat it is looking at, before any agent
     // action. The dock reports that chat; the host does not attest it per request.
-    openScope(context, expectedGeneration) {
+    openScope(context, expectedGeneration, access) {
       return enqueue(async () => {
         if (closed) throw new Error("Browser manager is closed");
-        requireIdleSurface();
+        requireDockAccess(access);
         requireGeneration(expectedGeneration);
         const entry = await ensureScope(context);
         touch(entry);
         if (selectedScopeId === entry.id) return;
         if (surfaceSize) await entry.runtime.surfaceResize(surfaceSize);
-        requireIdleSurface();
+        requireDockAccess(access);
         select(entry);
         notice = null;
       });
     },
-    selectScope(id, expectedGeneration) {
+    selectScope(id, expectedGeneration, access) {
       return enqueue(async () => {
-        requireIdleSurface();
+        requireDockAccess(access);
         requireGeneration(expectedGeneration);
         const entry = scopes.get(id);
         if (!entry) throw new Error("The selected browser scope no longer exists");
         if (surfaceSize) await entry.runtime.surfaceResize(surfaceSize);
-        requireIdleSurface();
+        requireDockAccess(access);
         requireGeneration(expectedGeneration);
         select(entry);
         touch(entry);
         notice = null;
       });
     },
-    navigate(url, expectedGeneration) {
-      return dockCommand("navigate", { url }, expectedGeneration);
+    navigate(url, expectedGeneration, access) {
+      return dockCommand("navigate", { url }, expectedGeneration, access);
     },
-    reload(expectedGeneration) {
-      return dockCommand("reload", {}, expectedGeneration);
+    reload(expectedGeneration, access) {
+      return dockCommand("reload", {}, expectedGeneration, access);
     },
-    back(expectedGeneration) {
-      return dockCommand("back", {}, expectedGeneration);
+    back(expectedGeneration, access) {
+      return dockCommand("back", {}, expectedGeneration, access);
     },
-    forward(expectedGeneration) {
-      return dockCommand("forward", {}, expectedGeneration);
+    forward(expectedGeneration, access) {
+      return dockCommand("forward", {}, expectedGeneration, access);
     },
-    stop(expectedGeneration) {
-      return dockCommand("stop", {}, expectedGeneration);
+    stop(expectedGeneration, access) {
+      return dockCommand("stop", {}, expectedGeneration, access);
     },
-    newTab(expectedGeneration) {
-      return dockCommand("tab-new", {}, expectedGeneration);
+    newTab(expectedGeneration, access) {
+      return dockCommand("tab-new", {}, expectedGeneration, access);
     },
-    selectTab(tabId, expectedGeneration) {
-      return dockCommand("tab-select", { tabId }, expectedGeneration);
+    selectTab(tabId, expectedGeneration, access) {
+      return dockCommand("tab-select", { tabId }, expectedGeneration, access);
     },
-    closeTab(tabId, expectedGeneration) {
-      return dockCommand("tab-close", { tabId }, expectedGeneration);
+    closeTab(tabId, expectedGeneration, access) {
+      return dockCommand("tab-close", { tabId }, expectedGeneration, access);
     },
-    setViewport({ mode, width, height, mobile }, expectedGeneration) {
+    setViewport({ mode, width, height, mobile }, expectedGeneration, access) {
       return enqueue(async () => {
-        requireIdleSurface();
+        requireDockAccess(access);
         requireGeneration(expectedGeneration);
         const entry = requireSelected();
         touch(entry);
@@ -4501,16 +4515,16 @@ var createBrowserManager = ({
         if (entry) await entry.runtime.surfaceResize(surfaceSize);
       });
     },
-    setNativeSelectCompatibility(enabled, expectedGeneration) {
+    setNativeSelectCompatibility(enabled, expectedGeneration, access) {
       return enqueue(async () => {
-        requireIdleSurface();
+        requireDockAccess(access);
         requireGeneration(expectedGeneration);
         const entry = requireSelected();
         touch(entry);
         const previous = entry.runtime.nativeSelectCompatibility === true;
         await entry.runtime.setNativeSelectCompatibility(enabled);
         try {
-          requireIdleSurface();
+          requireDockAccess(access);
           requireGeneration(expectedGeneration);
         } catch (error) {
           await entry.runtime.setNativeSelectCompatibility(previous);
@@ -4560,6 +4574,7 @@ var createBrowserManager = ({
       if (!frame || selectedScopeId !== entry.id || viewGeneration !== generation) return null;
       const published = frameState?.scopeId === entry.id ? frameState : null;
       if (published && frame.sequence <= published.sourceSequence) return null;
+      observeView();
       frameSequence = Math.max(frameSequence + 1, after + 1);
       const wrapped = { ...frame, sequence: frameSequence };
       frameState = {
@@ -4570,19 +4585,22 @@ var createBrowserManager = ({
       };
       return wrapped;
     },
-    surfaceInput(events) {
+    surfaceInput(events, { viewer = null, frameSeq = null } = {}) {
       controller = "user";
+      if (viewer) controllingViewer = viewer;
       return enqueue(async () => {
         const entry = requireSelected();
+        if (shownEarlierView(frameSeq)) throw new Error("The browser view changed before this input arrived");
         touch(entry);
         const { runtime } = entry;
         await runtime.surfaceControl("user");
         return runtime.surfaceInput(events, viewerTheme);
       });
     },
-    surfaceControl(nextController) {
+    surfaceControl(nextController, viewer = null) {
       return enqueue(() => {
         controller = nextController;
+        controllingViewer = nextController === "user" ? viewer ?? controllingViewer : null;
         return selected()?.runtime.surfaceControl(nextController);
       });
     },
@@ -4783,6 +4801,9 @@ var SURFACE_WIDTH_HEADER = "x-surface-width";
 var SURFACE_HEIGHT_HEADER = "x-surface-height";
 var SURFACE_TITLE_HEADER = "x-surface-title";
 var SURFACE_AGENT_ACTIVE_HEADER = "x-surface-agent-active";
+var SURFACE_VIEWER_HEADER = "x-surface-viewer";
+var SURFACE_FRAME_SEQ_HEADER = "x-surface-frame-seq";
+var SURFACE_VIEWER_CONTROLS_HEADER = "x-surface-viewer-controls";
 var SURFACE_FRAME_WAIT_MS = 25e3;
 var SURFACE_FRAME_MAX_BYTES = 8e6;
 var SURFACE_INPUT_BATCH_MAX = 256;
@@ -7499,6 +7520,18 @@ var identityProperty = (value, name) => {
   const text2 = stringProperty(value, name);
   return text2 && text2.length <= 128 ? text2 : null;
 };
+var viewerOf = (request) => {
+  const viewer = request.headers[SURFACE_VIEWER_HEADER];
+  return typeof viewer === "string" && viewer.length > 0 && viewer.length <= 128 ? viewer : null;
+};
+var frameSeqOf = (request) => {
+  const value = request.headers[SURFACE_FRAME_SEQ_HEADER];
+  return typeof value === "string" && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+};
+var dockAccess = (request) => ({
+  viewer: request.headers[SURFACE_VIEWER_CONTROLS_HEADER] === "1" ? viewerOf(request) : null,
+  frameSeq: frameSeqOf(request)
+});
 var handleInspector = async (runtime, operation, request, url) => {
   if (operation === "events") {
     const captureId2 = url.searchParams.get("captureId");
@@ -7549,8 +7582,9 @@ var createService = ({ runtime, token, port = 0 }) => {
         return json(response, 200, { ok: false, error: errorMessage(error) });
       }
     }
+    const access = dockAccess(request);
     if (request.method === "GET" && url.pathname === "/browser/state") {
-      return json(response, 200, runtime.state());
+      return json(response, 200, runtime.state(access));
     }
     if (request.method === "POST" && url.pathname === "/browser/scope") {
       const body = await readObjectBody(request);
@@ -7561,8 +7595,8 @@ var createService = ({ runtime, token, port = 0 }) => {
         return text(response, 400, "directory, sessionId, and generation are required\n");
       }
       try {
-        await runtime.openScope({ directory, sessionId }, generation);
-        return json(response, 200, runtime.state());
+        await runtime.openScope({ directory, sessionId }, generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -7573,8 +7607,8 @@ var createService = ({ runtime, token, port = 0 }) => {
       const generation = generationProperty(body);
       if (!id || generation === null) return text(response, 400, "scopeId and generation are required\n");
       try {
-        await runtime.selectScope(id, generation);
-        return json(response, 200, runtime.state());
+        await runtime.selectScope(id, generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -7585,8 +7619,8 @@ var createService = ({ runtime, token, port = 0 }) => {
       const generation = generationProperty(body);
       if (!target || generation === null) return text(response, 400, "url and generation are required\n");
       try {
-        await runtime.navigate(withScheme(target), generation);
-        return json(response, 200, runtime.state());
+        await runtime.navigate(withScheme(target), generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -7597,11 +7631,11 @@ var createService = ({ runtime, token, port = 0 }) => {
       const generation = generationProperty(body);
       if (generation === null) return text(response, 400, "generation is required\n");
       try {
-        if (url.pathname === "/browser/back") await runtime.back(generation);
-        else if (url.pathname === "/browser/forward") await runtime.forward(generation);
-        else if (url.pathname === "/browser/stop") await runtime.stop(generation);
-        else await runtime.reload(generation);
-        return json(response, 200, runtime.state());
+        if (url.pathname === "/browser/back") await runtime.back(generation, access);
+        else if (url.pathname === "/browser/forward") await runtime.forward(generation, access);
+        else if (url.pathname === "/browser/stop") await runtime.stop(generation, access);
+        else await runtime.reload(generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -7615,10 +7649,10 @@ var createService = ({ runtime, token, port = 0 }) => {
         return text(response, 400, "generation is required, and tabId to select or close a tab\n");
       }
       try {
-        if (tabOperation === "new") await runtime.newTab(generation);
-        else if (tabOperation === "select") await runtime.selectTab(tabId, generation);
-        else await runtime.closeTab(tabId, generation);
-        return json(response, 200, runtime.state());
+        if (tabOperation === "new") await runtime.newTab(generation, access);
+        else if (tabOperation === "select") await runtime.selectTab(tabId, generation, access);
+        else await runtime.closeTab(tabId, generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -7644,8 +7678,8 @@ var createService = ({ runtime, token, port = 0 }) => {
 `);
       }
       try {
-        await runtime.setViewport(viewport, generation);
-        return json(response, 200, runtime.state());
+        await runtime.setViewport(viewport, generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -7658,8 +7692,8 @@ var createService = ({ runtime, token, port = 0 }) => {
         return text(response, 400, "enabled and generation are required\n");
       }
       try {
-        await runtime.setNativeSelectCompatibility(enabled, generation);
-        return json(response, 200, runtime.state());
+        await runtime.setNativeSelectCompatibility(enabled, generation, access);
+        return json(response, 200, runtime.state(access));
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
@@ -7700,14 +7734,20 @@ var createService = ({ runtime, token, port = 0 }) => {
     if (request.method === "POST" && url.pathname === SURFACE_INPUT_PATH) {
       const parsed = readSurfaceInputBatch(await readBody(request));
       if (!parsed) return text(response, 400, "Invalid surface input batch\n");
-      await runtime.surfaceInput(parsed.events);
+      try {
+        await runtime.surfaceInput(parsed.events, { viewer: viewerOf(request), frameSeq: access.frameSeq });
+      } catch (error) {
+        if (!/browser view changed/i.test(errorMessage(error))) throw error;
+        response.writeHead(409);
+        return response.end();
+      }
       response.writeHead(204);
       return response.end();
     }
     if (request.method === "POST" && url.pathname === SURFACE_CONTROL_PATH) {
       const parsed = readSurfaceControlNotice(await readBody(request));
       if (!parsed) return text(response, 400, "Invalid surface control notice\n");
-      await runtime.surfaceControl(parsed.controller);
+      await runtime.surfaceControl(parsed.controller, parsed.viewer ?? null);
       response.writeHead(204);
       return response.end();
     }
