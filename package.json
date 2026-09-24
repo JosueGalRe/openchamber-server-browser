@@ -1,6 +1,6 @@
 {
   "name": "@josuegalre/openchamber-server-browser",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Server-owned Chrome browser provider and shared surface for OpenChamber",
   "type": "module",
