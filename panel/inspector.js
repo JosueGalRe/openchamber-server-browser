@@ -4,6 +4,7 @@
   var OPENCHAMBER_SDK_API_VERSION = 1;
 
   // node_modules/@openchamber/sdk/dist/scrollbar-style.js
+  var GUEST_SCROLLING_ATTRIBUTE = "data-oc-scrolling";
   var GUEST_SCROLLBAR_CSS = `
 :root {
   --oc-scrollbar-thumb: color-mix(in srgb, var(--oc-muted, currentColor) 40%, transparent);
@@ -12,29 +13,54 @@
 }
 * {
   scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+:hover, [${GUEST_SCROLLING_ATTRIBUTE}] {
   scrollbar-color: var(--oc-scrollbar-thumb) transparent;
 }
 /* Chromium's standard scrollbar properties otherwise override its pseudo-elements. */
 @supports selector(::-webkit-scrollbar) {
-  * { scrollbar-width: auto; scrollbar-color: auto; }
+  *, :hover, [${GUEST_SCROLLING_ATTRIBUTE}] { scrollbar-width: auto; scrollbar-color: auto; }
   ::-webkit-scrollbar { width: 6px; height: 6px; background: transparent; }
-  :root::-webkit-scrollbar, body::-webkit-scrollbar { background: var(--oc-bg, inherit); }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb {
-    background: var(--oc-scrollbar-thumb);
+    background: transparent;
     border-radius: 999px;
     min-width: 24px;
     min-height: 24px;
   }
+  :hover::-webkit-scrollbar-thumb, [${GUEST_SCROLLING_ATTRIBUTE}]::-webkit-scrollbar-thumb { background: var(--oc-scrollbar-thumb); }
   ::-webkit-scrollbar-thumb:hover { background: var(--oc-scrollbar-thumb-hover); }
   ::-webkit-scrollbar-corner { background: transparent; }
   ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 }
 @media (forced-colors: active) {
-  * { scrollbar-color: auto; }
+  *, :hover, [${GUEST_SCROLLING_ATTRIBUTE}] { scrollbar-color: auto; }
   ::-webkit-scrollbar-thumb, ::-webkit-scrollbar-thumb:hover { background: CanvasText; }
 }
 `;
+  function installGuestScrollbarActivity(doc) {
+    const root2 = doc.documentElement;
+    if (root2.hasAttribute("data-oc-scrollbar-activity"))
+      return;
+    root2.setAttribute("data-oc-scrollbar-activity", "");
+    const timers = /* @__PURE__ */ new WeakMap();
+    doc.addEventListener("scroll", (event) => {
+      const target = event.target === doc ? root2 : event.target;
+      if (!(target instanceof Element))
+        return;
+      if (!target.hasAttribute("data-oc-scrolling"))
+        target.setAttribute("data-oc-scrolling", "");
+      const pending = timers.get(target);
+      if (pending !== void 0)
+        clearTimeout(pending);
+      timers.set(target, setTimeout(() => {
+        timers.delete(target);
+        target.removeAttribute("data-oc-scrolling");
+      }, 1e3));
+    }, { capture: true, passive: true });
+  }
+  var GUEST_SCROLLBAR_SCRIPT = `(${installGuestScrollbarActivity.toString()})(document);`;
 
   // node_modules/@openchamber/sdk/dist/workspace.js
   var GUEST_STORAGE_KEY_MAX = 128;
@@ -44,6 +70,8 @@
   var GUEST_FILE_STAT_KINDS = ["file", "directory", "other", "missing"];
   var isStartSessionResult = (value) => Boolean(value && "sessionId" in value);
   var isPromptResult = (value) => Boolean(value && "sent" in value && !("sessionId" in value));
+  var GUEST_COMMIT_SHA = /^[0-9a-f]{7,64}$/i;
+  var isGuestCommitSha = (value) => GUEST_COMMIT_SHA.test(value);
   var GUEST_TOAST_MAX = 500;
   var GUEST_CLIPBOARD_TEXT_MAX = 32e3;
   var GUEST_COMPOSE_TEXT_MAX = 16e3;
@@ -63,6 +91,7 @@
   var GUEST_GENERATE_OUTPUT_TOKENS_MAX = 4e3;
   var GUEST_GENERATE_TIMEOUT_MS = 9e4;
   var GUEST_BADGE_MAX = 999;
+  var GUEST_FRAME_HEIGHT_MAX = 1e4;
   var GUEST_RESOLVE_ERROR_MAX = 500;
   var HOST_REQUEST_ERROR_CODES = [
     "HOST_UNAVAILABLE",
@@ -82,7 +111,8 @@
     "FILE_TOO_LARGE",
     "DENIED",
     "NO_MODEL",
-    "MODEL_FAILED"
+    "MODEL_FAILED",
+    "UNSUPPORTED"
   ];
   var SERVICE_STATUS_VALUES = ["stopped", "starting", "ready", "failed"];
   var hostRequestErrorCodeSet = new Set(HOST_REQUEST_ERROR_CODES);
@@ -161,6 +191,11 @@
     if (count === null || !Number.isFinite(count))
       return null;
     return Math.min(GUEST_BADGE_MAX, Math.max(0, Math.round(count)));
+  };
+  var clampFrameHeight = (height) => {
+    if (!Number.isFinite(height))
+      return 0;
+    return Math.min(GUEST_FRAME_HEIGHT_MAX, Math.max(0, Math.ceil(height)));
   };
   var isGuestFilePath = (value) => value.length > 0 && value.length <= GUEST_FILE_PATH_MAX && !value.includes("\0") && !value.includes("\\");
   var isGuestRequestPath = (value) => {
@@ -634,6 +669,13 @@
         id: nextId(ids),
         payload: { url }
       }),
+      openCommit: (sha) => isGuestCommitSha(sha) ? request({
+        channel: OPENCHAMBER_SDK_CHANNEL,
+        v: OPENCHAMBER_SDK_API_VERSION,
+        type: "open-commit",
+        id: nextId(ids),
+        payload: { sha }
+      }) : Promise.reject(new HostRequestError("HOST_REJECTED", "Commit id must be 7 to 64 hex characters.")),
       openSurface: (surfaceId) => request({
         channel: OPENCHAMBER_SDK_CHANNEL,
         v: OPENCHAMBER_SDK_API_VERSION,
@@ -854,6 +896,13 @@
         id: nextId(ids),
         payload: { count: clampBadgeCount(count) }
       }),
+      setHeight: (height) => request({
+        channel: OPENCHAMBER_SDK_CHANNEL,
+        v: OPENCHAMBER_SDK_API_VERSION,
+        type: "resize",
+        id: nextId(ids),
+        payload: { height: clampFrameHeight(height) }
+      }),
       dispose: () => {
         for (const subscriptionId of workspaceListeners.keys()) {
           post({ ...envelope, type: "workspace-unsubscribe", id: nextId(ids), payload: { subscriptionId } });
@@ -989,6 +1038,7 @@
       }
       return;
     }
+    installGuestScrollbarActivity(document);
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = css;

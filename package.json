@@ -53,7 +53,7 @@
     "package": "node scripts/package.mjs"
   },
   "dependencies": {
-    "@openchamber/sdk": "2.0.0",
+    "@openchamber/sdk": "file:vendor/openchamber-sdk-0db5ed016.tgz",
     "ws": "8.18.3"
   },
   "devDependencies": {
