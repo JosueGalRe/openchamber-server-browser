@@ -6863,6 +6863,7 @@ var createBrowserRuntime = ({
     if (event.method === "Page.frameNavigated" && event.params.frame?.id) {
       if (!event.params.frame.parentId) {
         current.mainFrameId = event.params.frame.id;
+        current.problems.length = 0;
         contextMenu.forget(current.sessionId);
         current.url = event.params.frame.url;
         void refreshNavigation(current);

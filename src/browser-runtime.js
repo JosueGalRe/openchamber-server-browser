@@ -286,6 +286,8 @@ export const createBrowserRuntime = ({
     if (event.method === 'Page.frameNavigated' && event.params.frame?.id) {
       if (!event.params.frame.parentId) {
         current.mainFrameId = event.params.frame.id;
+        // A new document starts with no problems, like the DevTools console.
+        current.problems.length = 0;
         contextMenu.forget(current.sessionId);
         current.url = event.params.frame.url;
         void refreshNavigation(current);

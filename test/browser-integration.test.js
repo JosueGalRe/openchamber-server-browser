@@ -606,6 +606,11 @@ test('captures console and network for the inspector and runs JavaScript in the 
   assert.deepEqual(await runtime.inspector.evaluate(captureId, 'await Promise.resolve(document.title)'), { text: 'Inspect', truncated: false, isError: false });
   assert.equal((await runtime.inspector.evaluate(captureId, 'missingName')).isError, true);
 
+  // When the page itself loads another document, then its problems start over, like the DevTools console.
+  await runtime.inspector.evaluate(captureId, 'location.href = "/next"');
+  await waitFor(() => runtime.url === `${web.origin}/next`);
+  assert.deepEqual(runtime.problemCounts, { errors: 0, warnings: 0 });
+
   // When another tab comes forward, then this capture is gone.
   await runtime.command('tab-new');
   assert.throws(() => runtime.inspector.events(captureId, cursor), (error) => error.code === 'CAPTURE_GONE');
