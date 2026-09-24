@@ -91,7 +91,7 @@ export const classifyProxyTarget = async (target, { grants = [], lookup = dns.pr
       ? PRIVATE_V6.check(address, family)
       : PRIVATE_V4.check(address, family);
     if (privateAddress && !hasGrant(grants, hostname, address, port, url.protocol)) {
-      return { allowed: false, reason: 'Private or loopback address requires an allowed origin' };
+      return { allowed: false, reason: 'Private or loopback address requires an allowed origin', grantable: true };
     }
   }
   const pinned = answers[0];
@@ -104,9 +104,66 @@ export const classifyProxyTarget = async (target, { grants = [], lookup = dns.pr
   };
 };
 
-const denyHttp = (response, reason) => {
-  response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', connection: 'close' });
-  response.end(`Forbidden: ${reason}\n`);
+const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
+
+const originOf = (target) => {
+  try {
+    const { origin } = new URL(target);
+    return origin === 'null' ? null : origin;
+  } catch {
+    return null;
+  }
+};
+
+const deniedPage = (reason, { origin = null, grantable = false, configPath = null }) => {
+  const shownOrigin = origin ? `<code>${escapeHtml(origin)}</code>` : '';
+  const configFile = configPath ? `<code>${escapeHtml(configPath)}</code>` : 'the extension\'s <code>config.json</code>';
+  const [title, content] = grantable && origin ? [
+    `Blocked: ${origin}`,
+    `<h1>This private address is blocked</h1>
+<p>${shownOrigin} points to the machine running OpenChamber or its local network. Server Browser blocks private and loopback addresses until you allow them, so pages and agents cannot reach those services without permission.</p>
+<p>To allow it, add the origin to <code>allowedOrigins</code> in ${configFile} and restart the extension:</p>
+<pre>${escapeHtml(`{\n  "allowedOrigins": [${JSON.stringify(origin)}]\n}`)}</pre>
+<p class="note"><code>localhost</code> and private addresses resolve on the machine running OpenChamber, not on your device.</p>`,
+  ] : [
+    `Can't open ${origin ?? 'this address'}`,
+    `<h1>This address can't be opened</h1>
+<p>${shownOrigin ? `${shownOrigin}: ` : ''}${escapeHtml(reason)}.</p>`,
+  ];
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<style>
+:root { color-scheme: light dark; font: 15px/1.55 system-ui, sans-serif; }
+body { display: grid; min-height: 100vh; margin: 0; place-items: center; background: Canvas; color: CanvasText; }
+main { box-sizing: border-box; width: 100%; max-width: 560px; padding: 32px 24px; }
+small { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; opacity: .55; }
+h1 { margin: 6px 0 12px; font-size: 20px; line-height: 1.3; }
+p, pre { margin: 0 0 12px; }
+code, pre { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+code { overflow-wrap: anywhere; }
+pre { padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; background: rgba(127, 127, 127, .12); }
+.note { font-size: 13px; opacity: .7; }
+</style>
+</head>
+<body><main><small>Server Browser</small>
+${content}
+</main></body>
+</html>
+`;
+};
+
+const denyHttp = (response, reason, page = {}) => {
+  response.writeHead(403, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'",
+    'cache-control': 'no-store',
+    connection: 'close',
+  });
+  response.end(deniedPage(reason, page));
 };
 
 const denySocket = (socket, reason, status = '403 Forbidden') => {
@@ -141,7 +198,13 @@ export const createPolicyProxy = (policy = {}) => {
       await new Promise((resolve) => setImmediate(resolve));
       if (downstreamClosed || response.writableEnded) return;
       if (closed) return denyHttp(response, 'Browser proxy is closed');
-      if (!decision.allowed) return denyHttp(response, decision.reason);
+      if (!decision.allowed) {
+        return denyHttp(response, decision.reason, {
+          origin: originOf(request.url),
+          grantable: decision.grantable,
+          configPath: policy.configPath,
+        });
+      }
       if (decision.url.protocol !== 'http:') return denyHttp(response, 'Plain proxy requests must use HTTP');
       const headers = { ...request.headers, host: decision.url.host };
       delete headers['proxy-connection'];

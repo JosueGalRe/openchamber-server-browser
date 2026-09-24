@@ -9,9 +9,9 @@ import { applyViewport, viewportForMode } from './viewports.js';
 
 const boundedText = (value, maximum = 1_000) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maximum);
 
-export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => {
+export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], configPath = null } = {}) => {
   const chrome = createChromeProcess({ chromePath });
-  const proxy = createPolicyProxy({ grants: originGrants(allowedOrigins) });
+  const proxy = createPolicyProxy({ grants: originGrants(allowedOrigins), configPath });
   const shutdownController = new AbortController();
   const problems = [];
   let cdp = null;

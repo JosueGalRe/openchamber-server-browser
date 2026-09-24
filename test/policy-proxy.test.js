@@ -49,6 +49,26 @@ test('denies a hostname when any DNS answer is unsafe', async () => {
   assert.equal(decision.reason, 'IPv4 link-local addresses are denied');
 });
 
+test('explains how to allow a blocked private origin', async (context) => {
+  const proxy = createPolicyProxy({ configPath: '/extension/config.json' });
+  const proxyAddress = await proxy.listen();
+  context.after(() => proxy.close());
+  const proxyPort = Number(proxyAddress.split(':').at(-1));
+  const response = await new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port: proxyPort, path: 'http://192.168.1.21:3100/app' }, resolve).once('error', reject);
+  });
+  response.setEncoding('utf8');
+  let body = '';
+  for await (const chunk of response) body += chunk;
+
+  assert.equal(response.statusCode, 403);
+  assert.match(response.headers['content-type'], /^text\/html/);
+  assert.match(response.headers['content-security-policy'], /default-src 'none'/);
+  assert.match(body, /<title>Blocked: http:\/\/192\.168\.1\.21:3100<\/title>/);
+  assert.ok(body.includes('<code>/extension/config.json</code>'));
+  assert.ok(body.includes('[&#34;http://192.168.1.21:3100&#34;]'));
+});
+
 test('closes an HTTP upstream when its browser connection aborts', async (context) => {
   const upstreamAccepted = Promise.withResolvers();
   const upstreamClosed = Promise.withResolvers();

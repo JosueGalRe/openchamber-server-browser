@@ -4690,13 +4690,14 @@ var parseConfig = (value) => {
 };
 var loadConfig = ({ entryUrl = import.meta.url, configPath } = {}) => {
   const resolvedPath = configPath ?? path2.join(extensionRootFrom(entryUrl), "config.json");
+  let value = {};
   try {
-    return parseConfig(JSON.parse(fs2.readFileSync(resolvedPath, "utf8")));
+    value = JSON.parse(fs2.readFileSync(resolvedPath, "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT") return parseConfig({});
     if (error instanceof SyntaxError) throw new Error(`Invalid JSON in ${resolvedPath}: ${error.message}`);
-    throw error;
+    if (error?.code !== "ENOENT") throw error;
   }
+  return Object.freeze({ ...parseConfig(value), configPath: resolvedPath });
 };
 var originGrants = (allowedOrigins) => allowedOrigins.map((origin) => {
   const url = new URL(origin);
@@ -4934,7 +4935,7 @@ var classifyProxyTarget = async (target, { grants = [], lookup = dns.promises.lo
     const family = familyOf(address);
     const privateAddress = family === "ipv6" ? PRIVATE_V6.check(address, family) : PRIVATE_V4.check(address, family);
     if (privateAddress && !hasGrant(grants, hostname, address, port, url.protocol)) {
-      return { allowed: false, reason: "Private or loopback address requires an allowed origin" };
+      return { allowed: false, reason: "Private or loopback address requires an allowed origin", grantable: true };
     }
   }
   const pinned = answers[0];
@@ -4946,10 +4947,65 @@ var classifyProxyTarget = async (target, { grants = [], lookup = dns.promises.lo
     url
   };
 };
-var denyHttp = (response, reason) => {
-  response.writeHead(403, { "content-type": "text/plain; charset=utf-8", connection: "close" });
-  response.end(`Forbidden: ${reason}
-`);
+var escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
+var originOf = (target) => {
+  try {
+    const { origin } = new URL(target);
+    return origin === "null" ? null : origin;
+  } catch {
+    return null;
+  }
+};
+var deniedPage = (reason, { origin = null, grantable = false, configPath = null }) => {
+  const shownOrigin = origin ? `<code>${escapeHtml(origin)}</code>` : "";
+  const configFile = configPath ? `<code>${escapeHtml(configPath)}</code>` : "the extension's <code>config.json</code>";
+  const [title, content] = grantable && origin ? [
+    `Blocked: ${origin}`,
+    `<h1>This private address is blocked</h1>
+<p>${shownOrigin} points to the machine running OpenChamber or its local network. Server Browser blocks private and loopback addresses until you allow them, so pages and agents cannot reach those services without permission.</p>
+<p>To allow it, add the origin to <code>allowedOrigins</code> in ${configFile} and restart the extension:</p>
+<pre>${escapeHtml(`{
+  "allowedOrigins": [${JSON.stringify(origin)}]
+}`)}</pre>
+<p class="note"><code>localhost</code> and private addresses resolve on the machine running OpenChamber, not on your device.</p>`
+  ] : [
+    `Can't open ${origin ?? "this address"}`,
+    `<h1>This address can't be opened</h1>
+<p>${shownOrigin ? `${shownOrigin}: ` : ""}${escapeHtml(reason)}.</p>`
+  ];
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<style>
+:root { color-scheme: light dark; font: 15px/1.55 system-ui, sans-serif; }
+body { display: grid; min-height: 100vh; margin: 0; place-items: center; background: Canvas; color: CanvasText; }
+main { box-sizing: border-box; width: 100%; max-width: 560px; padding: 32px 24px; }
+small { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; opacity: .55; }
+h1 { margin: 6px 0 12px; font-size: 20px; line-height: 1.3; }
+p, pre { margin: 0 0 12px; }
+code, pre { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+code { overflow-wrap: anywhere; }
+pre { padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; background: rgba(127, 127, 127, .12); }
+.note { font-size: 13px; opacity: .7; }
+</style>
+</head>
+<body><main><small>Server Browser</small>
+${content}
+</main></body>
+</html>
+`;
+};
+var denyHttp = (response, reason, page = {}) => {
+  response.writeHead(403, {
+    "content-type": "text/html; charset=utf-8",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
+    "cache-control": "no-store",
+    connection: "close"
+  });
+  response.end(deniedPage(reason, page));
 };
 var denySocket = (socket, reason, status = "403 Forbidden") => {
   if (socket.destroyed || socket.writableEnded) return;
@@ -4985,7 +5041,13 @@ var createPolicyProxy = (policy = {}) => {
       await new Promise((resolve) => setImmediate(resolve));
       if (downstreamClosed || response.writableEnded) return;
       if (closed) return denyHttp(response, "Browser proxy is closed");
-      if (!decision.allowed) return denyHttp(response, decision.reason);
+      if (!decision.allowed) {
+        return denyHttp(response, decision.reason, {
+          origin: originOf(request.url),
+          grantable: decision.grantable,
+          configPath: policy.configPath
+        });
+      }
       if (decision.url.protocol !== "http:") return denyHttp(response, "Plain proxy requests must use HTTP");
       const headers = { ...request.headers, host: decision.url.host };
       delete headers["proxy-connection"];
@@ -5472,9 +5534,9 @@ var createSurface = (runtime) => {
 
 // src/browser-runtime.js
 var boundedText = (value, maximum = 1e3) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, maximum);
-var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [] } = {}) => {
+var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], configPath = null } = {}) => {
   const chrome = createChromeProcess({ chromePath });
-  const proxy = createPolicyProxy({ grants: originGrants(allowedOrigins) });
+  const proxy = createPolicyProxy({ grants: originGrants(allowedOrigins), configPath });
   const shutdownController = new AbortController();
   const problems = [];
   let cdp = null;

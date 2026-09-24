@@ -42,13 +42,14 @@ export const parseConfig = (value) => {
 
 export const loadConfig = ({ entryUrl = import.meta.url, configPath } = {}) => {
   const resolvedPath = configPath ?? path.join(extensionRootFrom(entryUrl), 'config.json');
+  let value = {};
   try {
-    return parseConfig(JSON.parse(fs.readFileSync(resolvedPath, 'utf8')));
+    value = JSON.parse(fs.readFileSync(resolvedPath, 'utf8'));
   } catch (error) {
-    if (error?.code === 'ENOENT') return parseConfig({});
     if (error instanceof SyntaxError) throw new Error(`Invalid JSON in ${resolvedPath}: ${error.message}`);
-    throw error;
+    if (error?.code !== 'ENOENT') throw error;
   }
+  return Object.freeze({ ...parseConfig(value), configPath: resolvedPath });
 };
 
 export const originGrants = (allowedOrigins) => allowedOrigins.map((origin) => {
