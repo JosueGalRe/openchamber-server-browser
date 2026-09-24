@@ -487,7 +487,10 @@ test('lets the agent name tabs by id without moving the viewer off its tab', { s
     { id: opened.tabId, title: 'Fixture', url: `${web.origin}/`, active: false },
   ]);
 
-  // When actions name the background tab, then they run there.
+  // When actions name the background tab, then they run there, and it keeps painting so a capture cannot stall.
+  const background = await runtime.agentPage(opened.tabId);
+  const visibility = await background.cdp.sendSession(background.sessionId, 'Runtime.evaluate', { expression: 'document.visibilityState', returnByValue: true });
+  assert.equal(visibility.result.value, 'visible');
   await runtime.perform('browser.type', { tabId: opened.tabId, selector: '#name', value: 'from the agent', submit: false });
   await runtime.perform('browser.click', { tabId: opened.tabId, selector: '#mark' });
   assert.match((await runtime.perform('browser.snapshot', { tabId: opened.tabId })).text, /from the agent/);

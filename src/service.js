@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import net from 'node:net';
 import {
+  BROWSER_PROVIDER_ACTION_TIMEOUT_MS,
+  BROWSER_PROVIDER_OPEN_TIMEOUT_MS,
   BROWSER_PROVIDER_PATH,
   SURFACE_AGENT_ACTIVE_HEADER,
   SURFACE_CLIPBOARD_PATH,
@@ -82,6 +84,7 @@ const queryInteger = (url, name, fallback, maximum) => {
 
 const errorMessage = (error) => {
   if (error instanceof DOMException && error.name === 'AbortError') return 'Browser action was cancelled';
+  if (error instanceof DOMException && error.name === 'TimeoutError') return 'The page did not respond in time';
   if (error instanceof Error && error.message.trim()) return error.message;
   return 'Unknown browser state';
 };
@@ -211,7 +214,10 @@ export const createService = ({ runtime, token, port = 0 }) => {
       const parsed = readBrowserProviderRequest(await readBody(request));
       if (!parsed) return text(response, 400, 'Invalid browser provider request\n');
       try {
-        const data = await runtime.perform(parsed.action, parsed.parameters, signal, parsed.context);
+        // The host replaces a service that misses its deadline, and every chat's
+        // browser goes with it, so an action gives up shortly before.
+        const deadline = AbortSignal.timeout((parsed.action === 'browser.open' ? BROWSER_PROVIDER_OPEN_TIMEOUT_MS : BROWSER_PROVIDER_ACTION_TIMEOUT_MS) - 2_000);
+        const data = await runtime.perform(parsed.action, parsed.parameters, AbortSignal.any([signal, deadline]), parsed.context);
         return json(response, 200, { ok: true, data });
       } catch (error) {
         return json(response, 200, { ok: false, error: errorMessage(error) });

@@ -374,8 +374,10 @@ export const createBrowserRuntime = ({
   const openTab = async ({ background = false } = {}) => {
     await ensureStarted();
     // The target-created handler waits for this, so it knows a background tab
-    // before it could bring the tab forward.
-    const creation = cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: contextId, background })
+    // before it could bring the tab forward. Each tab gets its own window:
+    // Chrome stops painting a tab that sits behind another in its window, and
+    // a capture of it can then wait for a frame that never comes.
+    const creation = cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: contextId, newWindow: true, background })
       .then((target) => {
         if (typeof target.targetId !== 'string') throw new Error('Chrome returned no page target id');
         if (background) backgroundTargets.add(target.targetId);

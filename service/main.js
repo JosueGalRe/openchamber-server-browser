@@ -4761,6 +4761,8 @@ var BROWSER_CONTROL_ACTIONS = [
   "browser.capture",
   "browser.resize"
 ];
+var BROWSER_PROVIDER_OPEN_TIMEOUT_MS = 45e3;
+var BROWSER_PROVIDER_ACTION_TIMEOUT_MS = 2e4;
 var BROWSER_PROVIDER_IDLE_MS = 10 * 6e4;
 var CONTROL_ACTIONS = new Set(BROWSER_CONTROL_ACTIONS);
 var isBrowserControlAction = (value) => CONTROL_ACTIONS.has(value);
@@ -7038,7 +7040,7 @@ var createBrowserRuntime = ({
   };
   const openTab = async ({ background = false } = {}) => {
     await ensureStarted();
-    const creation = cdp.send("Target.createTarget", { url: "about:blank", browserContextId: contextId, background }).then((target) => {
+    const creation = cdp.send("Target.createTarget", { url: "about:blank", browserContextId: contextId, newWindow: true, background }).then((target) => {
       if (typeof target.targetId !== "string") throw new Error("Chrome returned no page target id");
       if (background) backgroundTargets.add(target.targetId);
       return target;
@@ -7475,6 +7477,7 @@ var queryInteger = (url, name, fallback, maximum) => {
 };
 var errorMessage = (error) => {
   if (error instanceof DOMException && error.name === "AbortError") return "Browser action was cancelled";
+  if (error instanceof DOMException && error.name === "TimeoutError") return "The page did not respond in time";
   if (error instanceof Error && error.message.trim()) return error.message;
   return "Unknown browser state";
 };
@@ -7578,7 +7581,8 @@ var createService = ({ runtime, token, port = 0 }) => {
       const parsed = readBrowserProviderRequest(await readBody(request));
       if (!parsed) return text(response, 400, "Invalid browser provider request\n");
       try {
-        const data = await runtime.perform(parsed.action, parsed.parameters, signal, parsed.context);
+        const deadline = AbortSignal.timeout((parsed.action === "browser.open" ? BROWSER_PROVIDER_OPEN_TIMEOUT_MS : BROWSER_PROVIDER_ACTION_TIMEOUT_MS) - 2e3);
+        const data = await runtime.perform(parsed.action, parsed.parameters, AbortSignal.any([signal, deadline]), parsed.context);
         return json(response, 200, { ok: true, data });
       } catch (error) {
         return json(response, 200, { ok: false, error: errorMessage(error) });
