@@ -1722,6 +1722,13 @@ ${tab.url}`;
       reportedViewer = null;
     });
   };
+  var watchPixelRatio = () => {
+    window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`).addEventListener("change", () => {
+      syncViewer();
+      watchPixelRatio();
+    }, { once: true });
+  };
+  watchPixelRatio();
   var lastCopyId = null;
   var offerCopy = (copy) => {
     if (!copy || copy.id === lastCopyId) return;

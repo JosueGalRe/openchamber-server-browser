@@ -4253,7 +4253,8 @@ var createBrowserManager = ({
   const frameControllers = /* @__PURE__ */ new Set();
   const selectionWaiters = /* @__PURE__ */ new Set();
   let surfaceViewport = null;
-  let devicePixelRatio = 1;
+  let surfaceSize = null;
+  let devicePixelRatio = null;
   let viewerTheme = null;
   let closed = false;
   let notice = null;
@@ -4332,7 +4333,7 @@ var createBrowserManager = ({
     });
     if (!selectedScopeId) {
       select(entry);
-      if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+      if (surfaceSize) await entry.runtime.surfaceResize(surfaceSize);
     }
     return entry;
   };
@@ -4433,7 +4434,7 @@ var createBrowserManager = ({
         const entry = await ensureScope(context);
         touch(entry);
         if (selectedScopeId === entry.id) return;
-        if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+        if (surfaceSize) await entry.runtime.surfaceResize(surfaceSize);
         requireIdleSurface();
         select(entry);
         notice = null;
@@ -4445,7 +4446,7 @@ var createBrowserManager = ({
         requireGeneration(expectedGeneration);
         const entry = scopes.get(id);
         if (!entry) throw new Error("The selected browser scope no longer exists");
-        if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+        if (surfaceSize) await entry.runtime.surfaceResize(surfaceSize);
         requireIdleSurface();
         requireGeneration(expectedGeneration);
         select(entry);
@@ -4492,9 +4493,12 @@ var createBrowserManager = ({
     setDevicePixelRatio(ratio) {
       return enqueue(async () => {
         if (ratio === devicePixelRatio) return;
+        const measuredWithoutRatio = devicePixelRatio === null;
         devicePixelRatio = ratio;
+        if (!measuredWithoutRatio || !surfaceViewport) return;
+        surfaceSize = cssSize(surfaceViewport, ratio);
         const entry = selected();
-        if (surfaceViewport && entry) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+        if (entry) await entry.runtime.surfaceResize(surfaceSize);
       });
     },
     setNativeSelectCompatibility(enabled, expectedGeneration) {
@@ -4585,7 +4589,8 @@ var createBrowserManager = ({
     surfaceResize(size) {
       return enqueue(() => {
         surfaceViewport = size;
-        return requireSelected().runtime.surfaceResize(cssSize(size, devicePixelRatio));
+        surfaceSize = cssSize(size, devicePixelRatio ?? 1);
+        return requireSelected().runtime.surfaceResize(surfaceSize);
       });
     },
     // The inspector page follows the visible scope. Its calls stay out of the

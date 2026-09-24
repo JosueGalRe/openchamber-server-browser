@@ -37,9 +37,14 @@ export const createBrowserManager = ({
   let viewGeneration = 0;
   const frameControllers = new Set();
   const selectionWaiters = new Set();
-  // The host reports the panel in device pixels; the dock reports its ratio.
+  // The host reports the panel in device pixels when its CSS size changes; the
+  // dock reports the ratio. Pages keep the CSS size worked out when the host
+  // measured, so a ratio change alone (a window moving to another display)
+  // does not shrink them. Only a panel measured before the first ratio report
+  // is worked out again when that report arrives.
   let surfaceViewport = null;
-  let devicePixelRatio = 1;
+  let surfaceSize = null;
+  let devicePixelRatio = null;
   let viewerTheme = null;
   let closed = false;
   let notice = null;
@@ -129,7 +134,7 @@ export const createBrowserManager = ({
     if (!selectedScopeId) {
       select(entry);
       // The viewer's panel may have been measured before this scope existed.
-      if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+      if (surfaceSize) await entry.runtime.surfaceResize(surfaceSize);
     }
     return entry;
   };
@@ -236,7 +241,7 @@ export const createBrowserManager = ({
         const entry = await ensureScope(context);
         touch(entry);
         if (selectedScopeId === entry.id) return;
-        if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+        if (surfaceSize) await entry.runtime.surfaceResize(surfaceSize);
         requireIdleSurface();
         select(entry);
         notice = null;
@@ -248,7 +253,7 @@ export const createBrowserManager = ({
         requireGeneration(expectedGeneration);
         const entry = scopes.get(id);
         if (!entry) throw new Error('The selected browser scope no longer exists');
-        if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+        if (surfaceSize) await entry.runtime.surfaceResize(surfaceSize);
         requireIdleSurface();
         requireGeneration(expectedGeneration);
         select(entry);
@@ -295,9 +300,12 @@ export const createBrowserManager = ({
     setDevicePixelRatio(ratio) {
       return enqueue(async () => {
         if (ratio === devicePixelRatio) return;
+        const measuredWithoutRatio = devicePixelRatio === null;
         devicePixelRatio = ratio;
+        if (!measuredWithoutRatio || !surfaceViewport) return;
+        surfaceSize = cssSize(surfaceViewport, ratio);
         const entry = selected();
-        if (surfaceViewport && entry) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+        if (entry) await entry.runtime.surfaceResize(surfaceSize);
       });
     },
     setNativeSelectCompatibility(enabled, expectedGeneration) {
@@ -390,7 +398,8 @@ export const createBrowserManager = ({
     surfaceResize(size) {
       return enqueue(() => {
         surfaceViewport = size;
-        return requireSelected().runtime.surfaceResize(cssSize(size, devicePixelRatio));
+        surfaceSize = cssSize(size, devicePixelRatio ?? 1);
+        return requireSelected().runtime.surfaceResize(surfaceSize);
       });
     },
     // The inspector page follows the visible scope. Its calls stay out of the

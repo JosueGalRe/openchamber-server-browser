@@ -470,6 +470,13 @@ const syncViewer = () => {
   void host.serviceRequest({ method: 'POST', path: '/browser/viewer', body: payload })
     .then((result) => { if (result.status !== 200) reportedViewer = null; }, () => { reportedViewer = null; });
 };
+// A new ratio (another display, or zoom) goes out right away, ahead of the
+// host's debounced panel measurement that the service converts with it.
+const watchPixelRatio = () => {
+  window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+    .addEventListener('change', () => { syncViewer(); watchPixelRatio(); }, { once: true });
+};
+watchPixelRatio();
 
 let lastCopyId = null;
 const offerCopy = (copy) => {

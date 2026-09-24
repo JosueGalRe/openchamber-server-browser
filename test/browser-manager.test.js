@@ -443,14 +443,30 @@ test('converts the viewer panel with its pixel ratio and sizes a first scope cre
   const runtime = runtimes.get('ses_one');
   assert.deepEqual(runtime.calls.find(([kind]) => kind === 'resize'), ['resize', { width: 700, height: 500 }]);
 
-  // When the ratio changes, then the visible scope is resized from the same panel.
+  // When the window moves to a 1x display, then the page keeps its CSS size, and the host's next measurement uses the new ratio.
+  const callCount = runtime.calls.length;
   await manager.setDevicePixelRatio(1);
-  assert.deepEqual(runtime.calls.at(-1), ['resize', { width: 1400, height: 1000 }]);
+  assert.equal(runtime.calls.length, callCount);
+  await manager.surfaceResize({ width: 800, height: 600 });
+  assert.deepEqual(runtime.calls.at(-1), ['resize', { width: 800, height: 600 }]);
 
   // When the dock sets a viewport, then it is marked as the viewer's and guarded like other dock mutations.
   await manager.setViewport({ mode: 'fixed', width: 500, height: 400, mobile: false }, manager.state().generation);
   assert.deepEqual(runtime.calls.at(-1), ['viewport', { mode: 'fixed', source: 'viewer', width: 500, height: 400, mobile: false }]);
   await assert.rejects(manager.setViewport({ mode: 'auto', mobile: false }, manager.state().generation + 1), /view changed/i);
+});
+
+test('works out a panel measured before the dock reported its pixel ratio once the ratio arrives', async () => {
+  // Given a visible scope whose panel the host measured before the dock reported a 2x ratio.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  const runtime = runtimes.get('ses_one');
+  await manager.surfaceResize({ width: 1400, height: 1000 });
+
+  // When the ratio arrives, then the page gets the panel's CSS size.
+  await manager.setDevicePixelRatio(2);
+  assert.deepEqual(runtime.calls.at(-1), ['resize', { width: 700, height: 500 }]);
 });
 
 test('hands the viewer theme to surface input and reports a pending copy from the visible scope', async () => {
