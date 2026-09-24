@@ -5,7 +5,7 @@ https://github.com/openchamber/openchamber
 Copyright (c) 2025 Bohdan Triapitsyn
 
 Browser source reference: PR #3425, commit 362dbc3f305615200d762b721106c64e796b095b.
-SDK: @openchamber/sdk 2.0.0 from the npm registry.
+SDK: @openchamber/sdk 2.0.1 from the npm registry.
 
 The service bundle includes @openchamber/sdk, zod and ws under their MIT
 licenses; see THIRD_PARTY_LICENSES.
