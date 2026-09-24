@@ -54,7 +54,7 @@ const hasGrant = (grants, hostname, address, port, protocol) => grants.some((gra
     && (normalizeHost(grant.host) === hostname || normalizeHost(grant.host) === address);
 });
 
-export const classifyProxyTarget = async (target, { grants = [], lookup = dns.promises.lookup } = {}) => {
+export const classifyProxyTarget = async (target, { grants = [], devServerGrants = null, lookup = dns.promises.lookup } = {}) => {
   let url;
   try {
     url = target instanceof URL ? new URL(target) : new URL(String(target));
@@ -73,12 +73,24 @@ export const classifyProxyTarget = async (target, { grants = [], lookup = dns.pr
     return { allowed: false, reason: 'Cloud metadata host is denied' };
   }
 
+  // Live development servers are looked up only when a private target needs a grant.
+  let resolvedGrants = null;
+  const grantsFor = async () => {
+    resolvedGrants ??= devServerGrants ? [...grants, ...await devServerGrants()] : grants;
+    return resolvedGrants;
+  };
+
   let answers;
-  if (hostname === 'localhost' && hasGrant(grants, hostname, '127.0.0.1', port, url.protocol)) {
-    answers = [{ address: '127.0.0.1', family: 4 }];
-  } else if (net.isIP(hostname)) {
+  // An exact localhost request uses the loopback family that has a grant, so
+  // a server listening on only one of them still works when DNS lists both.
+  if (hostname === 'localhost') {
+    const granted = await grantsFor();
+    const address = ['127.0.0.1', '::1'].find((candidate) => hasGrant(granted, hostname, candidate, port, url.protocol));
+    if (address) answers = [{ address, family: net.isIP(address) }];
+  }
+  if (!answers && net.isIP(hostname)) {
     answers = [{ address: hostname, family: net.isIP(hostname) }];
-  } else {
+  } else if (!answers) {
     try {
       answers = await lookup(hostname, { all: true, verbatim: true });
     } catch {
@@ -92,7 +104,7 @@ export const classifyProxyTarget = async (target, { grants = [], lookup = dns.pr
     const address = normalizeHost(answer?.address);
     const reason = permanentlyDenied(address);
     if (reason) return { allowed: false, reason };
-    if (isPrivateAddress(address) && !hasGrant(grants, hostname, address, port, url.protocol)) {
+    if (isPrivateAddress(address) && !hasGrant(await grantsFor(), hostname, address, port, url.protocol)) {
       return { allowed: false, reason: 'Private or loopback address requires an allowed origin', grantable: true };
     }
   }
@@ -117,9 +129,22 @@ const originOf = (target) => {
   }
 };
 
-const deniedPage = (reason, { origin = null, grantable = false, configPath = null }) => {
+const isLoopbackOrigin = (origin) => {
+  try {
+    return /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/.test(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+};
+
+const deniedPage = (reason, { origin = null, grantable = false, configPath = null, discoverDevServers = false }) => {
   const shownOrigin = origin ? `<code>${escapeHtml(origin)}</code>` : '';
   const configFile = configPath ? `<code>${escapeHtml(configPath)}</code>` : 'the extension\'s <code>config.json</code>';
+  // Discovery only grants loopback listeners, so it is only mentioned for them.
+  const discovery = !isLoopbackOrigin(origin) ? ''
+    : discoverDevServers
+      ? '<p>Development-server discovery is on, but no eligible server is listening on this port. Servers run by OpenChamber itself, OpenCode, or this extension are never granted.</p>'
+      : '<p>To reach local development servers without listing each one, set <code>"discoverDevServers": true</code> instead.</p>';
   const [title, content] = grantable && origin ? [
     `Blocked: ${origin}`,
     `<h1>This private address is blocked</h1>
@@ -127,6 +152,7 @@ const deniedPage = (reason, { origin = null, grantable = false, configPath = nul
 <p>To allow it, add the origin to <code>allowedOrigins</code> in ${configFile} and restart the extension:</p>
 <pre>${escapeHtml(`{\n  "allowedOrigins": [${JSON.stringify(origin)}]\n}`)}</pre>
 <p>For several machines or ports, add a private CIDR block and its ports to <code>allowedNetworks</code> instead.</p>
+${discovery}
 <p class="note"><code>localhost</code> and private addresses resolve on the machine running OpenChamber, not on your device.</p>`,
   ] : [
     `Can't open ${origin ?? 'this address'}`,
@@ -206,6 +232,7 @@ export const createPolicyProxy = (policy = {}) => {
           origin: originOf(request.url),
           grantable: decision.grantable,
           configPath: policy.configPath,
+          discoverDevServers: Boolean(policy.devServerGrants),
         });
       }
       if (decision.url.protocol !== 'http:') return denyHttp(response, 'Plain proxy requests must use HTTP');

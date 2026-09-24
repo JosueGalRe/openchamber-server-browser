@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { createBrowserManager } from './browser-manager.js';
 import { createBrowserRuntime } from './browser-runtime.js';
 import { loadConfig } from './config.js';
+import { createDevServerScanner } from './dev-servers.js';
 import { createService } from './service.js';
 
 const readPort = (value) => {
@@ -25,8 +26,10 @@ export const startService = async ({
     throw new Error('OPENCHAMBER_SERVICE_TOKEN is required');
   }
   const config = loadConfig({ entryUrl: import.meta.url, configPath });
+  // One scanner serves every scope; it caches the listener table briefly.
+  const devServers = config.discoverDevServers ? createDevServerScanner() : null;
   const browserRuntime = runtime ?? createBrowserManager({
-    createRuntime: () => createBrowserRuntime(config),
+    createRuntime: () => createBrowserRuntime({ ...config, devServers }),
   });
   const service = createService({
     runtime: browserRuntime,

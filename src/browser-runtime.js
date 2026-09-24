@@ -36,9 +36,19 @@ const isScopePage = (info, contextId) => info?.type === 'page'
   && info.browserContextId === contextId
   && info.subtype !== 'prerender';
 
-export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNetworks = [], configPath = null } = {}) => {
+export const createBrowserRuntime = ({
+  chromePath = null,
+  allowedOrigins = [],
+  allowedNetworks = [],
+  configPath = null,
+  devServers = null,
+} = {}) => {
   const chrome = createChromeProcess({ chromePath });
-  const proxy = createPolicyProxy({ grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)], configPath });
+  const proxy = createPolicyProxy({
+    grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)],
+    configPath,
+    devServerGrants: devServers ? () => devServers.grants() : null,
+  });
   const shutdownController = new AbortController();
   const tabs = new Map();
   const sessions = new Map();

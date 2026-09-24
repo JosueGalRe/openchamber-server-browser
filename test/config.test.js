@@ -5,7 +5,7 @@ import { networkGrants, originGrants, parseConfig } from '../src/config.js';
 test('defaults to no private origin grants', () => {
   const config = parseConfig({});
 
-  assert.deepEqual(config, { chromePath: null, allowedOrigins: [], allowedNetworks: [] });
+  assert.deepEqual(config, { chromePath: null, allowedOrigins: [], allowedNetworks: [], discoverDevServers: false });
   assert.deepEqual(originGrants(config.allowedOrigins), []);
 });
 
@@ -52,4 +52,10 @@ test('rejects network blocks that are public, too broad, or missing explicit por
   ]) {
     assert.throws(() => parseConfig({ allowedNetworks: [network] }), /config\.allowedNetworks\[0\]/);
   }
+});
+
+
+test('turns development-server discovery on only with an explicit boolean', () => {
+  assert.equal(parseConfig({ discoverDevServers: true }).discoverDevServers, true);
+  assert.throws(() => parseConfig({ discoverDevServers: 'yes' }), /discoverDevServers must be true or false/);
 });

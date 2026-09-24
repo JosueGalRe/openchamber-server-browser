@@ -5826,7 +5826,7 @@ var hasGrant = (grants, hostname, address, port, protocol) => grants.some((grant
   }
   return grant.port === port && (!grant.protocol || grant.protocol === grantProtocol(protocol)) && (normalizeHost(grant.host) === hostname || normalizeHost(grant.host) === address);
 });
-var classifyProxyTarget = async (target, { grants = [], lookup = dns.promises.lookup } = {}) => {
+var classifyProxyTarget = async (target, { grants = [], devServerGrants: devServerGrants2 = null, lookup = dns.promises.lookup } = {}) => {
   let url;
   try {
     url = target instanceof URL ? new URL(target) : new URL(String(target));
@@ -5844,12 +5844,20 @@ var classifyProxyTarget = async (target, { grants = [], lookup = dns.promises.lo
   if (hostname === "metadata.google.internal") {
     return { allowed: false, reason: "Cloud metadata host is denied" };
   }
+  let resolvedGrants = null;
+  const grantsFor = async () => {
+    resolvedGrants ??= devServerGrants2 ? [...grants, ...await devServerGrants2()] : grants;
+    return resolvedGrants;
+  };
   let answers;
-  if (hostname === "localhost" && hasGrant(grants, hostname, "127.0.0.1", port, url.protocol)) {
-    answers = [{ address: "127.0.0.1", family: 4 }];
-  } else if (net.isIP(hostname)) {
+  if (hostname === "localhost") {
+    const granted = await grantsFor();
+    const address = ["127.0.0.1", "::1"].find((candidate) => hasGrant(granted, hostname, candidate, port, url.protocol));
+    if (address) answers = [{ address, family: net.isIP(address) }];
+  }
+  if (!answers && net.isIP(hostname)) {
     answers = [{ address: hostname, family: net.isIP(hostname) }];
-  } else {
+  } else if (!answers) {
     try {
       answers = await lookup(hostname, { all: true, verbatim: true });
     } catch {
@@ -5863,7 +5871,7 @@ var classifyProxyTarget = async (target, { grants = [], lookup = dns.promises.lo
     const address = normalizeHost(answer?.address);
     const reason = permanentlyDenied(address);
     if (reason) return { allowed: false, reason };
-    if (isPrivateAddress(address) && !hasGrant(grants, hostname, address, port, url.protocol)) {
+    if (isPrivateAddress(address) && !hasGrant(await grantsFor(), hostname, address, port, url.protocol)) {
       return { allowed: false, reason: "Private or loopback address requires an allowed origin", grantable: true };
     }
   }
@@ -5885,9 +5893,17 @@ var originOf = (target) => {
     return null;
   }
 };
-var deniedPage = (reason, { origin = null, grantable = false, configPath = null }) => {
+var isLoopbackOrigin = (origin) => {
+  try {
+    return /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/.test(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+};
+var deniedPage = (reason, { origin = null, grantable = false, configPath = null, discoverDevServers = false }) => {
   const shownOrigin = origin ? `<code>${escapeHtml(origin)}</code>` : "";
   const configFile = configPath ? `<code>${escapeHtml(configPath)}</code>` : "the extension's <code>config.json</code>";
+  const discovery = !isLoopbackOrigin(origin) ? "" : discoverDevServers ? "<p>Development-server discovery is on, but no eligible server is listening on this port. Servers run by OpenChamber itself, OpenCode, or this extension are never granted.</p>" : '<p>To reach local development servers without listing each one, set <code>"discoverDevServers": true</code> instead.</p>';
   const [title, content] = grantable && origin ? [
     `Blocked: ${origin}`,
     `<h1>This private address is blocked</h1>
@@ -5897,6 +5913,7 @@ var deniedPage = (reason, { origin = null, grantable = false, configPath = null 
   "allowedOrigins": [${JSON.stringify(origin)}]
 }`)}</pre>
 <p>For several machines or ports, add a private CIDR block and its ports to <code>allowedNetworks</code> instead.</p>
+${discovery}
 <p class="note"><code>localhost</code> and private addresses resolve on the machine running OpenChamber, not on your device.</p>`
   ] : [
     `Can't open ${origin ?? "this address"}`,
@@ -5975,7 +5992,8 @@ var createPolicyProxy = (policy = {}) => {
         return denyHttp(response, decision.reason, {
           origin: originOf(request.url),
           grantable: decision.grantable,
-          configPath: policy.configPath
+          configPath: policy.configPath,
+          discoverDevServers: Boolean(policy.devServerGrants)
         });
       }
       if (decision.url.protocol !== "http:") return denyHttp(response, "Plain proxy requests must use HTTP");
@@ -6153,11 +6171,15 @@ var parseConfig = (value) => {
   if (value.allowedNetworks !== void 0 && !Array.isArray(value.allowedNetworks)) {
     throw new Error("config.allowedNetworks must be an array");
   }
+  if (value.discoverDevServers !== void 0 && typeof value.discoverDevServers !== "boolean") {
+    throw new Error("config.discoverDevServers must be true or false");
+  }
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
   return Object.freeze({
     chromePath: chromePath?.trim() ?? null,
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
-    allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork))
+    allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),
+    discoverDevServers: value.discoverDevServers === true
   });
 };
 var loadConfig = ({ entryUrl = import.meta.url, configPath } = {}) => {
@@ -6599,9 +6621,19 @@ var createTab = (targetId, sessionId, openerId) => ({
   lastActive: 0
 });
 var isScopePage = (info, contextId) => info?.type === "page" && info.browserContextId === contextId && info.subtype !== "prerender";
-var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNetworks = [], configPath = null } = {}) => {
+var createBrowserRuntime = ({
+  chromePath = null,
+  allowedOrigins = [],
+  allowedNetworks = [],
+  configPath = null,
+  devServers = null
+} = {}) => {
   const chrome = createChromeProcess({ chromePath });
-  const proxy = createPolicyProxy({ grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)], configPath });
+  const proxy = createPolicyProxy({
+    grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)],
+    configPath,
+    devServerGrants: devServers ? () => devServers.grants() : null
+  });
   const shutdownController = new AbortController();
   const tabs = /* @__PURE__ */ new Map();
   const sessions = /* @__PURE__ */ new Map();
@@ -7079,6 +7111,189 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
   return runtime;
 };
 
+// src/dev-servers.js
+import { spawn as spawnProcess } from "node:child_process";
+import fs3 from "node:fs/promises";
+var SCAN_TIMEOUT_MS = 2500;
+var CACHE_TTL_MS = 3e3;
+var IGNORED_PORTS = /* @__PURE__ */ new Set([22, 53, 445, 631, 3306, 5432, 6379, 9229, 27017]);
+var LOOPBACK_V4 = /* @__PURE__ */ new Set(["127.0.0.1", "localhost"]);
+var LOOPBACK_V6 = /* @__PURE__ */ new Set(["[::1]", "::1"]);
+var WILDCARD = /* @__PURE__ */ new Set(["*", "0.0.0.0", "[::]", "::"]);
+var toPort = (value) => {
+  const port = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
+};
+var loopbackHosts = (host) => {
+  const value = String(host ?? "").trim().toLowerCase();
+  if (WILDCARD.has(value)) return ["127.0.0.1", "::1"];
+  if (LOOPBACK_V4.has(value)) return ["127.0.0.1"];
+  if (LOOPBACK_V6.has(value)) return ["::1"];
+  return [];
+};
+var splitHostPort = (value) => {
+  const raw = String(value ?? "").trim();
+  if (raw.startsWith("[")) {
+    const close = raw.indexOf("]");
+    return close === -1 || raw[close + 1] !== ":" ? null : { host: raw.slice(0, close + 1), port: raw.slice(close + 2) };
+  }
+  const separator = raw.lastIndexOf(":");
+  return separator === -1 ? null : { host: raw.slice(0, separator), port: raw.slice(separator + 1) };
+};
+var parseLsofListeners = (output) => {
+  const listeners = [];
+  let pid = null;
+  for (const line of String(output ?? "").split("\n")) {
+    if (line[0] === "p") {
+      const parsed = Number.parseInt(line.slice(1), 10);
+      pid = Number.isInteger(parsed) ? parsed : null;
+    } else if (line[0] === "n" && !line.includes("->")) {
+      const parsed = splitHostPort(line.slice(1));
+      const port = toPort(parsed?.port);
+      if (port !== null) listeners.push({ port, pid, hosts: loopbackHosts(parsed.host), inode: null });
+    }
+  }
+  return listeners;
+};
+var PROC_LISTEN = "0A";
+var PROC_V4 = { "00000000": ["127.0.0.1", "::1"], "0100007F": ["127.0.0.1"] };
+var PROC_V6 = { "00000000000000000000000000000000": ["127.0.0.1", "::1"], "00000000000000000000000001000000": ["::1"] };
+var parseProcListeners = (output, family) => {
+  const addresses = family === 6 ? PROC_V6 : PROC_V4;
+  const listeners = [];
+  for (const line of String(output ?? "").split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 10 || parts[3] !== PROC_LISTEN) continue;
+    const [address, portHex] = parts[1].split(":");
+    const port = Number.parseInt(portHex, 16);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) continue;
+    listeners.push({ port, pid: null, hosts: addresses[address?.toUpperCase()] ?? [], inode: parts[9] });
+  }
+  return listeners;
+};
+var excludedProcesses = (parents, { selfPid, hostPid }) => {
+  const excluded = /* @__PURE__ */ new Set([selfPid, hostPid]);
+  for (const [pid, parent] of parents) if (parent === hostPid) excluded.add(pid);
+  const pending = [selfPid];
+  while (pending.length) {
+    const parent = pending.pop();
+    for (const [pid, candidate] of parents) {
+      if (candidate === parent && !excluded.has(pid)) {
+        excluded.add(pid);
+        pending.push(pid);
+      }
+    }
+  }
+  return excluded;
+};
+var devServerGrants = (listeners, isExcluded) => {
+  const excludedPorts = new Set(listeners.filter(isExcluded).map((listener) => listener.port));
+  const grants = /* @__PURE__ */ new Map();
+  for (const listener of listeners) {
+    if (excludedPorts.has(listener.port) || IGNORED_PORTS.has(listener.port)) continue;
+    for (const host of listener.hosts) grants.set(`${host} ${listener.port}`, { host, port: listener.port });
+  }
+  return [...grants.values()];
+};
+var runCommand = (spawn2, command, args) => new Promise((resolve) => {
+  let child;
+  try {
+    child = spawn2(command, args, { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    resolve(null);
+    return;
+  }
+  let stdout = "";
+  let settled = false;
+  const finish = (value) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    try {
+      child.kill();
+    } catch {
+    }
+    resolve(value);
+  };
+  const timer = setTimeout(() => finish(null), SCAN_TIMEOUT_MS);
+  child.stdout?.on("data", (chunk) => {
+    stdout += String(chunk);
+  });
+  child.on("error", () => finish(null));
+  child.on("close", (code) => finish(code === 0 || stdout ? stdout : null));
+});
+var createDevServerScanner = ({
+  platform = process.platform,
+  spawn: spawn2 = spawnProcess,
+  files = fs3,
+  selfPid = process.pid,
+  hostPid = process.ppid,
+  now = Date.now
+} = {}) => {
+  let cache = null;
+  const processParents = async () => {
+    if (platform === "linux") {
+      const parents = /* @__PURE__ */ new Map();
+      for (const entry of await files.readdir("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        const stat = await files.readFile(`/proc/${entry}/stat`, "utf8").catch(() => null);
+        const fields = stat?.slice(stat.lastIndexOf(")") + 2).split(" ");
+        const parent = Number.parseInt(fields?.[1] ?? "", 10);
+        if (Number.isInteger(parent)) parents.set(Number(entry), parent);
+      }
+      return parents;
+    }
+    if (platform === "darwin") {
+      const output = await runCommand(spawn2, "ps", ["-A", "-o", "pid=,ppid="]);
+      if (output === null) return null;
+      return new Map(output.trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number)).filter(([pid, parent]) => Number.isInteger(pid) && Number.isInteger(parent)));
+    }
+    return null;
+  };
+  const socketInodes = async (pids) => {
+    const inodes = /* @__PURE__ */ new Set();
+    for (const pid of pids) {
+      const entries = await files.readdir(`/proc/${pid}/fd`).catch((error) => error?.code === "ENOENT" ? [] : null);
+      if (entries === null) return null;
+      for (const entry of entries) {
+        const target = await files.readlink(`/proc/${pid}/fd/${entry}`).catch(() => "");
+        const match = /^socket:\[(\d+)\]$/.exec(target);
+        if (match) inodes.add(match[1]);
+      }
+    }
+    return inodes;
+  };
+  const discover = async () => {
+    const parents = await processParents();
+    if (!parents) return [];
+    const excluded = excludedProcesses(parents, { selfPid, hostPid });
+    const lsof = await runCommand(spawn2, "lsof", ["-iTCP", "-sTCP:LISTEN", "-P", "-n", "-F", "pcn"]);
+    if (lsof !== null) {
+      const listeners = parseLsofListeners(lsof);
+      return devServerGrants(listeners, (listener) => listener.pid === null || excluded.has(listener.pid));
+    }
+    if (platform !== "linux") return [];
+    const tables = await Promise.all([["/proc/net/tcp", 4], ["/proc/net/tcp6", 6]].map(async ([path4, family]) => {
+      const table = await files.readFile(path4, "utf8").catch(() => null);
+      return table === null ? null : parseProcListeners(table, family);
+    }));
+    if (tables.every((table) => table === null)) return [];
+    const inodes = await socketInodes(excluded);
+    if (!inodes) return [];
+    return devServerGrants(tables.flatMap((table) => table ?? []), (listener) => inodes.has(listener.inode));
+  };
+  return {
+    // Grants for the loopback dev servers listening right now. A failed scan
+    // grants nothing rather than something uncertain.
+    async grants() {
+      if (cache && now() - cache.at < CACHE_TTL_MS) return cache.grants;
+      const grants = await discover().catch(() => []);
+      cache = { at: now(), grants };
+      return grants;
+    }
+  };
+};
+
 // src/service.js
 import crypto4 from "node:crypto";
 import http2 from "node:http";
@@ -7468,8 +7683,9 @@ var startService = async ({
     throw new Error("OPENCHAMBER_SERVICE_TOKEN is required");
   }
   const config = loadConfig({ entryUrl: import.meta.url, configPath });
+  const devServers = config.discoverDevServers ? createDevServerScanner() : null;
   const browserRuntime = runtime ?? createBrowserManager({
-    createRuntime: () => createBrowserRuntime(config)
+    createRuntime: () => createBrowserRuntime({ ...config, devServers })
   });
   const service = createService({
     runtime: browserRuntime,

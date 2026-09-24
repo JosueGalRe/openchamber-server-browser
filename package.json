@@ -37,7 +37,9 @@
         "permissions": {
           "exec": [
             "chromium",
-            "google-chrome"
+            "google-chrome",
+            "lsof",
+            "ps"
           ]
         }
       }

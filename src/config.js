@@ -63,11 +63,15 @@ export const parseConfig = (value) => {
   if (value.allowedNetworks !== undefined && !Array.isArray(value.allowedNetworks)) {
     throw new Error('config.allowedNetworks must be an array');
   }
+  if (value.discoverDevServers !== undefined && typeof value.discoverDevServers !== 'boolean') {
+    throw new Error('config.discoverDevServers must be true or false');
+  }
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
   return Object.freeze({
     chromePath: chromePath?.trim() ?? null,
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
     allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),
+    discoverDevServers: value.discoverDevServers === true,
   });
 };
 

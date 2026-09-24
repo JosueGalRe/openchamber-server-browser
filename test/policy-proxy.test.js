@@ -202,3 +202,45 @@ test('survives repeated CONNECT aborts while the upstream is writing', { timeout
   assert.equal(code, 0, stderr);
   assert.match(stdout, /completed without uncaught socket error/);
 });
+
+
+test('grants discovered development servers on loopback and asks for them only when needed', async () => {
+  // Given a dev server on IPv4 5173 and another only on IPv6 4321.
+  const scans = [];
+  const devServerGrants = async () => {
+    scans.push('scan');
+    return [{ host: '127.0.0.1', port: 5173 }, { host: '::1', port: 4321 }];
+  };
+  const bothFamilies = async () => [{ address: '::1', family: 6 }, { address: '127.0.0.1', family: 4 }];
+
+  // When a public site loads, then nothing is scanned.
+  const publicSite = await classifyProxyTarget('https://example.test/', {
+    devServerGrants,
+    lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+  });
+  assert.equal(publicSite.allowed, true);
+  assert.deepEqual(scans, []);
+
+  // When localhost is requested, then it pins to whichever loopback family has the server.
+  const vite = await classifyProxyTarget('http://localhost:5173/', { devServerGrants, lookup: bothFamilies });
+  const ipv6Only = await classifyProxyTarget('http://localhost:4321/', { devServerGrants, lookup: bothFamilies });
+  const undiscovered = await classifyProxyTarget('http://127.0.0.1:37737/', { devServerGrants });
+  assert.deepEqual([vite.allowed, vite.address], [true, '127.0.0.1']);
+  assert.deepEqual([ipv6Only.allowed, ipv6Only.address], [true, '::1']);
+  assert.equal(undiscovered.allowed, false);
+});
+
+test('points a blocked loopback address at development-server discovery', async (context) => {
+  for (const [devServerGrants, expected] of [[null, /"discoverDevServers": true/], [async () => [], /discovery is on/]]) {
+    const proxy = createPolicyProxy({ devServerGrants });
+    const proxyAddress = await proxy.listen();
+    context.after(() => proxy.close());
+    const response = await new Promise((resolve, reject) => {
+      http.get({ host: '127.0.0.1', port: Number(proxyAddress.split(':').at(-1)), path: 'http://127.0.0.1:3999/' }, resolve).once('error', reject);
+    });
+    response.setEncoding('utf8');
+    let body = '';
+    for await (const chunk of response) body += chunk;
+    assert.match(body, expected);
+  }
+});
