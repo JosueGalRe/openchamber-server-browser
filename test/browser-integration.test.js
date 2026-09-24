@@ -41,6 +41,21 @@ const startWebFixture = async () => {
       response.end(html('<h1>Next page</h1><a href="/">Home</a>', 'Next'));
       return;
     }
+    if (request.url === '/keys') {
+      response.end(html(`
+        <textarea id="notes"></textarea>
+        <form id="form"><input id="field" value="hello world"></form>
+        <output id="submits">0</output>
+        <script>
+          document.querySelector('#form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const submits = document.querySelector('#submits');
+            submits.textContent = String(Number(submits.textContent) + 1);
+          });
+        </script>
+      `, 'Keys'));
+      return;
+    }
     response.end(html(`
       <button id="surface" onclick="this.textContent='Surface clicked'">Surface</button>
       <input id="name" aria-label="Name" value="initial">
@@ -194,4 +209,52 @@ test('applies and removes native select compatibility without reloading page sta
   const disabled = await appearances();
   assert.equal(disabled.native, before.native);
   assert.equal(disabled.value, 'Still here');
+});
+
+
+test('types editing keys, Enter, select-all, and composed characters like a local keyboard', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a page with a textarea and a single-field form.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/keys` });
+  const page = await runtime.ensurePage();
+  const evaluate = async (expression) => (await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', {
+    expression,
+    returnByValue: true,
+  })).result.value;
+  const press = (key, code, pressed = {}) => runtime.surfaceInput(['down', 'up'].map((action) => ({
+    type: 'key', action, key, code, modifiers: { ...modifiers, ...pressed },
+  })));
+
+  // When the viewer types text, Enter, AltGr and Option characters, and two shortcuts.
+  await evaluate('document.querySelector("#notes").focus()');
+  await press('a', 'KeyA');
+  await press('Enter', 'Enter');
+  await press('b', 'KeyB');
+  await press('@', 'KeyQ', { ctrl: true, alt: true });
+  await press('@', 'Digit2', { alt: true });
+  await press('c', 'KeyC', { ctrl: true });
+  await press('d', 'KeyD', { alt: true });
+
+  // Then Enter adds a line, composed characters are typed, and shortcuts type nothing.
+  assert.equal(await evaluate('document.querySelector("#notes").value'), 'a\nb@@');
+
+  // When the caret moves with End and Home, and Meta+A selects the field.
+  await evaluate('document.querySelector("#field").focus(); document.querySelector("#field").setSelectionRange(5, 5)');
+  const selection = 'JSON.stringify([document.querySelector("#field").selectionStart, document.querySelector("#field").selectionEnd])';
+  await press('End', 'End');
+  const afterEnd = await evaluate(selection);
+  await press('Home', 'Home');
+  const afterHome = await evaluate(selection);
+  await press('a', 'KeyA', { meta: true });
+  const afterSelectAll = await evaluate(selection);
+  await press('Enter', 'Enter');
+
+  // Then each key runs Chrome's default action, and Enter submits the form.
+  assert.equal(afterEnd, '[11,11]');
+  assert.equal(afterHome, '[0,0]');
+  assert.equal(afterSelectAll, '[0,11]');
+  assert.equal(await evaluate('document.querySelector("#submits").textContent'), '1');
 });

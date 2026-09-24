@@ -5395,9 +5395,25 @@ var readSurfaceResizeRequest = (body) => {
 
 // src/surface.js
 var BUTTON_NAMES = ["left", "middle", "right"];
-var KEY_CODES = Object.freeze({ Backspace: 8, Tab: 9, Enter: 13, Escape: 27, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46 });
+var KEY_CODES = Object.freeze({
+  Backspace: 8,
+  Tab: 9,
+  Enter: 13,
+  Escape: 27,
+  PageUp: 33,
+  PageDown: 34,
+  End: 35,
+  Home: 36,
+  ArrowLeft: 37,
+  ArrowUp: 38,
+  ArrowRight: 39,
+  ArrowDown: 40,
+  Insert: 45,
+  Delete: 46
+});
 var modifiersMask = (modifiers) => (modifiers.alt ? 1 : 0) | (modifiers.ctrl ? 2 : 0) | (modifiers.meta ? 4 : 0) | (modifiers.shift ? 8 : 0);
 var mouseButton = (button) => BUTTON_NAMES[button] ?? "none";
+var baseCharacter = (key, code) => code === `Key${key.toUpperCase()}` || code === `Digit${key}`;
 var dispatchInput = async (page, event) => {
   if (event.type === "text") {
     await page.cdp.sendSession(page.sessionId, "Input.insertText", { text: event.text });
@@ -5427,16 +5443,23 @@ var dispatchInput = async (page, event) => {
     });
     return;
   }
+  const { alt, ctrl, meta, shift } = event.modifiers;
   const keyCode = KEY_CODES[event.key] ?? (event.key.length === 1 ? event.key.toUpperCase().charCodeAt(0) : 0);
-  const printable = event.action === "down" && event.key.length === 1 && !event.modifiers.alt && !event.modifiers.ctrl && !event.modifiers.meta;
+  const single = [...event.key].length === 1;
+  const composed = single && alt && !baseCharacter(event.key, event.code);
+  const modifiers = composed && ctrl ? { alt: false, ctrl: false, meta, shift } : event.modifiers;
+  const down = event.action === "down";
+  const text2 = down && single && !meta && (composed || !alt && !ctrl) ? event.key : down && event.key === "Enter" && !alt && !ctrl && !meta ? "\r" : null;
+  const selectAll = down && event.key.toLowerCase() === "a" && (ctrl || meta) && !alt && !shift;
   await page.cdp.sendSession(page.sessionId, "Input.dispatchKeyEvent", {
-    type: event.action === "down" ? "keyDown" : "keyUp",
+    type: down ? "keyDown" : "keyUp",
     key: event.key,
     code: event.code,
-    modifiers: modifiersMask(event.modifiers),
+    modifiers: modifiersMask(modifiers),
     windowsVirtualKeyCode: keyCode,
     nativeVirtualKeyCode: keyCode,
-    ...printable ? { text: event.key, unmodifiedText: event.key } : {}
+    ...text2 ? { text: text2, unmodifiedText: text2 } : {},
+    ...selectAll ? { commands: ["selectAll"] } : {}
   });
 };
 var clipboardExpression = `(() => {

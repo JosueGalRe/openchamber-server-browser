@@ -1,7 +1,10 @@
 import { SURFACE_FRAME_MAX_BYTES } from '@openchamber/sdk';
 
 const BUTTON_NAMES = ['left', 'middle', 'right'];
-const KEY_CODES = Object.freeze({ Backspace: 8, Tab: 9, Enter: 13, Escape: 27, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46 });
+const KEY_CODES = Object.freeze({
+  Backspace: 8, Tab: 9, Enter: 13, Escape: 27, PageUp: 33, PageDown: 34, End: 35, Home: 36,
+  ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Insert: 45, Delete: 46,
+});
 
 const modifiersMask = (modifiers) => (
   (modifiers.alt ? 1 : 0)
@@ -11,6 +14,8 @@ const modifiersMask = (modifiers) => (
 );
 
 const mouseButton = (button) => BUTTON_NAMES[button] ?? 'none';
+
+const baseCharacter = (key, code) => code === `Key${key.toUpperCase()}` || code === `Digit${key}`;
 
 const dispatchInput = async (page, event) => {
   if (event.type === 'text') {
@@ -41,17 +46,27 @@ const dispatchInput = async (page, event) => {
     });
     return;
   }
+  const { alt, ctrl, meta, shift } = event.modifiers;
   const keyCode = KEY_CODES[event.key] ?? (event.key.length === 1 ? event.key.toUpperCase().charCodeAt(0) : 0);
-  const printable = event.action === 'down' && event.key.length === 1
-    && !event.modifiers.alt && !event.modifiers.ctrl && !event.modifiers.meta;
+  const single = [...event.key].length === 1;
+  // Option (Mac) and AltGr (Ctrl+Alt on Windows) compose characters. Chords that
+  // leave the key on its base character are shortcuts. Linux Chrome refuses to
+  // insert text while Ctrl is down, so AltGr text is sent without Ctrl+Alt.
+  const composed = single && alt && !baseCharacter(event.key, event.code);
+  const modifiers = composed && ctrl ? { alt: false, ctrl: false, meta, shift } : event.modifiers;
+  const down = event.action === 'down';
+  const text = down && single && !meta && (composed || (!alt && !ctrl)) ? event.key
+    : down && event.key === 'Enter' && !alt && !ctrl && !meta ? '\r' : null;
+  const selectAll = down && event.key.toLowerCase() === 'a' && (ctrl || meta) && !alt && !shift;
   await page.cdp.sendSession(page.sessionId, 'Input.dispatchKeyEvent', {
-    type: event.action === 'down' ? 'keyDown' : 'keyUp',
+    type: down ? 'keyDown' : 'keyUp',
     key: event.key,
     code: event.code,
-    modifiers: modifiersMask(event.modifiers),
+    modifiers: modifiersMask(modifiers),
     windowsVirtualKeyCode: keyCode,
     nativeVirtualKeyCode: keyCode,
-    ...(printable ? { text: event.key, unmodifiedText: event.key } : {}),
+    ...(text ? { text, unmodifiedText: text } : {}),
+    ...(selectAll ? { commands: ['selectAll'] } : {}),
   });
 };
 
