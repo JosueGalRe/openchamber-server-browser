@@ -66,12 +66,24 @@ setIcon(forward, (svg) => {
 const reload = document.createElement('button');
 reload.type = 'button';
 reload.className = 'toolbar-button';
-reload.title = 'Reload';
-reload.setAttribute('aria-label', 'Reload');
-setIcon(reload, (svg) => {
-  addPath(svg, 'M20 11a8 8 0 1 0-2.34 5.66');
-  addPath(svg, 'M20 4v7h-7');
-});
+let reloadShowsStop = null;
+const drawReload = (loading) => {
+  if (reloadShowsStop === loading) return;
+  reloadShowsStop = loading;
+  reload.replaceChildren();
+  reload.title = loading ? 'Stop loading' : 'Reload';
+  reload.setAttribute('aria-label', reload.title);
+  setIcon(reload, loading
+    ? (svg) => {
+      addLine(svg, { x1: '6', y1: '6', x2: '18', y2: '18' });
+      addLine(svg, { x1: '18', y1: '6', x2: '6', y2: '18' });
+    }
+    : (svg) => {
+      addPath(svg, 'M20 11a8 8 0 1 0-2.34 5.66');
+      addPath(svg, 'M20 4v7h-7');
+    });
+};
+drawReload(false);
 
 const selectCompatibility = document.createElement('button');
 selectCompatibility.type = 'button';
@@ -159,19 +171,23 @@ const render = () => {
     tabs.update({ items, activeId });
     tabsSignature = signature;
     for (const button of scopeSelect.querySelectorAll('[role="tab"]')) {
-      const scope = scopes.find((item) => String(item.id) === button.dataset.id);
-      button.title = `${scope.directory} · ${scope.sessionId}`;
       if (button.dataset.id === focusedId) {
         button.focus();
         pendingTabFocusId = null;
       }
     }
   }
+  for (const button of scopeSelect.querySelectorAll('[role="tab"]')) {
+    const scope = scopes.find((item) => String(item.id) === button.dataset.id);
+    const page = scope.title || (scope.url === 'about:blank' ? '' : scope.url);
+    button.title = `${page ? `${page} — ` : ''}${scope.directory} · ${scope.sessionId}`;
+  }
   if (!addressDirty) address.value = selected?.url === 'about:blank' ? '' : String(selected?.url ?? '');
 
   const disabled = requestPending || !selected || !idle;
-  back.disabled = disabled;
-  forward.disabled = disabled;
+  back.disabled = disabled || !selected.canGoBack;
+  forward.disabled = disabled || !selected.canGoForward;
+  drawReload(selected?.isLoading === true);
   reload.disabled = disabled;
   address.disabled = disabled;
   selectCompatibility.disabled = disabled;
@@ -272,7 +288,8 @@ forward.addEventListener('click', () => {
 
 reload.addEventListener('click', () => {
   if (!state) return;
-  void request('/browser/reload', { generation: state.generation }).then((succeeded) => {
+  const loading = state.scopes.find((scope) => scope.id === state.selectedScopeId)?.isLoading === true;
+  void request(loading ? '/browser/stop' : '/browser/reload', { generation: state.generation }).then((succeeded) => {
     if (!succeeded) return;
     addressDirty = false;
     render();

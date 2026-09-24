@@ -17,7 +17,7 @@ const close = (server) => new Promise((resolve) => server.close(resolve));
 
 const waitFor = async (predicate, timeoutMs = 5_000) => {
   const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() > deadline) throw new Error('Timed out waiting for the condition');
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -48,6 +48,16 @@ const startWebFixture = async () => {
     }
     if (request.url === '/next') {
       response.end(html('<h1>Next page</h1><a href="/">Home</a>', 'Next'));
+      return;
+    }
+    if (request.url === '/title') {
+      response.end(html('<button id="surface" onclick="document.title = \'Renamed by the page\'">Rename</button>', 'Title before'));
+      return;
+    }
+    if (request.url === '/slow') {
+      response.write('<!doctype html><title>Slow</title><p>Still loading');
+      const timer = setTimeout(() => response.end('</p>'), 10_000);
+      response.once('close', () => clearTimeout(timer));
       return;
     }
     if (request.url === '/copy') {
@@ -182,11 +192,11 @@ test('reload reloads the document even when its URL contains a fragment', { skip
   await runtime.perform('browser.type', { selector: '#name', value: 'Before reload', submit: false });
   await runtime.perform('browser.click', { selector: '#mark' });
   assert.match((await runtime.perform('browser.snapshot', {})).text, /Before reload/);
-  const reloaded = await runtime.perform('browser.reload', {});
-  assert.equal(reloaded.url, `${web.origin}/#section`);
-  const snapshot = await runtime.perform('browser.snapshot', {});
-  assert.match(snapshot.text, /Waiting/);
-  assert.doesNotMatch(snapshot.text, /Before reload/);
+  await runtime.command('reload');
+  const snapshotText = () => runtime.perform('browser.snapshot', {}).then((snapshot) => snapshot.text, () => '');
+  await waitFor(async () => /Waiting/.test(await snapshotText()));
+  assert.equal(runtime.url, `${web.origin}/#section`);
+  assert.doesNotMatch(await snapshotText(), /Before reload/);
 });
 
 test('applies and removes native select compatibility without reloading page state', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
@@ -221,8 +231,12 @@ test('applies and removes native select compatibility without reloading page sta
   assert.equal(enabled.value, 'Preserved');
 
   // When the page navigates and compatibility is disabled, then it follows navigation and reverses without reload.
-  await runtime.perform('browser.reload', {});
-  const afterReload = await appearances();
+  await runtime.command('reload');
+  let afterReload = null;
+  await waitFor(async () => {
+    afterReload = await appearances().catch(() => null);
+    return afterReload?.value === 'initial' && afterReload.native === 'base-select';
+  });
   assert.equal(afterReload.native, 'base-select');
   await runtime.perform('browser.type', { selector: '#name', value: 'Still here', submit: false });
   await runtime.setNativeSelectCompatibility(false);
@@ -325,4 +339,36 @@ test('replaces a scope whose Chrome stopped with a fresh browser on the next act
   const reopened = await manager.perform('browser.open', { url: `${web.origin}/next` }, undefined, chat);
   assert.equal(reopened.title, 'Next');
   assert.equal(runtimes.length, 2);
+});
+
+test('tracks title, loading, and history for the dock, and stops a slow load', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a page whose title changes when the user clicks it.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/title` });
+
+  // When the user clicks it, then the title follows the page rather than the last agent action.
+  await runtime.surfaceInput([
+    { type: 'pointer', action: 'down', x: 30, y: 30, button: 0, buttons: 1, modifiers },
+    { type: 'pointer', action: 'up', x: 30, y: 30, button: 0, buttons: 0, modifiers },
+  ]);
+  await waitFor(() => runtime.title === 'Renamed by the page');
+
+  // When the dock navigates and goes back, then history availability follows.
+  await runtime.command('navigate', { url: `${web.origin}/next` });
+  await waitFor(() => runtime.title === 'Next' && runtime.canGoBack && !runtime.isLoading);
+  assert.equal(runtime.canGoForward, false);
+  await runtime.command('back');
+  await waitFor(() => runtime.url === `${web.origin}/title` && runtime.canGoForward);
+
+  // When a slow page is stopped, then loading ends without waiting for the server.
+  await runtime.command('navigate', { url: `${web.origin}/slow` });
+  await waitFor(() => runtime.isLoading);
+  await runtime.command('stop');
+  await waitFor(() => !runtime.isLoading, 2_000);
+
+  // Then the dock still refuses anything but http(s).
+  await assert.rejects(runtime.command('navigate', { url: 'file:///etc/passwd' }), /http\(s\)/);
 });

@@ -21,6 +21,10 @@ const createRuntimeFactory = () => {
         if (action === 'browser.open') runtime.url = parameters.url;
         return { action, url: runtime.url };
       },
+      async command(name, parameters) {
+        calls.push(['command', name, parameters]);
+        if (name === 'navigate') runtime.url = parameters.url;
+      },
       async surfaceFrame({ after }) {
         calls.push(['frame', after]);
         return { sequence: 1, bytes: Buffer.from(scope.sessionId), mime: 'image/jpeg', width: 800, height: 600, title: runtime.title };
@@ -283,18 +287,19 @@ test('keeps the old view when input arrives during scope resize', async () => {
 });
 
 
-test('reload preserves the selected scope and enforces idle and generation guards', async () => {
+test('reload and stop preserve the selected scope and enforce idle and generation guards', async () => {
   const { factory, runtimes } = createRuntimeFactory();
   const manager = createBrowserManager({ createRuntime: factory });
   await manager.perform('browser.open', { url: 'https://one.test' }, undefined, context('/repo', 'ses_one'));
   const before = manager.state();
   await manager.reload(before.generation);
+  await manager.stop(before.generation);
   assert.equal(manager.state().selectedScopeId, before.selectedScopeId);
-  assert.deepEqual(runtimes.get('ses_one').calls.at(-1), ['perform', 'browser.reload', {}]);
+  assert.deepEqual(runtimes.get('ses_one').calls.slice(-2), [['command', 'reload', {}], ['command', 'stop', {}]]);
   await assert.rejects(manager.reload(before.generation + 1), /view changed/);
   await manager.surfaceControl('user');
-  await assert.rejects(manager.reload(before.generation), /idle/);
-  assert.equal(runtimes.get('ses_one').calls.filter((call) => call[1] === 'browser.reload').length, 1);
+  await assert.rejects(manager.stop(before.generation), /idle/);
+  assert.equal(runtimes.get('ses_one').calls.filter((call) => call[0] === 'command').length, 2);
   await manager.close();
 });
 

@@ -29,6 +29,7 @@ const createRuntime = () => {
     async selectScope(id, generation) { calls.push(['select', id, generation]); },
     async navigate(url, generation) { calls.push(['navigate', url, generation]); },
     async reload(generation) { calls.push(['reload', generation]); },
+    async stop(generation) { calls.push(['stop', generation]); },
     async back(generation) { calls.push(['back', generation]); },
     async forward(generation) { calls.push(['forward', generation]); },
     async setNativeSelectCompatibility(enabled, generation) { calls.push(['select-compatibility', enabled, generation]); },
@@ -219,18 +220,22 @@ test('aborts a bounded frame wait when the service closes', async () => {
 });
 
 
-test('dock reload requires a generation and invokes the reload operation', async (context) => {
+test('dock reload and stop require a generation and invoke their operations', async (context) => {
   const fixture = await startFixture();
   context.after(() => fixture.service.close());
   const invalid = await fetch(`${fixture.origin}/browser/reload`, {
     method: 'POST', headers: authorization, body: '{}',
   });
   assert.equal(invalid.status, 400);
-  const response = await fetch(`${fixture.origin}/browser/reload`, {
+  const reload = await fetch(`${fixture.origin}/browser/reload`, {
     method: 'POST', headers: authorization, body: JSON.stringify({ generation: 1 }),
   });
-  assert.equal(response.status, 200);
-  assert.deepEqual(fixture.runtime.calls, [['reload', 1]]);
+  const stop = await fetch(`${fixture.origin}/browser/stop`, {
+    method: 'POST', headers: authorization, body: JSON.stringify({ generation: 1 }),
+  });
+  assert.equal(reload.status, 200);
+  assert.equal(stop.status, 200);
+  assert.deepEqual(fixture.runtime.calls, [['reload', 1], ['stop', 1]]);
 });
 
 test('native select compatibility route parses a boolean and uses dock generation', async (context) => {

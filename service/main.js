@@ -3742,12 +3742,10 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
       throw new Error("The browser view changed before the dock command ran");
     }
   };
-  const dockAction = (action, parameters, expectedGeneration) => enqueue(async () => {
+  const dockCommand = (name, parameters, expectedGeneration) => enqueue(async () => {
     requireIdleSurface();
     requireGeneration(expectedGeneration);
-    const entry = requireSelected();
-    const result = await entry.runtime.perform(action, parameters);
-    return result;
+    await requireSelected().runtime.command(name, parameters);
   });
   return {
     get agentActive() {
@@ -3776,6 +3774,9 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
           selected: entry.id === selectedScopeId,
           url: entry.runtime.url ?? "about:blank",
           title: entry.runtime.title ?? "",
+          isLoading: entry.runtime.isLoading === true,
+          canGoBack: entry.runtime.canGoBack === true,
+          canGoForward: entry.runtime.canGoForward === true,
           nativeSelectCompatibility: entry.runtime.nativeSelectCompatibility === true,
           nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? ""
         }))
@@ -3795,16 +3796,19 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
       });
     },
     navigate(url, expectedGeneration) {
-      return dockAction("browser.open", { url }, expectedGeneration);
+      return dockCommand("navigate", { url }, expectedGeneration);
     },
     reload(expectedGeneration) {
-      return dockAction("browser.reload", {}, expectedGeneration);
+      return dockCommand("reload", {}, expectedGeneration);
     },
     back(expectedGeneration) {
-      return dockAction("browser.back", {}, expectedGeneration);
+      return dockCommand("back", {}, expectedGeneration);
     },
     forward(expectedGeneration) {
-      return dockAction("browser.forward", {}, expectedGeneration);
+      return dockCommand("forward", {}, expectedGeneration);
+    },
+    stop(expectedGeneration) {
+      return dockCommand("stop", {}, expectedGeneration);
     },
     setNativeSelectCompatibility(enabled, expectedGeneration) {
       return enqueue(async () => {
@@ -4313,18 +4317,6 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
     return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport) };
   }
   const page = await runtime.ensurePage();
-  if (action === "browser.reload") {
-    runtime.clearConsoleProblems();
-    const load = startLoadWait(page, OPEN_SETTLE_MS, signal);
-    try {
-      await withAbort(signal, page.cdp.sendSession(page.sessionId, "Page.reload"));
-    } catch (error) {
-      await load.cancel();
-      throw error;
-    }
-    await load.promise;
-    return readPageInfo(page, signal);
-  }
   if (action === "browser.snapshot") {
     const data = await runPageScript(page, buildSnapshotScript(parameters), signal);
     const problems = runtime.consoleProblems;
@@ -5662,6 +5654,20 @@ var createSurface = (runtime) => {
 
 // src/browser-runtime.js
 var boundedText = (value, maximum = 1e3) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, maximum);
+var createTab = (targetId, sessionId) => ({
+  targetId,
+  sessionId,
+  // A page target's main frame shares the target's id.
+  mainFrameId: targetId,
+  url: "about:blank",
+  title: "",
+  isLoading: false,
+  canGoBack: false,
+  canGoForward: false,
+  navigationRefresh: null,
+  navigationStale: false,
+  navigationTimer: null
+});
 var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNetworks = [], configPath = null } = {}) => {
   const chrome = createChromeProcess({ chromePath });
   const proxy = createPolicyProxy({ grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)], configPath });
@@ -5669,9 +5675,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
   const problems = [];
   let cdp = null;
   let contextId = null;
-  let targetId = null;
-  let sessionId = null;
-  let mainFrameId = null;
+  let tab = null;
   let eventCleanup = null;
   let startupPromise = null;
   let pagePromise = null;
@@ -5691,8 +5695,21 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     viewport: viewportForMode("desktop"),
     controller: "none",
     agentActive: false,
-    title: "",
-    url: "about:blank",
+    get url() {
+      return tab?.url ?? "about:blank";
+    },
+    get title() {
+      return tab?.title ?? "";
+    },
+    get isLoading() {
+      return tab?.isLoading === true;
+    },
+    get canGoBack() {
+      return tab?.canGoBack === true;
+    },
+    get canGoForward() {
+      return tab?.canGoForward === true;
+    },
     get consoleProblems() {
       return problems.map((problem) => ({ ...problem }));
     },
@@ -5705,23 +5722,73 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     problems.push(problem);
     if (problems.length > 50) problems.shift();
   };
-  const observeCdp = () => cdp.onEvent((event) => {
-    if (event.sessionId !== sessionId) return;
-    if (event.method === "Page.frameNavigated" && !event.params.frame?.parentId) {
-      mainFrameId = event.params.frame.id;
-      runtime.url = event.params.frame.url;
+  const pageOf = (current) => ({ cdp, contextId, targetId: current.targetId, sessionId: current.sessionId });
+  const refreshNavigation = (current) => {
+    if (current.navigationRefresh) {
+      current.navigationStale = true;
+      return current.navigationRefresh;
     }
-    const navigatedFrameId = event.params.frame?.id;
-    if (event.method === "Page.frameNavigated" && navigatedFrameId) {
-      nativeSelectCompatibility?.frameNavigated(navigatedFrameId);
+    current.navigationRefresh = (async () => {
+      do {
+        current.navigationStale = false;
+        try {
+          const history = await cdp.sendSession(current.sessionId, "Page.getNavigationHistory");
+          const entries = Array.isArray(history.entries) ? history.entries : [];
+          const index = Number.isInteger(history.currentIndex) ? history.currentIndex : -1;
+          current.canGoBack = index > 0;
+          current.canGoForward = index >= 0 && index < entries.length - 1;
+          if (typeof entries[index]?.title === "string") current.title = entries[index].title;
+        } catch {
+        }
+      } while (current.navigationStale && !closed);
+    })().finally(() => {
+      current.navigationRefresh = null;
+    });
+    return current.navigationRefresh;
+  };
+  const scheduleNavigationRefresh = (current) => {
+    if (current.navigationTimer) return;
+    current.navigationTimer = setTimeout(() => {
+      current.navigationTimer = null;
+      if (tab === current) void refreshNavigation(current);
+    }, 500);
+    current.navigationTimer.unref?.();
+  };
+  const handleEvent = (event) => {
+    const current = tab;
+    if (!current) return;
+    if (!event.sessionId) {
+      const info = event.params.targetInfo;
+      if (event.method === "Target.targetInfoChanged" && info?.targetId === current.targetId) {
+        if (typeof info.url === "string") current.url = info.url;
+        if (typeof info.title === "string") current.title = info.title;
+      }
+      return;
     }
-    const detachedFrameId = event.params.frameId;
-    if (event.method === "Page.frameDetached" && detachedFrameId) {
-      nativeSelectCompatibility?.frameDetached(detachedFrameId);
+    if (event.sessionId !== current.sessionId) return;
+    if (event.method === "Page.frameNavigated" && event.params.frame?.id) {
+      if (!event.params.frame.parentId) {
+        current.mainFrameId = event.params.frame.id;
+        current.url = event.params.frame.url;
+        void refreshNavigation(current);
+      }
+      nativeSelectCompatibility?.frameNavigated(event.params.frame.id);
     }
-    if (event.method === "Page.navigatedWithinDocument" && event.params.frameId === mainFrameId) {
-      runtime.url = event.params.url;
+    if (event.method === "Page.frameDetached" && event.params.frameId) {
+      nativeSelectCompatibility?.frameDetached(event.params.frameId);
     }
+    if (event.method === "Page.navigatedWithinDocument" && event.params.frameId === current.mainFrameId) {
+      current.url = event.params.url;
+      void refreshNavigation(current);
+    }
+    if (event.method === "Page.frameStartedLoading" && event.params.frameId === current.mainFrameId) {
+      current.isLoading = true;
+    }
+    if (event.method === "Page.frameStoppedLoading" && event.params.frameId === current.mainFrameId) {
+      current.isLoading = false;
+      void refreshNavigation(current);
+    }
+    if (event.method === "Page.screencastFrame") scheduleNavigationRefresh(current);
     if (event.method === "Runtime.consoleAPICalled") {
       if (event.params.type !== "warning" && event.params.type !== "error") return;
       const message = event.params.args?.map((arg) => arg.value ?? arg.description).filter(Boolean).join(" ");
@@ -5732,7 +5799,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       if (entry?.level !== "warning" && entry?.level !== "error") return;
       addProblem({ level: entry.level, message: boundedText(entry.text), source: boundedText(entry.source || "log", 120) });
     }
-  });
+  };
   const start = async () => {
     let nextCdp = null;
     let nextContextId = null;
@@ -5740,6 +5807,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       const [proxyAddress, processInfo] = await Promise.all([proxy.listen(), chrome.ensure()]);
       if (closed) throw new Error("Browser runtime is closed");
       nextCdp = await connectCdp(processInfo.endpoint);
+      await nextCdp.send("Target.setDiscoverTargets", { discover: true });
       const context = await nextCdp.send("Target.createBrowserContext", {
         proxyServer: proxyAddress,
         proxyBypassList: "<-loopback>"
@@ -5750,6 +5818,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       cdp = nextCdp;
       contextId = nextContextId;
       cdp.onClose(markDead);
+      eventCleanup = cdp.onEvent(handleEvent);
     } catch (error) {
       if (nextContextId && nextCdp?.isOpen) {
         await nextCdp.send("Target.disposeBrowserContext", { browserContextId: nextContextId }).catch(() => {
@@ -5771,30 +5840,28 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
   };
   const createPage = async () => {
     await ensureStarted();
-    if (targetId && sessionId) return { cdp, contextId, targetId, sessionId };
+    if (tab) return pageOf(tab);
     if (closed) throw new Error("Browser runtime is closed");
     const target = await cdp.send("Target.createTarget", { url: "about:blank", browserContextId: contextId });
     if (typeof target.targetId !== "string") throw new Error("Chrome returned no page target id");
     const nextTargetId = target.targetId;
     const nextSessionId = await cdp.attach(nextTargetId);
     if (closed) throw new Error("Browser runtime is closed");
-    targetId = nextTargetId;
-    sessionId = nextSessionId;
-    eventCleanup = observeCdp();
+    tab = createTab(nextTargetId, nextSessionId);
     await Promise.all([
-      cdp.sendSession(sessionId, "Page.enable"),
-      cdp.sendSession(sessionId, "Runtime.enable"),
-      cdp.sendSession(sessionId, "Log.enable")
+      cdp.sendSession(tab.sessionId, "Page.enable"),
+      cdp.sendSession(tab.sessionId, "Runtime.enable"),
+      cdp.sendSession(tab.sessionId, "Log.enable")
     ]);
-    await applyViewport(cdp, sessionId, runtime.viewport);
-    return { cdp, contextId, targetId, sessionId };
+    await applyViewport(cdp, tab.sessionId, runtime.viewport);
+    await refreshNavigation(tab);
+    return pageOf(tab);
   };
   runtime.ensurePage = async () => {
     if (dead) throw dead;
-    if (targetId && sessionId) return { cdp, contextId, targetId, sessionId };
+    if (tab) return pageOf(tab);
     if (!pagePromise) pagePromise = createPage().catch((error) => {
-      targetId = null;
-      sessionId = null;
+      tab = null;
       throw error;
     }).finally(() => {
       pagePromise = null;
@@ -5815,6 +5882,35 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     await applyViewport(page.cdp, page.sessionId, viewport);
     runtime.viewport = viewport;
   };
+  runtime.command = async (name, parameters = {}) => {
+    if (closed) throw new Error("Browser runtime is closed");
+    const page = await runtime.ensurePage();
+    const current = tab;
+    const send = (method, params) => page.cdp.sendSession(page.sessionId, method, params);
+    if (name === "navigate") {
+      const url = new URL(parameters.url);
+      if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Open an absolute http(s) URL");
+      runtime.clearConsoleProblems();
+      const result = await send("Page.navigate", { url: url.href });
+      if (result.errorText) throw new Error(`Navigation failed: ${result.errorText}`);
+    } else if (name === "back" || name === "forward") {
+      const history = await send("Page.getNavigationHistory");
+      const entry = history.entries?.[history.currentIndex + (name === "back" ? -1 : 1)];
+      if (!entry) throw new Error(name === "back" ? "There is nothing to go back to" : "There is nothing to go forward to");
+      await send("Page.navigateToHistoryEntry", { entryId: entry.id });
+    } else if (name === "reload") {
+      runtime.clearConsoleProblems();
+      await send("Page.reload");
+    } else if (name === "stop") {
+      await send("Page.stopLoading").catch(async () => {
+        const world = await send("Page.createIsolatedWorld", { frameId: current.mainFrameId, worldName: "openchamber-stop" });
+        await send("Runtime.evaluate", { contextId: world.executionContextId, expression: "window.stop()" });
+      });
+    } else {
+      throw new Error(`Unsupported browser command: ${name}`);
+    }
+    if (current) await refreshNavigation(current);
+  };
   const execute = createBrowserActions(runtime);
   const surface = createSurface(runtime);
   runtime.perform = (action, parameters, callerSignal) => {
@@ -5833,8 +5929,8 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
       try {
         const data = await execute(action, parameters, signal);
         await nativeSelectCompatibility.whenIdle();
-        if (typeof data?.title === "string") runtime.title = data.title;
-        if (typeof data?.url === "string") runtime.url = data.url;
+        if (tab && typeof data?.title === "string") tab.title = data.title;
+        if (tab && typeof data?.url === "string" && data.url) tab.url = data.url;
         return data;
       } finally {
         runtime.agentActive = false;
@@ -5871,9 +5967,8 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     await proxy.close();
     await chrome.close();
     contextId = null;
-    targetId = null;
-    sessionId = null;
-    mainFrameId = null;
+    if (tab?.navigationTimer) clearTimeout(tab.navigationTimer);
+    tab = null;
   };
   return runtime;
 };
@@ -6001,13 +6096,15 @@ var createService = ({ runtime, token, port = 0 }) => {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
     }
-    if (request.method === "POST" && (url.pathname === "/browser/back" || url.pathname === "/browser/forward" || url.pathname === "/browser/reload")) {
+    const historyCommands = ["/browser/back", "/browser/forward", "/browser/reload", "/browser/stop"];
+    if (request.method === "POST" && historyCommands.includes(url.pathname)) {
       const body = await readObjectBody(request);
       const generation = generationProperty(body);
       if (generation === null) return text(response, 400, "generation is required\n");
       try {
         if (url.pathname === "/browser/back") await runtime.back(generation);
         else if (url.pathname === "/browser/forward") await runtime.forward(generation);
+        else if (url.pathname === "/browser/stop") await runtime.stop(generation);
         else await runtime.reload(generation);
         return json(response, 200, runtime.state());
       } catch (error) {

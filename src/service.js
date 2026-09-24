@@ -166,13 +166,15 @@ export const createService = ({ runtime, token, port = 0 }) => {
       }
     }
 
-    if (request.method === 'POST' && (url.pathname === '/browser/back' || url.pathname === '/browser/forward' || url.pathname === '/browser/reload')) {
+    const historyCommands = ['/browser/back', '/browser/forward', '/browser/reload', '/browser/stop'];
+    if (request.method === 'POST' && historyCommands.includes(url.pathname)) {
       const body = await readObjectBody(request);
       const generation = generationProperty(body);
       if (generation === null) return text(response, 400, 'generation is required\n');
       try {
         if (url.pathname === '/browser/back') await runtime.back(generation);
         else if (url.pathname === '/browser/forward') await runtime.forward(generation);
+        else if (url.pathname === '/browser/stop') await runtime.stop(generation);
         else await runtime.reload(generation);
         return json(response, 200, runtime.state());
       } catch (error) {

@@ -1361,12 +1361,22 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
   var reload = document.createElement("button");
   reload.type = "button";
   reload.className = "toolbar-button";
-  reload.title = "Reload";
-  reload.setAttribute("aria-label", "Reload");
-  setIcon(reload, (svg) => {
-    addPath(svg, "M20 11a8 8 0 1 0-2.34 5.66");
-    addPath(svg, "M20 4v7h-7");
-  });
+  var reloadShowsStop = null;
+  var drawReload = (loading) => {
+    if (reloadShowsStop === loading) return;
+    reloadShowsStop = loading;
+    reload.replaceChildren();
+    reload.title = loading ? "Stop loading" : "Reload";
+    reload.setAttribute("aria-label", reload.title);
+    setIcon(reload, loading ? (svg) => {
+      addLine(svg, { x1: "6", y1: "6", x2: "18", y2: "18" });
+      addLine(svg, { x1: "18", y1: "6", x2: "6", y2: "18" });
+    } : (svg) => {
+      addPath(svg, "M20 11a8 8 0 1 0-2.34 5.66");
+      addPath(svg, "M20 4v7h-7");
+    });
+  };
+  drawReload(false);
   var selectCompatibility = document.createElement("button");
   selectCompatibility.type = "button";
   selectCompatibility.className = "toolbar-button select-compatibility";
@@ -1445,18 +1455,22 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
       tabs.update({ items, activeId });
       tabsSignature = signature;
       for (const button2 of scopeSelect.querySelectorAll('[role="tab"]')) {
-        const scope = scopes.find((item) => String(item.id) === button2.dataset.id);
-        button2.title = `${scope.directory} \xB7 ${scope.sessionId}`;
         if (button2.dataset.id === focusedId) {
           button2.focus();
           pendingTabFocusId = null;
         }
       }
     }
+    for (const button2 of scopeSelect.querySelectorAll('[role="tab"]')) {
+      const scope = scopes.find((item) => String(item.id) === button2.dataset.id);
+      const page = scope.title || (scope.url === "about:blank" ? "" : scope.url);
+      button2.title = `${page ? `${page} \u2014 ` : ""}${scope.directory} \xB7 ${scope.sessionId}`;
+    }
     if (!addressDirty) address.value = selected?.url === "about:blank" ? "" : String(selected?.url ?? "");
     const disabled = requestPending || !selected || !idle;
-    back.disabled = disabled;
-    forward.disabled = disabled;
+    back.disabled = disabled || !selected.canGoBack;
+    forward.disabled = disabled || !selected.canGoForward;
+    drawReload(selected?.isLoading === true);
     reload.disabled = disabled;
     address.disabled = disabled;
     selectCompatibility.disabled = disabled;
@@ -1549,7 +1563,8 @@ textarea.oc-sdk-input { height: auto; padding: 8px 12px; resize: vertical; }
   });
   reload.addEventListener("click", () => {
     if (!state) return;
-    void request("/browser/reload", { generation: state.generation }).then((succeeded) => {
+    const loading = state.scopes.find((scope) => scope.id === state.selectedScopeId)?.isLoading === true;
+    void request(loading ? "/browser/stop" : "/browser/reload", { generation: state.generation }).then((succeeded) => {
       if (!succeeded) return;
       addressDirty = false;
       render();

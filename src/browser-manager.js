@@ -114,12 +114,10 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
     }
   };
 
-  const dockAction = (action, parameters, expectedGeneration) => enqueue(async () => {
+  const dockCommand = (name, parameters, expectedGeneration) => enqueue(async () => {
     requireIdleSurface();
     requireGeneration(expectedGeneration);
-    const entry = requireSelected();
-    const result = await entry.runtime.perform(action, parameters);
-    return result;
+    await requireSelected().runtime.command(name, parameters);
   });
 
   return {
@@ -149,6 +147,9 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
           selected: entry.id === selectedScopeId,
           url: entry.runtime.url ?? 'about:blank',
           title: entry.runtime.title ?? '',
+          isLoading: entry.runtime.isLoading === true,
+          canGoBack: entry.runtime.canGoBack === true,
+          canGoForward: entry.runtime.canGoForward === true,
           nativeSelectCompatibility: entry.runtime.nativeSelectCompatibility === true,
           nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? '',
         })),
@@ -168,16 +169,19 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
       });
     },
     navigate(url, expectedGeneration) {
-      return dockAction('browser.open', { url }, expectedGeneration);
+      return dockCommand('navigate', { url }, expectedGeneration);
     },
     reload(expectedGeneration) {
-      return dockAction('browser.reload', {}, expectedGeneration);
+      return dockCommand('reload', {}, expectedGeneration);
     },
     back(expectedGeneration) {
-      return dockAction('browser.back', {}, expectedGeneration);
+      return dockCommand('back', {}, expectedGeneration);
     },
     forward(expectedGeneration) {
-      return dockAction('browser.forward', {}, expectedGeneration);
+      return dockCommand('forward', {}, expectedGeneration);
+    },
+    stop(expectedGeneration) {
+      return dockCommand('stop', {}, expectedGeneration);
     },
     setNativeSelectCompatibility(enabled, expectedGeneration) {
       return enqueue(async () => {
