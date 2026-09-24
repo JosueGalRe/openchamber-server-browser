@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { originGrants, parseConfig } from '../src/config.js';
+import { networkGrants, originGrants, parseConfig } from '../src/config.js';
 
 test('defaults to no private origin grants', () => {
   const config = parseConfig({});
 
-  assert.deepEqual(config, { chromePath: null, allowedOrigins: [] });
+  assert.deepEqual(config, { chromePath: null, allowedOrigins: [], allowedNetworks: [] });
   assert.deepEqual(originGrants(config.allowedOrigins), []);
 });
 
@@ -31,4 +31,25 @@ test('rejects allowlist entries that are not exact http origins', () => {
     () => parseConfig({ allowedOrigins: ['file:///tmp/page.html'] }),
     /must be an http\(s\) origin/,
   );
+});
+
+test('parses private network blocks with explicit ports and ranges', () => {
+  const config = parseConfig({ allowedNetworks: [{ cidr: '192.168.1.0/24', ports: [3000, '5173-5199', '8080'] }] });
+  const [grant] = networkGrants(config.allowedNetworks);
+
+  assert.deepEqual(config.allowedNetworks[0].ports, [[3000, 3000], [5173, 5199], [8080, 8080]]);
+  assert.equal(grant.block.check('192.168.1.20', 'ipv4'), true);
+  assert.equal(grant.block.check('192.168.2.20', 'ipv4'), false);
+});
+
+test('rejects network blocks that are public, too broad, or missing explicit ports', () => {
+  for (const network of [
+    { cidr: '8.8.8.0/24', ports: [3000] },
+    { cidr: '10.0.0.0/7', ports: [3000] },
+    { cidr: '192.168.1.0/24' },
+    { cidr: '192.168.1.0/24', ports: ['*'] },
+    { cidr: '192.168.1.0/24', ports: ['3000-2000'] },
+  ]) {
+    assert.throws(() => parseConfig({ allowedNetworks: [network] }), /config\.allowedNetworks\[0\]/);
+  }
 });

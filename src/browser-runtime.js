@@ -1,7 +1,7 @@
 import { createBrowserActions } from './browser-actions.js';
 import { connectCdp } from './cdp-client.js';
 import { createChromeProcess } from './chrome-process.js';
-import { originGrants } from './config.js';
+import { networkGrants, originGrants } from './config.js';
 import { createNativeSelectCompatibility } from './native-select-compatibility.js';
 import { createPolicyProxy } from './policy-proxy.js';
 import { createSurface } from './surface.js';
@@ -9,9 +9,9 @@ import { applyViewport, viewportForMode } from './viewports.js';
 
 const boundedText = (value, maximum = 1_000) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maximum);
 
-export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], configPath = null } = {}) => {
+export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNetworks = [], configPath = null } = {}) => {
   const chrome = createChromeProcess({ chromePath });
-  const proxy = createPolicyProxy({ grants: originGrants(allowedOrigins), configPath });
+  const proxy = createPolicyProxy({ grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)], configPath });
   const shutdownController = new AbortController();
   const problems = [];
   let cdp = null;

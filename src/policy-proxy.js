@@ -25,6 +25,9 @@ PRIVATE_V6.addAddress('::1', 'ipv6');
 
 const normalizeHost = (host) => String(host || '').replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
 const familyOf = (address) => net.isIP(address) === 6 ? 'ipv6' : 'ipv4';
+export const isPrivateAddress = (address) => (familyOf(address) === 'ipv6'
+  ? PRIVATE_V6.check(address, 'ipv6')
+  : PRIVATE_V4.check(address, 'ipv4'));
 
 const permanentlyDenied = (address) => {
   const family = familyOf(address);
@@ -42,11 +45,14 @@ const permanentlyDenied = (address) => {
 
 const grantProtocol = (protocol) => protocol === 'ws:' ? 'http:' : protocol === 'wss:' ? 'https:' : protocol;
 
-const hasGrant = (grants, hostname, address, port, protocol) => grants.some((grant) => (
-  grant.port === port
-  && (!grant.protocol || grant.protocol === grantProtocol(protocol))
-  && (normalizeHost(grant.host) === hostname || normalizeHost(grant.host) === address)
-));
+const hasGrant = (grants, hostname, address, port, protocol) => grants.some((grant) => {
+  if (grant.block) {
+    return grant.ports.some(([first, last]) => port >= first && port <= last) && grant.block.check(address, familyOf(address));
+  }
+  return grant.port === port
+    && (!grant.protocol || grant.protocol === grantProtocol(protocol))
+    && (normalizeHost(grant.host) === hostname || normalizeHost(grant.host) === address);
+});
 
 export const classifyProxyTarget = async (target, { grants = [], lookup = dns.promises.lookup } = {}) => {
   let url;
@@ -86,11 +92,7 @@ export const classifyProxyTarget = async (target, { grants = [], lookup = dns.pr
     const address = normalizeHost(answer?.address);
     const reason = permanentlyDenied(address);
     if (reason) return { allowed: false, reason };
-    const family = familyOf(address);
-    const privateAddress = family === 'ipv6'
-      ? PRIVATE_V6.check(address, family)
-      : PRIVATE_V4.check(address, family);
-    if (privateAddress && !hasGrant(grants, hostname, address, port, url.protocol)) {
+    if (isPrivateAddress(address) && !hasGrant(grants, hostname, address, port, url.protocol)) {
       return { allowed: false, reason: 'Private or loopback address requires an allowed origin', grantable: true };
     }
   }
@@ -124,6 +126,7 @@ const deniedPage = (reason, { origin = null, grantable = false, configPath = nul
 <p>${shownOrigin} points to the machine running OpenChamber or its local network. Server Browser blocks private and loopback addresses until you allow them, so pages and agents cannot reach those services without permission.</p>
 <p>To allow it, add the origin to <code>allowedOrigins</code> in ${configFile} and restart the extension:</p>
 <pre>${escapeHtml(`{\n  "allowedOrigins": [${JSON.stringify(origin)}]\n}`)}</pre>
+<p>For several machines or ports, add a private CIDR block and its ports to <code>allowedNetworks</code> instead.</p>
 <p class="note"><code>localhost</code> and private addresses resolve on the machine running OpenChamber, not on your device.</p>`,
   ] : [
     `Can't open ${origin ?? 'this address'}`,

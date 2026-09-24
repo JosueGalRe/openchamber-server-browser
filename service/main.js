@@ -2231,7 +2231,7 @@ var require_websocket = __commonJS({
     var EventEmitter = __require("events");
     var https = __require("https");
     var http3 = __require("http");
-    var net3 = __require("net");
+    var net4 = __require("net");
     var tls = __require("tls");
     var { randomBytes, createHash } = __require("crypto");
     var { Duplex, Readable } = __require("stream");
@@ -2962,12 +2962,12 @@ var require_websocket = __commonJS({
     }
     function netConnect(options) {
       options.path = options.socketPath;
-      return net3.connect(options);
+      return net4.connect(options);
     }
     function tlsConnect(options) {
       options.path = void 0;
       if (!options.servername && options.servername !== "") {
-        options.servername = net3.isIP(options.host) ? "" : options.host;
+        options.servername = net4.isIP(options.host) ? "" : options.host;
       }
       return tls.connect(options);
     }
@@ -4652,193 +4652,9 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
 
 // src/config.js
 import fs2 from "node:fs";
+import net2 from "node:net";
 import path2 from "node:path";
 import { fileURLToPath } from "node:url";
-var HTTP_PROTOCOLS = /* @__PURE__ */ new Set(["http:", "https:"]);
-var parseAllowedOrigin = (value, index) => {
-  if (typeof value !== "string" || value.trim() !== value || value.length === 0) {
-    throw new Error(`config.allowedOrigins[${index}] must be a non-empty origin`);
-  }
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error(`config.allowedOrigins[${index}] is not a valid URL origin`);
-  }
-  if (!HTTP_PROTOCOLS.has(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
-    throw new Error(`config.allowedOrigins[${index}] must be an http(s) origin without credentials, path, query, or hash`);
-  }
-  return url.origin;
-};
-var extensionRootFrom = (entryUrl) => path2.resolve(path2.dirname(fileURLToPath(entryUrl)), "..");
-var parseConfig = (value) => {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("config.json must contain an object");
-  }
-  const chromePath = value.chromePath;
-  if (chromePath !== void 0 && (typeof chromePath !== "string" || chromePath.trim().length === 0)) {
-    throw new Error("config.chromePath must be a non-empty string when provided");
-  }
-  if (value.allowedOrigins !== void 0 && !Array.isArray(value.allowedOrigins)) {
-    throw new Error("config.allowedOrigins must be an array");
-  }
-  const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
-  return Object.freeze({
-    chromePath: chromePath?.trim() ?? null,
-    allowedOrigins: Object.freeze([...new Set(allowedOrigins)])
-  });
-};
-var loadConfig = ({ entryUrl = import.meta.url, configPath } = {}) => {
-  const resolvedPath = configPath ?? path2.join(extensionRootFrom(entryUrl), "config.json");
-  let value = {};
-  try {
-    value = JSON.parse(fs2.readFileSync(resolvedPath, "utf8"));
-  } catch (error) {
-    if (error instanceof SyntaxError) throw new Error(`Invalid JSON in ${resolvedPath}: ${error.message}`);
-    if (error?.code !== "ENOENT") throw error;
-  }
-  return Object.freeze({ ...parseConfig(value), configPath: resolvedPath });
-};
-var originGrants = (allowedOrigins) => allowedOrigins.map((origin) => {
-  const url = new URL(origin);
-  return {
-    host: url.hostname,
-    port: Number(url.port || (url.protocol === "https:" ? 443 : 80)),
-    protocol: url.protocol
-  };
-});
-
-// src/native-select-compatibility.js
-var STYLE_TEXT = `
-select:not([multiple]):not([size]),
-select:not([multiple])[size="1"],
-select:not([multiple]):not([size])::picker(select),
-select:not([multiple])[size="1"]::picker(select) {
-  appearance: base-select !important;
-}
-`;
-var frameIds = (node) => [
-  node.frame.id,
-  ...(node.childFrames ?? []).flatMap(frameIds)
-];
-var messageFor = (error) => {
-  const detail = error instanceof Error && error.message.trim() ? ` ${error.message}` : "";
-  return `Native select compatibility is unavailable on this page.${detail}`;
-};
-var createNativeSelectCompatibility = ({ ensurePage, reportError }) => {
-  const styleSheets = /* @__PURE__ */ new Map();
-  let enabled = false;
-  let error = "";
-  let queue = Promise.resolve();
-  const enqueue = (operation) => {
-    const pending = queue.catch(() => {
-    }).then(operation);
-    queue = pending;
-    return pending;
-  };
-  const clearOwnedStyles = async (page) => {
-    let failure = null;
-    for (const [frameId, styleSheetId] of styleSheets) {
-      try {
-        await page.cdp.sendSession(page.sessionId, "CSS.setStyleSheetText", { styleSheetId, text: "" });
-        styleSheets.delete(frameId);
-      } catch (cause) {
-        if (/style.?sheet.*not found/i.test(String(cause))) styleSheets.delete(frameId);
-        else failure ??= cause;
-      }
-    }
-    if (failure) throw failure;
-  };
-  const addFrameStyle = async (page, frameId) => {
-    if (styleSheets.has(frameId)) return;
-    const created = await page.cdp.sendSession(page.sessionId, "CSS.createStyleSheet", { frameId });
-    const styleSheetId = created.styleSheetId;
-    styleSheets.set(frameId, styleSheetId);
-    await page.cdp.sendSession(page.sessionId, "CSS.setStyleSheetText", {
-      styleSheetId,
-      text: STYLE_TEXT
-    });
-  };
-  const fail = async (page, cause) => {
-    enabled = false;
-    error = messageFor(cause);
-    await clearOwnedStyles(page).catch(() => {
-    });
-    reportError(error);
-    throw new Error(error, { cause });
-  };
-  const installCurrentFrames = async (page) => {
-    const support = await page.cdp.sendSession(page.sessionId, "Runtime.evaluate", {
-      expression: `CSS.supports('appearance', 'base-select')`,
-      returnByValue: true
-    });
-    if (support.result?.value !== true) throw new Error("This Chrome version does not support appearance: base-select");
-    await page.cdp.sendSession(page.sessionId, "DOM.enable");
-    await page.cdp.sendSession(page.sessionId, "CSS.enable");
-    const tree = await page.cdp.sendSession(page.sessionId, "Page.getFrameTree");
-    if (!tree.frameTree?.frame?.id) throw new Error("Chrome returned no document frame");
-    for (const frameId of frameIds(tree.frameTree)) await addFrameStyle(page, frameId);
-  };
-  return {
-    get enabled() {
-      return enabled;
-    },
-    get error() {
-      return error;
-    },
-    setEnabled(nextEnabled) {
-      return enqueue(async () => {
-        const page = await ensurePage();
-        if (!nextEnabled) {
-          try {
-            await clearOwnedStyles(page);
-            enabled = false;
-            error = "";
-          } catch (cause) {
-            await fail(page, cause);
-          }
-          return;
-        }
-        enabled = true;
-        try {
-          await installCurrentFrames(page);
-          error = "";
-        } catch (cause) {
-          await fail(page, cause);
-        }
-      });
-    },
-    frameNavigated(frameId) {
-      styleSheets.delete(frameId);
-      if (!enabled) return;
-      void enqueue(async () => {
-        if (!enabled) return;
-        const page = await ensurePage();
-        try {
-          await addFrameStyle(page, frameId);
-          error = "";
-        } catch (cause) {
-          await fail(page, cause);
-        }
-      }).catch(() => {
-      });
-    },
-    frameDetached(frameId) {
-      styleSheets.delete(frameId);
-    },
-    whenIdle() {
-      return queue;
-    },
-    close() {
-      return enqueue(async () => {
-        if (!styleSheets.size) return;
-        const page = await ensurePage();
-        await clearOwnedStyles(page).catch(() => {
-        });
-      });
-    }
-  };
-};
 
 // src/policy-proxy.js
 import dns from "node:dns";
@@ -4882,6 +4698,7 @@ for (const [network, prefix] of [
 PRIVATE_V6.addAddress("::1", "ipv6");
 var normalizeHost = (host) => String(host || "").replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
 var familyOf = (address) => net.isIP(address) === 6 ? "ipv6" : "ipv4";
+var isPrivateAddress = (address) => familyOf(address) === "ipv6" ? PRIVATE_V6.check(address, "ipv6") : PRIVATE_V4.check(address, "ipv4");
 var permanentlyDenied = (address) => {
   const family = familyOf(address);
   if (!net.isIP(address)) return "DNS returned an invalid address";
@@ -4894,7 +4711,12 @@ var permanentlyDenied = (address) => {
   return "Unspecified, link-local, transition, multicast, CGNAT, or reserved addresses are denied";
 };
 var grantProtocol = (protocol) => protocol === "ws:" ? "http:" : protocol === "wss:" ? "https:" : protocol;
-var hasGrant = (grants, hostname, address, port, protocol) => grants.some((grant) => grant.port === port && (!grant.protocol || grant.protocol === grantProtocol(protocol)) && (normalizeHost(grant.host) === hostname || normalizeHost(grant.host) === address));
+var hasGrant = (grants, hostname, address, port, protocol) => grants.some((grant) => {
+  if (grant.block) {
+    return grant.ports.some(([first, last]) => port >= first && port <= last) && grant.block.check(address, familyOf(address));
+  }
+  return grant.port === port && (!grant.protocol || grant.protocol === grantProtocol(protocol)) && (normalizeHost(grant.host) === hostname || normalizeHost(grant.host) === address);
+});
 var classifyProxyTarget = async (target, { grants = [], lookup = dns.promises.lookup } = {}) => {
   let url;
   try {
@@ -4932,9 +4754,7 @@ var classifyProxyTarget = async (target, { grants = [], lookup = dns.promises.lo
     const address = normalizeHost(answer?.address);
     const reason = permanentlyDenied(address);
     if (reason) return { allowed: false, reason };
-    const family = familyOf(address);
-    const privateAddress = family === "ipv6" ? PRIVATE_V6.check(address, family) : PRIVATE_V4.check(address, family);
-    if (privateAddress && !hasGrant(grants, hostname, address, port, url.protocol)) {
+    if (isPrivateAddress(address) && !hasGrant(grants, hostname, address, port, url.protocol)) {
       return { allowed: false, reason: "Private or loopback address requires an allowed origin", grantable: true };
     }
   }
@@ -4967,6 +4787,7 @@ var deniedPage = (reason, { origin = null, grantable = false, configPath = null 
 <pre>${escapeHtml(`{
   "allowedOrigins": [${JSON.stringify(origin)}]
 }`)}</pre>
+<p>For several machines or ports, add a private CIDR block and its ports to <code>allowedNetworks</code> instead.</p>
 <p class="note"><code>localhost</code> and private addresses resolve on the machine running OpenChamber, not on your device.</p>`
   ] : [
     `Can't open ${origin ?? "this address"}`,
@@ -5164,6 +4985,225 @@ var createPolicyProxy = (policy = {}) => {
         listening = false;
       });
       return closePromise;
+    }
+  };
+};
+
+// src/config.js
+var HTTP_PROTOCOLS = /* @__PURE__ */ new Set(["http:", "https:"]);
+var parseAllowedOrigin = (value, index) => {
+  if (typeof value !== "string" || value.trim() !== value || value.length === 0) {
+    throw new Error(`config.allowedOrigins[${index}] must be a non-empty origin`);
+  }
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`config.allowedOrigins[${index}] is not a valid URL origin`);
+  }
+  if (!HTTP_PROTOCOLS.has(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error(`config.allowedOrigins[${index}] must be an http(s) origin without credentials, path, query, or hash`);
+  }
+  return url.origin;
+};
+var parsePorts = (value, label) => {
+  if (!Array.isArray(value) || value.length === 0) throw new Error(`${label}.ports must be a non-empty array`);
+  return Object.freeze(value.map((entry, index) => {
+    const range = typeof entry === "string" ? /^(\d+)(?:-(\d+))?$/.exec(entry) : null;
+    const [first, last] = range ? [Number(range[1]), Number(range[2] ?? range[1])] : [entry, entry];
+    if (!Number.isInteger(first) || !Number.isInteger(last) || first < 1 || last > 65535 || first > last) {
+      throw new Error(`${label}.ports[${index}] must be a port or a "first-last" range`);
+    }
+    return Object.freeze([first, last]);
+  }));
+};
+var parseAllowedNetwork = (value, index) => {
+  const label = `config.allowedNetworks[${index}]`;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object with cidr and ports`);
+  }
+  const cidr = typeof value.cidr === "string" ? /^([\d.]+)\/(\d+)$/.exec(value.cidr) : null;
+  const prefix = Number(cidr?.[2]);
+  if (!cidr || !net2.isIPv4(cidr[1]) || prefix < 8 || prefix > 32 || !isPrivateAddress(cidr[1])) {
+    throw new Error(`${label}.cidr must be a private or loopback IPv4 block from /8 to /32, such as 192.168.1.0/24`);
+  }
+  return Object.freeze({ cidr: value.cidr, address: cidr[1], prefix, ports: parsePorts(value.ports, label) });
+};
+var extensionRootFrom = (entryUrl) => path2.resolve(path2.dirname(fileURLToPath(entryUrl)), "..");
+var parseConfig = (value) => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("config.json must contain an object");
+  }
+  const chromePath = value.chromePath;
+  if (chromePath !== void 0 && (typeof chromePath !== "string" || chromePath.trim().length === 0)) {
+    throw new Error("config.chromePath must be a non-empty string when provided");
+  }
+  if (value.allowedOrigins !== void 0 && !Array.isArray(value.allowedOrigins)) {
+    throw new Error("config.allowedOrigins must be an array");
+  }
+  if (value.allowedNetworks !== void 0 && !Array.isArray(value.allowedNetworks)) {
+    throw new Error("config.allowedNetworks must be an array");
+  }
+  const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
+  return Object.freeze({
+    chromePath: chromePath?.trim() ?? null,
+    allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
+    allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork))
+  });
+};
+var loadConfig = ({ entryUrl = import.meta.url, configPath } = {}) => {
+  const resolvedPath = configPath ?? path2.join(extensionRootFrom(entryUrl), "config.json");
+  let value = {};
+  try {
+    value = JSON.parse(fs2.readFileSync(resolvedPath, "utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error(`Invalid JSON in ${resolvedPath}: ${error.message}`);
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return Object.freeze({ ...parseConfig(value), configPath: resolvedPath });
+};
+var originGrants = (allowedOrigins) => allowedOrigins.map((origin) => {
+  const url = new URL(origin);
+  return {
+    host: url.hostname,
+    port: Number(url.port || (url.protocol === "https:" ? 443 : 80)),
+    protocol: url.protocol
+  };
+});
+var networkGrants = (allowedNetworks) => allowedNetworks.map(({ address, prefix, ports }) => {
+  const block = new net2.BlockList();
+  block.addSubnet(address, prefix, "ipv4");
+  return { block, ports };
+});
+
+// src/native-select-compatibility.js
+var STYLE_TEXT = `
+select:not([multiple]):not([size]),
+select:not([multiple])[size="1"],
+select:not([multiple]):not([size])::picker(select),
+select:not([multiple])[size="1"]::picker(select) {
+  appearance: base-select !important;
+}
+`;
+var frameIds = (node) => [
+  node.frame.id,
+  ...(node.childFrames ?? []).flatMap(frameIds)
+];
+var messageFor = (error) => {
+  const detail = error instanceof Error && error.message.trim() ? ` ${error.message}` : "";
+  return `Native select compatibility is unavailable on this page.${detail}`;
+};
+var createNativeSelectCompatibility = ({ ensurePage, reportError }) => {
+  const styleSheets = /* @__PURE__ */ new Map();
+  let enabled = false;
+  let error = "";
+  let queue = Promise.resolve();
+  const enqueue = (operation) => {
+    const pending = queue.catch(() => {
+    }).then(operation);
+    queue = pending;
+    return pending;
+  };
+  const clearOwnedStyles = async (page) => {
+    let failure = null;
+    for (const [frameId, styleSheetId] of styleSheets) {
+      try {
+        await page.cdp.sendSession(page.sessionId, "CSS.setStyleSheetText", { styleSheetId, text: "" });
+        styleSheets.delete(frameId);
+      } catch (cause) {
+        if (/style.?sheet.*not found/i.test(String(cause))) styleSheets.delete(frameId);
+        else failure ??= cause;
+      }
+    }
+    if (failure) throw failure;
+  };
+  const addFrameStyle = async (page, frameId) => {
+    if (styleSheets.has(frameId)) return;
+    const created = await page.cdp.sendSession(page.sessionId, "CSS.createStyleSheet", { frameId });
+    const styleSheetId = created.styleSheetId;
+    styleSheets.set(frameId, styleSheetId);
+    await page.cdp.sendSession(page.sessionId, "CSS.setStyleSheetText", {
+      styleSheetId,
+      text: STYLE_TEXT
+    });
+  };
+  const fail = async (page, cause) => {
+    enabled = false;
+    error = messageFor(cause);
+    await clearOwnedStyles(page).catch(() => {
+    });
+    reportError(error);
+    throw new Error(error, { cause });
+  };
+  const installCurrentFrames = async (page) => {
+    const support = await page.cdp.sendSession(page.sessionId, "Runtime.evaluate", {
+      expression: `CSS.supports('appearance', 'base-select')`,
+      returnByValue: true
+    });
+    if (support.result?.value !== true) throw new Error("This Chrome version does not support appearance: base-select");
+    await page.cdp.sendSession(page.sessionId, "DOM.enable");
+    await page.cdp.sendSession(page.sessionId, "CSS.enable");
+    const tree = await page.cdp.sendSession(page.sessionId, "Page.getFrameTree");
+    if (!tree.frameTree?.frame?.id) throw new Error("Chrome returned no document frame");
+    for (const frameId of frameIds(tree.frameTree)) await addFrameStyle(page, frameId);
+  };
+  return {
+    get enabled() {
+      return enabled;
+    },
+    get error() {
+      return error;
+    },
+    setEnabled(nextEnabled) {
+      return enqueue(async () => {
+        const page = await ensurePage();
+        if (!nextEnabled) {
+          try {
+            await clearOwnedStyles(page);
+            enabled = false;
+            error = "";
+          } catch (cause) {
+            await fail(page, cause);
+          }
+          return;
+        }
+        enabled = true;
+        try {
+          await installCurrentFrames(page);
+          error = "";
+        } catch (cause) {
+          await fail(page, cause);
+        }
+      });
+    },
+    frameNavigated(frameId) {
+      styleSheets.delete(frameId);
+      if (!enabled) return;
+      void enqueue(async () => {
+        if (!enabled) return;
+        const page = await ensurePage();
+        try {
+          await addFrameStyle(page, frameId);
+          error = "";
+        } catch (cause) {
+          await fail(page, cause);
+        }
+      }).catch(() => {
+      });
+    },
+    frameDetached(frameId) {
+      styleSheets.delete(frameId);
+    },
+    whenIdle() {
+      return queue;
+    },
+    close() {
+      return enqueue(async () => {
+        if (!styleSheets.size) return;
+        const page = await ensurePage();
+        await clearOwnedStyles(page).catch(() => {
+        });
+      });
     }
   };
 };
@@ -5534,9 +5574,9 @@ var createSurface = (runtime) => {
 
 // src/browser-runtime.js
 var boundedText = (value, maximum = 1e3) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, maximum);
-var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], configPath = null } = {}) => {
+var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNetworks = [], configPath = null } = {}) => {
   const chrome = createChromeProcess({ chromePath });
-  const proxy = createPolicyProxy({ grants: originGrants(allowedOrigins), configPath });
+  const proxy = createPolicyProxy({ grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)], configPath });
   const shutdownController = new AbortController();
   const problems = [];
   let cdp = null;
@@ -5737,7 +5777,7 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], configPath
 // src/service.js
 import crypto from "node:crypto";
 import http2 from "node:http";
-import net2 from "node:net";
+import net3 from "node:net";
 var BODY_MAX_BYTES = 17 * 1024 * 1024;
 var json = (response, status, body) => {
   const bytes = Buffer.from(JSON.stringify(body));
@@ -5761,7 +5801,7 @@ var authorized = (request, token) => {
 var withScheme = (address) => {
   if (/^[a-z][a-z\d+.-]*:\/\//i.test(address)) return address;
   const host = address.split(/[/?#]/, 1)[0].replace(/:\d*$/, "").replace(/^\[(.*)\]$/, "$1").toLowerCase();
-  return `${host === "localhost" || net2.isIP(host) ? "http" : "https"}://${address}`;
+  return `${host === "localhost" || net3.isIP(host) ? "http" : "https"}://${address}`;
 };
 var readBody = async (request) => {
   const contentLength = Number(request.headers["content-length"] ?? 0);

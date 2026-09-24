@@ -37,6 +37,23 @@ test('denies private destinations unless their exact host and port are allowed',
   assert.equal(websocket.allowed, true);
 });
 
+test('allows a private network block only on its listed ports', async () => {
+  const block = new net.BlockList();
+  block.addSubnet('192.168.1.0', 24, 'ipv4');
+  const grants = [{ block, ports: [[3000, 3200]] }];
+
+  const allowed = await classifyProxyTarget('https://192.168.1.20:3100/', { grants });
+  const otherPort = await classifyProxyTarget('http://192.168.1.20:22/', { grants });
+  const otherNetwork = await classifyProxyTarget('http://192.168.2.20:3100/', { grants });
+  const loopback = await classifyProxyTarget('http://localhost:3100/', {
+    grants,
+    lookup: async () => [{ address: '127.0.0.1', family: 4 }],
+  });
+
+  assert.equal(allowed.allowed, true);
+  assert.deepEqual([otherPort.allowed, otherNetwork.allowed, loopback.allowed], [false, false, false]);
+});
+
 test('denies a hostname when any DNS answer is unsafe', async () => {
   const lookup = async () => [
     { address: '93.184.216.34', family: 4 },
