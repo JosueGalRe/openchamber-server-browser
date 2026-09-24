@@ -5,7 +5,7 @@
     "": {
       "name": "@josuegalre/openchamber-server-browser",
       "dependencies": {
-        "@openchamber/sdk": "file:vendor/openchamber-sdk-959d179c6.tgz",
+        "@openchamber/sdk": "2.0.0",
         "ws": "8.18.3",
       },
       "devDependencies": {
@@ -66,7 +66,7 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.28.0", "", { "os": "win32", "cpu": "x64" }, "sha512-pEl1bO9mfAmIC+tW5btTmrKaujg3zGtUmWNdCw/xs70FBjwAL3o9OEKNHvNmnyylD6ubxUERiEhdsL0xBQ9efw=="],
 
-    "@openchamber/sdk": ["@openchamber/sdk@vendor/openchamber-sdk-959d179c6.tgz", { "dependencies": { "zod": "^4.3.6" }, "bin": { "openchamber-guest-bundle": "./scripts/bundle-guest.ts" } }, "sha512-Mw1S8InNHXoKpKPBj+mcR++bILSGcXja+pCPSAguj2Y0m7UY28KEIQVBx4AZfuF6GANCbxnbO06pcNIvIUooyw=="],
+    "@openchamber/sdk": ["@openchamber/sdk@2.0.0", "", { "dependencies": { "zod": "^4.3.6" }, "bin": { "openchamber-guest-bundle": "scripts/bundle-guest.ts" } }, "sha512-K/tYwbxDZ5qGeQ46X4LYrfUUq3VfO0cEGLNLp+bZrcO92ZBp9+lJijFAptr26iM1ImLrtdkj5FHDCzlnQrMX0w=="],
 
     "esbuild": ["esbuild@0.28.0", "", { "optionalDependencies": { "@esbuild/aix-ppc64": "0.28.0", "@esbuild/android-arm": "0.28.0", "@esbuild/android-arm64": "0.28.0", "@esbuild/android-x64": "0.28.0", "@esbuild/darwin-arm64": "0.28.0", "@esbuild/darwin-x64": "0.28.0", "@esbuild/freebsd-arm64": "0.28.0", "@esbuild/freebsd-x64": "0.28.0", "@esbuild/linux-arm": "0.28.0", "@esbuild/linux-arm64": "0.28.0", "@esbuild/linux-ia32": "0.28.0", "@esbuild/linux-loong64": "0.28.0", "@esbuild/linux-mips64el": "0.28.0", "@esbuild/linux-ppc64": "0.28.0", "@esbuild/linux-riscv64": "0.28.0", "@esbuild/linux-s390x": "0.28.0", "@esbuild/linux-x64": "0.28.0", "@esbuild/netbsd-arm64": "0.28.0", "@esbuild/netbsd-x64": "0.28.0", "@esbuild/openbsd-arm64": "0.28.0", "@esbuild/openbsd-x64": "0.28.0", "@esbuild/openharmony-arm64": "0.28.0", "@esbuild/sunos-x64": "0.28.0", "@esbuild/win32-arm64": "0.28.0", "@esbuild/win32-ia32": "0.28.0", "@esbuild/win32-x64": "0.28.0" }, "bin": { "esbuild": "bin/esbuild" } }, "sha512-sNR9MHpXSUV/XB4zmsFKN+QgVG82Cc7+/aaxJ8Adi8hyOac+EXptIp45QBPaVyX3N70664wRbTcLTOemCAnyqw=="],
 

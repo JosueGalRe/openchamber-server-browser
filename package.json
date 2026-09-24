@@ -11,6 +11,9 @@
   },
   "openchamber": {
     "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=2.0.0"
+    },
     "contributes": {
       "panel": {
         "id": "server-browser",
@@ -44,7 +47,7 @@
     "package": "node scripts/package.mjs"
   },
   "dependencies": {
-    "@openchamber/sdk": "file:vendor/openchamber-sdk-959d179c6.tgz",
+    "@openchamber/sdk": "2.0.0",
     "ws": "8.18.3"
   },
   "devDependencies": {
