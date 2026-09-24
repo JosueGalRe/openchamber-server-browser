@@ -1,3 +1,5 @@
+import { cssSize } from './viewports.js';
+
 const DEFAULT_MAX_SCOPES = 4;
 
 const scopeId = ({ directory, sessionId }) => JSON.stringify([directory, sessionId]);
@@ -23,7 +25,9 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
   let viewGeneration = 0;
   const frameControllers = new Set();
   const selectionWaiters = new Set();
+  // The host reports the panel in device pixels; the dock reports its ratio.
   let surfaceViewport = null;
+  let devicePixelRatio = 1;
   let closed = false;
   let notice = null;
 
@@ -96,7 +100,11 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
     entry.runtime.onTabsChanged(() => {
       if (selectedScopeId === entry.id) viewGeneration += 1;
     });
-    if (!selectedScopeId) select(entry);
+    if (!selectedScopeId) {
+      select(entry);
+      // The viewer's panel may have been measured before this scope existed.
+      if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+    }
     return entry;
   };
 
@@ -157,6 +165,7 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
           nativeSelectCompatibility: entry.runtime.nativeSelectCompatibility === true,
           nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? '',
           tabs: entry.runtime.tabs ?? [],
+          viewport: entry.runtime.viewportState ?? null,
         })),
       };
     },
@@ -166,7 +175,7 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
         requireGeneration(expectedGeneration);
         const entry = scopes.get(id);
         if (!entry) throw new Error('The selected browser scope no longer exists');
-        if (surfaceViewport) await entry.runtime.surfaceResize(surfaceViewport);
+        if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
         requireIdleSurface();
         requireGeneration(expectedGeneration);
         select(entry);
@@ -196,6 +205,21 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
     },
     closeTab(tabId, expectedGeneration) {
       return dockCommand('tab-close', { tabId }, expectedGeneration);
+    },
+    setViewport({ mode, width, height, mobile }, expectedGeneration) {
+      return enqueue(async () => {
+        requireIdleSurface();
+        requireGeneration(expectedGeneration);
+        await requireSelected().runtime.configureViewport({ mode, source: 'viewer', width, height, mobile });
+      });
+    },
+    setDevicePixelRatio(ratio) {
+      return enqueue(async () => {
+        if (ratio === devicePixelRatio) return;
+        devicePixelRatio = ratio;
+        const entry = selected();
+        if (surfaceViewport && entry) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+      });
     },
     setNativeSelectCompatibility(enabled, expectedGeneration) {
       return enqueue(async () => {
@@ -281,10 +305,9 @@ export const createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SC
       });
     },
     surfaceResize(size) {
-      return enqueue(async () => {
-        const result = await requireSelected().runtime.surfaceResize(size);
+      return enqueue(() => {
         surfaceViewport = size;
-        return result;
+        return requireSelected().runtime.surfaceResize(cssSize(size, devicePixelRatio));
       });
     },
     surfaceClipboard() {

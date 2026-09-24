@@ -101,6 +101,88 @@ address.autocomplete = 'off';
 address.spellcheck = false;
 address.setAttribute('aria-label', 'Address');
 
+const VIEWPORT_PRESETS = Object.freeze({
+  mobile: Object.freeze({ label: 'Mobile', width: 390, height: 844, mobile: true }),
+  tablet: Object.freeze({ label: 'Tablet', width: 768, height: 1024, mobile: false }),
+  desktop: Object.freeze({ label: 'Desktop', width: 1440, height: 900, mobile: false }),
+});
+
+// A native select: its popup is drawn by the browser, so the short dock does not clip it.
+const viewportSelect = document.createElement('select');
+viewportSelect.className = 'viewport-select';
+viewportSelect.setAttribute('aria-label', 'Viewport size');
+const customOption = new Option('Custom size…', 'custom');
+viewportSelect.append(
+  new Option('Fit panel', 'auto'),
+  ...Object.entries(VIEWPORT_PRESETS).map(([id, preset]) => new Option(`${preset.label} ${preset.width} × ${preset.height}`, id)),
+  customOption,
+);
+
+const rotate = document.createElement('button');
+rotate.type = 'button';
+rotate.className = 'toolbar-button';
+rotate.title = 'Rotate the viewport';
+rotate.setAttribute('aria-label', rotate.title);
+setIcon(rotate, (svg) => {
+  addPath(svg, 'M4 12a8 8 0 0 1 13.66-5.66L20 8.5');
+  addPath(svg, 'M20 3.5v5h-5');
+  addPath(svg, 'M20 12a8 8 0 0 1-13.66 5.66L4 15.5');
+  addPath(svg, 'M4 20.5v-5h5');
+});
+
+const mobileToggle = document.createElement('button');
+mobileToggle.type = 'button';
+mobileToggle.className = 'toolbar-button mobile-toggle';
+mobileToggle.title = 'Emulate a mobile device';
+mobileToggle.setAttribute('aria-label', mobileToggle.title);
+mobileToggle.setAttribute('aria-pressed', 'false');
+setIcon(mobileToggle, (svg) => {
+  addPath(svg, 'M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z');
+  addLine(svg, { x1: '11', y1: '18', x2: '13', y2: '18' });
+});
+
+const sizeInput = (label) => {
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = '1';
+  input.max = '3840';
+  input.step = '1';
+  input.required = true;
+  input.setAttribute('aria-label', label);
+  return input;
+};
+const widthInput = sizeInput('Viewport width');
+const heightInput = sizeInput('Viewport height');
+const times = document.createElement('span');
+times.textContent = '×';
+times.setAttribute('aria-hidden', 'true');
+const applySize = document.createElement('button');
+applySize.type = 'submit';
+applySize.className = 'toolbar-button';
+applySize.title = 'Apply this size';
+applySize.setAttribute('aria-label', applySize.title);
+setIcon(applySize, (svg) => addPath(svg, 'm5 12 5 5 9-10'));
+const cancelSize = document.createElement('button');
+cancelSize.type = 'button';
+cancelSize.className = 'toolbar-button';
+cancelSize.title = 'Cancel';
+cancelSize.setAttribute('aria-label', cancelSize.title);
+setIcon(cancelSize, (svg) => {
+  addLine(svg, { x1: '6', y1: '6', x2: '18', y2: '18' });
+  addLine(svg, { x1: '18', y1: '6', x2: '6', y2: '18' });
+});
+const customSize = document.createElement('form');
+customSize.className = 'custom-size';
+customSize.hidden = true;
+customSize.append(widthInput, times, heightInput, applySize, cancelSize);
+
+const viewportChoice = (viewport) => {
+  if (!viewport || viewport.mode === 'auto') return 'auto';
+  const preset = Object.entries(VIEWPORT_PRESETS)
+    .find(([, candidate]) => candidate.width === viewport.width && candidate.height === viewport.height);
+  return preset ? preset[0] : 'custom';
+};
+
 const pageTabs = document.createElement('div');
 pageTabs.className = 'page-tabs';
 pageTabs.setAttribute('role', 'tablist');
@@ -180,7 +262,7 @@ pageTabsRow.append(pageTabs, newTab);
 
 const navigationRow = document.createElement('div');
 navigationRow.className = 'row navigation-row';
-navigationRow.append(back, forward, reload, address, selectCompatibility);
+navigationRow.append(back, forward, reload, address, customSize, viewportSelect, rotate, mobileToggle, selectCompatibility);
 root.append(scopeRow, pageTabsRow, navigationRow);
 
 let state = null;
@@ -273,6 +355,18 @@ const render = () => {
   selectCompatibility.title = compatibilityLabel;
   selectCompatibility.setAttribute('aria-label', compatibilityLabel);
 
+  const viewport = selected?.viewport ?? null;
+  const choice = viewportChoice(viewport);
+  customOption.textContent = choice === 'custom' ? `Custom ${viewport.width} × ${viewport.height}` : 'Custom size…';
+  if (customSize.hidden) viewportSelect.value = choice;
+  viewportSelect.disabled = disabled || !viewport;
+  viewportSelect.title = viewport?.mode === 'fixed' && viewport.source === 'agent'
+    ? 'The agent chose this viewport. Pick another size to take it over.'
+    : 'Viewport size';
+  rotate.disabled = disabled || viewport?.mode !== 'fixed';
+  mobileToggle.disabled = disabled || !viewport;
+  mobileToggle.setAttribute('aria-pressed', String(viewport?.mobile === true));
+
   let statusState = 'ready';
   let statusMessage = '';
   let statusTitle = 'Click or type in the page to take control. Enter an address and press Enter to navigate.';
@@ -324,6 +418,15 @@ const request = async (path, payload) => {
   }
 };
 
+let reportedRatio = null;
+const syncPixelRatio = () => {
+  const ratio = window.devicePixelRatio || 1;
+  if (ratio === reportedRatio) return;
+  reportedRatio = ratio;
+  void host.serviceRequest({ method: 'POST', path: '/browser/viewer', body: JSON.stringify({ devicePixelRatio: ratio }) })
+    .then((result) => { if (result.status !== 200) reportedRatio = null; }, () => { reportedRatio = null; });
+};
+
 const refresh = async () => {
   if (refreshPending || requestPending) return;
   refreshPending = true;
@@ -332,6 +435,7 @@ const refresh = async () => {
     if (result.status === 200) {
       state = parseState(result.body);
       serviceError = null;
+      syncPixelRatio();
       render();
     }
   } catch (error) {
@@ -429,6 +533,67 @@ address.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   addressDirty = false;
   render();
+});
+
+const selectedViewport = () => state?.scopes.find((scope) => scope.id === state.selectedScopeId)?.viewport ?? null;
+
+const setViewport = (viewport) => {
+  if (!state) return;
+  void request('/browser/viewport', { ...viewport, generation: state.generation });
+};
+
+const closeCustomSize = () => {
+  customSize.hidden = true;
+  address.hidden = false;
+  render();
+};
+
+viewportSelect.addEventListener('change', () => {
+  const current = selectedViewport();
+  if (!current) return;
+  if (viewportSelect.value === 'custom') {
+    widthInput.value = String(current.width);
+    heightInput.value = String(current.height);
+    address.hidden = true;
+    customSize.hidden = false;
+    widthInput.focus();
+    widthInput.select();
+    return;
+  }
+  const preset = VIEWPORT_PRESETS[viewportSelect.value];
+  setViewport(preset
+    ? { mode: 'fixed', width: preset.width, height: preset.height, mobile: preset.mobile }
+    : { mode: 'auto', mobile: current.mobile });
+});
+
+rotate.addEventListener('click', () => {
+  const current = selectedViewport();
+  if (current?.mode !== 'fixed') return;
+  setViewport({ mode: 'fixed', width: current.height, height: current.width, mobile: current.mobile });
+});
+
+mobileToggle.addEventListener('click', () => {
+  const current = selectedViewport();
+  if (!current) return;
+  setViewport(current.mode === 'fixed'
+    ? { mode: 'fixed', width: current.width, height: current.height, mobile: !current.mobile }
+    : { mode: 'auto', mobile: !current.mobile });
+});
+
+customSize.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const current = selectedViewport();
+  if (!current || !customSize.reportValidity()) return;
+  customSize.hidden = true;
+  address.hidden = false;
+  setViewport({ mode: 'fixed', width: Number(widthInput.value), height: Number(heightInput.value), mobile: current.mobile });
+});
+
+cancelSize.addEventListener('click', closeCustomSize);
+customSize.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  event.preventDefault();
+  closeCustomSize();
 });
 
 let mounted = false;

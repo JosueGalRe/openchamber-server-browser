@@ -163,11 +163,13 @@ test('runs every browser action and the shared surface against real Chrome', { s
   assert.equal(runtime.url, `${web.origin}/#section`);
   await runtime.surfaceResize({ width: 700, height: 500 });
   const afterSurfaceResize = await runtime.perform('browser.snapshot', {});
+  const filled = await runtime.perform('browser.resize', { viewport: 'fill' });
 
   assert.equal(frame.mime, 'image/jpeg');
   assert.ok(frame.bytes.length > 100);
   assert.match(afterPointer.text, /Surface clicked/);
-  assert.deepEqual(afterSurfaceResize.viewport, { mode: 'custom', width: 700, height: 500 });
+  assert.deepEqual(afterSurfaceResize.viewport, { mode: 'mobile', width: 390, height: 844 });
+  assert.deepEqual(filled.viewport, { mode: 'custom', width: 700, height: 500 });
 
   runtime.surfaceControl('user');
   await assert.rejects(
@@ -412,4 +414,40 @@ test('follows pages the site opens as tabs and returns to the opener when they c
   assert.equal(runtime.url, 'about:blank');
   await runtime.command('tab-select', { tabId: opener });
   assert.equal((await runtime.perform('browser.snapshot', {})).title, 'Tabs');
+});
+
+test('sizes pages in CSS pixels for the viewer and keeps a chosen size fixed', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a visible scope in a panel measured at twice the CSS pixel density.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtimes = [];
+  const manager = createBrowserManager({
+    createRuntime: () => {
+      const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+      runtimes.push(runtime);
+      return runtime;
+    },
+  });
+  context.after(() => manager.close());
+  await manager.setDevicePixelRatio(2);
+  await assert.rejects(manager.surfaceResize({ width: 1400, height: 1000 }), /no browser scope/i);
+  await manager.perform('browser.open', { url: `${web.origin}/` }, undefined, { directory: '/repo', sessionId: 'ses_view' });
+  const page = await runtimes[0].ensurePage();
+  const innerSize = async () => (await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', {
+    expression: 'JSON.stringify([innerWidth, innerHeight])',
+    returnByValue: true,
+  })).result.value;
+
+  // Then the page lays out at the panel's CSS size.
+  assert.equal(await innerSize(), '[700,500]');
+
+  // When the dock fixes a size, then a later panel resize keeps it.
+  await manager.setViewport({ mode: 'fixed', width: 500, height: 400, mobile: false }, manager.state().generation);
+  await manager.surfaceResize({ width: 1200, height: 800 });
+  assert.equal(await innerSize(), '[500,400]');
+  assert.deepEqual(manager.state().scopes[0].viewport, { mode: 'fixed', source: 'viewer', width: 500, height: 400, mobile: false });
+
+  // When the dock returns to Auto, then the page follows the latest panel size again.
+  await manager.setViewport({ mode: 'auto', mobile: false }, manager.state().generation);
+  assert.equal(await innerSize(), '[600,400]');
 });

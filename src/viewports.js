@@ -4,27 +4,31 @@ const PRESETS = Object.freeze({
   desktop: Object.freeze({ width: 1440, height: 900, mobile: false }),
 });
 
-export const viewportForMode = (mode) => mode === 'fill' ? null : PRESETS[mode];
+export const MAX_VIEWPORT_DIMENSION = 3840;
 
-export const viewportSummary = (viewport) => {
-  if (viewport === null) return { mode: 'fill', width: null, height: null };
+export const presetViewport = (mode) => PRESETS[mode] ?? null;
+
+export const viewportSummary = ({ width, height }) => {
   for (const [mode, preset] of Object.entries(PRESETS)) {
-    if (preset.width === viewport.width && preset.height === viewport.height) {
-      return { mode, width: viewport.width, height: viewport.height };
-    }
+    if (preset.width === width && preset.height === height) return { mode, width, height };
   }
-  return { mode: 'custom', width: viewport.width, height: viewport.height };
+  return { mode: 'custom', width, height };
 };
 
-export const applyViewport = async (cdp, sessionId, viewport) => {
-  if (viewport === null) {
-    await cdp.sendSession(sessionId, 'Emulation.clearDeviceMetricsOverride');
-    return;
-  }
-  await cdp.sendSession(sessionId, 'Emulation.setDeviceMetricsOverride', {
-    width: viewport.width,
-    height: viewport.height,
-    deviceScaleFactor: 1,
-    mobile: viewport.mobile,
-  });
-};
+const cssDimension = (value, devicePixelRatio) => Math.min(
+  MAX_VIEWPORT_DIMENSION,
+  Math.max(1, Math.round(value / devicePixelRatio)),
+);
+
+// The host measures the panel in device pixels; pages lay out in CSS pixels.
+export const cssSize = ({ width, height }, devicePixelRatio) => ({
+  width: cssDimension(width, devicePixelRatio),
+  height: cssDimension(height, devicePixelRatio),
+});
+
+export const applyViewport = (cdp, sessionId, viewport) => cdp.sendSession(sessionId, 'Emulation.setDeviceMetricsOverride', {
+  width: viewport.width,
+  height: viewport.height,
+  deviceScaleFactor: 1,
+  mobile: viewport.mobile,
+});

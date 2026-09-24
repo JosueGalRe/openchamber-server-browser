@@ -218,10 +218,8 @@ export const createSurface = (runtime) => {
     control(controller) {
       runtime.controller = controller;
     },
-    async resize({ width, height }) {
-      await runtime.ensurePage();
-      await runtime.setViewport({ width, height, mobile: false });
-      return { width, height };
+    resize({ width, height }) {
+      return runtime.setPanelSize({ width, height });
     },
     async clipboard() {
       const current = await start();

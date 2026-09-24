@@ -8,7 +8,7 @@
       :root { color-scheme: light dark; font-family: var(--oc-font, ui-sans-serif, system-ui, sans-serif); }
       * { box-sizing: border-box; }
       html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-      button, input { font: inherit; }
+      button, input, select { font: inherit; }
       #root { display: grid; grid-template-rows: 28px 28px 40px; padding: 4px 8px; background: var(--oc-bg, transparent); color: var(--oc-fg, inherit); }
       .row { display: flex; align-items: center; min-width: 0; }
       .scope-row { gap: 8px; border-bottom: 1px solid var(--oc-subtle, var(--oc-border, currentColor)); }
@@ -44,14 +44,19 @@
       .navigation-row button { display: inline-flex; width: 28px; height: 28px; flex: 0 0 28px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: var(--oc-radius, 6px); background: transparent; color: var(--oc-muted, currentColor); cursor: pointer; }
       .navigation-row button:hover:not(:disabled) { background: var(--oc-hover, transparent); color: var(--oc-fg, inherit); }
       .navigation-row button:active:not(:disabled) { background: var(--oc-active, var(--oc-hover, transparent)); }
-      .navigation-row .select-compatibility[aria-pressed="true"] { background: var(--oc-selection, var(--oc-hover, transparent)); color: var(--oc-selection-fg, var(--oc-fg, inherit)); }
+      .navigation-row .select-compatibility[aria-pressed="true"], .navigation-row .mobile-toggle[aria-pressed="true"] { background: var(--oc-selection, var(--oc-hover, transparent)); color: var(--oc-selection-fg, var(--oc-fg, inherit)); }
       .navigation-row button svg { width: 16px; height: 16px; pointer-events: none; }
-      button:disabled, input:disabled, fieldset:disabled button { cursor: default; opacity: .55; }
+      button:disabled, input:disabled, select:disabled, fieldset:disabled button { cursor: default; opacity: .55; }
       input { height: 28px; min-width: 0; flex: 1; margin-left: 4px; padding: 0 12px; border: 1px solid var(--oc-border, currentColor); border-radius: 999px; background: var(--oc-elevated, transparent); color: var(--oc-elevated-fg, var(--oc-fg, inherit)); font-size: 12px; }
       input::placeholder { color: var(--oc-muted, currentColor); opacity: .8; }
-      input:focus, button:focus-visible { outline: 2px solid var(--oc-focus, currentColor); outline-offset: 1px; }
+      .viewport-select { flex: 0 1 136px; min-width: 64px; height: 28px; margin-left: 4px; padding: 0 6px; border: 1px solid var(--oc-border, currentColor); border-radius: var(--oc-radius, 6px); background: var(--oc-elevated, transparent); color: var(--oc-elevated-fg, var(--oc-fg, inherit)); font-size: 12px; }
+      .custom-size { display: flex; flex: 1; min-width: 0; align-items: center; gap: 4px; margin-left: 4px; }
+      .custom-size[hidden] { display: none; }
+      .custom-size input { flex: 0 1 84px; margin-left: 0; padding: 0 8px; }
+      .custom-size span { color: var(--oc-muted, currentColor); font-size: 12px; }
+      input:focus, button:focus-visible, select:focus-visible { outline: 2px solid var(--oc-focus, currentColor); outline-offset: 1px; }
       @media (forced-colors: active) {
-        .status::before, .session-tabs .oc-sdk-tab[aria-selected="true"]::after, .select-compatibility[aria-pressed="true"], .page-tab[data-active="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+        .status::before, .session-tabs .oc-sdk-tab[aria-selected="true"]::after, .select-compatibility[aria-pressed="true"], .mobile-toggle[aria-pressed="true"], .page-tab[data-active="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
       }
     </style>
   </head>

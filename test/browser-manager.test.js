@@ -25,6 +25,7 @@ const createRuntimeFactory = () => {
         calls.push(['command', name, parameters]);
         if (name === 'navigate') runtime.url = parameters.url;
       },
+      async configureViewport(request) { calls.push(['viewport', request]); },
       async surfaceFrame({ after }) {
         calls.push(['frame', after]);
         return { sequence: 1, bytes: Buffer.from(scope.sessionId), mime: 'image/jpeg', width: 800, height: 600, title: runtime.title };
@@ -428,4 +429,26 @@ test('guards tab commands and treats a tab switch in the visible scope as a view
   // When a viewer holds control, then tab commands wait for the surface to be idle.
   manager.surfaceControl('user');
   await assert.rejects(manager.newTab(manager.state().generation), /idle/i);
+});
+
+test('converts the viewer panel with its pixel ratio and sizes a first scope created after it', async () => {
+  // Given a panel on a 2x display measured before any scope exists.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.setDevicePixelRatio(2);
+  await assert.rejects(manager.surfaceResize({ width: 1400, height: 1000 }), /no browser scope/i);
+
+  // When the first scope appears, then it gets the panel's CSS size.
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  const runtime = runtimes.get('ses_one');
+  assert.deepEqual(runtime.calls.find(([kind]) => kind === 'resize'), ['resize', { width: 700, height: 500 }]);
+
+  // When the ratio changes, then the visible scope is resized from the same panel.
+  await manager.setDevicePixelRatio(1);
+  assert.deepEqual(runtime.calls.at(-1), ['resize', { width: 1400, height: 1000 }]);
+
+  // When the dock sets a viewport, then it is marked as the viewer's and guarded like other dock mutations.
+  await manager.setViewport({ mode: 'fixed', width: 500, height: 400, mobile: false }, manager.state().generation);
+  assert.deepEqual(runtime.calls.at(-1), ['viewport', { mode: 'fixed', source: 'viewer', width: 500, height: 400, mobile: false }]);
+  await assert.rejects(manager.setViewport({ mode: 'auto', mobile: false }, manager.state().generation + 1), /view changed/i);
 });

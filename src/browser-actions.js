@@ -1,6 +1,6 @@
 import { buildClickScript, buildSnapshotScript, buildTypeScript } from './page-scripts.js';
 import { buildInspectScript, buildScrollScript } from './page-scripts-more.js';
-import { viewportForMode, viewportSummary } from './viewports.js';
+import { viewportSummary } from './viewports.js';
 
 const OPEN_SETTLE_MS = 30_000;
 
@@ -106,8 +106,7 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
     const url = new URL(parameters.url);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Open an absolute http(s) URL');
     const page = await runtime.ensurePage();
-    const requestedViewport = parameters.viewport ? viewportForMode(parameters.viewport) : runtime.viewport;
-    await runtime.setViewport(requestedViewport);
+    if (parameters.viewport) await runtime.applyAgentViewport(parameters.viewport);
     runtime.clearConsoleProblems();
     const load = startLoadWait(page, OPEN_SETTLE_MS, signal);
     let navigation;
@@ -141,7 +140,7 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
   if (action === 'browser.forward') return navigateHistory(page, false, signal);
 
   if (action === 'browser.resize') {
-    await runtime.setViewport(viewportForMode(parameters.viewport));
+    await runtime.applyAgentViewport(parameters.viewport);
     return { viewport: viewportSummary(runtime.viewport) };
   }
   if (action === 'browser.capture') {

@@ -3643,6 +3643,35 @@ var require_websocket_server = __commonJS({
 import path3 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
+// src/viewports.js
+var PRESETS = Object.freeze({
+  mobile: Object.freeze({ width: 390, height: 844, mobile: true }),
+  tablet: Object.freeze({ width: 768, height: 1024, mobile: false }),
+  desktop: Object.freeze({ width: 1440, height: 900, mobile: false })
+});
+var MAX_VIEWPORT_DIMENSION = 3840;
+var presetViewport = (mode) => PRESETS[mode] ?? null;
+var viewportSummary = ({ width, height }) => {
+  for (const [mode, preset] of Object.entries(PRESETS)) {
+    if (preset.width === width && preset.height === height) return { mode, width, height };
+  }
+  return { mode: "custom", width, height };
+};
+var cssDimension = (value, devicePixelRatio) => Math.min(
+  MAX_VIEWPORT_DIMENSION,
+  Math.max(1, Math.round(value / devicePixelRatio))
+);
+var cssSize = ({ width, height }, devicePixelRatio) => ({
+  width: cssDimension(width, devicePixelRatio),
+  height: cssDimension(height, devicePixelRatio)
+});
+var applyViewport = (cdp, sessionId, viewport) => cdp.sendSession(sessionId, "Emulation.setDeviceMetricsOverride", {
+  width: viewport.width,
+  height: viewport.height,
+  deviceScaleFactor: 1,
+  mobile: viewport.mobile
+});
+
 // src/browser-manager.js
 var DEFAULT_MAX_SCOPES = 4;
 var scopeId = ({ directory, sessionId }) => JSON.stringify([directory, sessionId]);
@@ -3660,6 +3689,7 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
   const frameControllers = /* @__PURE__ */ new Set();
   const selectionWaiters = /* @__PURE__ */ new Set();
   let surfaceViewport = null;
+  let devicePixelRatio = 1;
   let closed = false;
   let notice = null;
   const enqueue = (operation) => {
@@ -3727,7 +3757,10 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
     entry.runtime.onTabsChanged(() => {
       if (selectedScopeId === entry.id) viewGeneration += 1;
     });
-    if (!selectedScopeId) select(entry);
+    if (!selectedScopeId) {
+      select(entry);
+      if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+    }
     return entry;
   };
   const requireSelected = () => {
@@ -3782,7 +3815,8 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
           canGoForward: entry.runtime.canGoForward === true,
           nativeSelectCompatibility: entry.runtime.nativeSelectCompatibility === true,
           nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? "",
-          tabs: entry.runtime.tabs ?? []
+          tabs: entry.runtime.tabs ?? [],
+          viewport: entry.runtime.viewportState ?? null
         }))
       };
     },
@@ -3792,7 +3826,7 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
         requireGeneration(expectedGeneration);
         const entry = scopes.get(id);
         if (!entry) throw new Error("The selected browser scope no longer exists");
-        if (surfaceViewport) await entry.runtime.surfaceResize(surfaceViewport);
+        if (surfaceViewport) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
         requireIdleSurface();
         requireGeneration(expectedGeneration);
         select(entry);
@@ -3822,6 +3856,21 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
     },
     closeTab(tabId, expectedGeneration) {
       return dockCommand("tab-close", { tabId }, expectedGeneration);
+    },
+    setViewport({ mode, width, height, mobile }, expectedGeneration) {
+      return enqueue(async () => {
+        requireIdleSurface();
+        requireGeneration(expectedGeneration);
+        await requireSelected().runtime.configureViewport({ mode, source: "viewer", width, height, mobile });
+      });
+    },
+    setDevicePixelRatio(ratio) {
+      return enqueue(async () => {
+        if (ratio === devicePixelRatio) return;
+        devicePixelRatio = ratio;
+        const entry = selected();
+        if (surfaceViewport && entry) await entry.runtime.surfaceResize(cssSize(surfaceViewport, devicePixelRatio));
+      });
     },
     setNativeSelectCompatibility(enabled, expectedGeneration) {
       return enqueue(async () => {
@@ -3905,10 +3954,9 @@ var createBrowserManager = ({ createRuntime, maxScopes = DEFAULT_MAX_SCOPES }) =
       });
     },
     surfaceResize(size) {
-      return enqueue(async () => {
-        const result = await requireSelected().runtime.surfaceResize(size);
+      return enqueue(() => {
         surfaceViewport = size;
-        return result;
+        return requireSelected().runtime.surfaceResize(cssSize(size, devicePixelRatio));
       });
     },
     surfaceClipboard() {
@@ -4184,35 +4232,6 @@ var buildInspectScript = ({ selector }) => wrapPageScript(`
   };
 `);
 
-// src/viewports.js
-var PRESETS = Object.freeze({
-  mobile: Object.freeze({ width: 390, height: 844, mobile: true }),
-  tablet: Object.freeze({ width: 768, height: 1024, mobile: false }),
-  desktop: Object.freeze({ width: 1440, height: 900, mobile: false })
-});
-var viewportForMode = (mode) => mode === "fill" ? null : PRESETS[mode];
-var viewportSummary = (viewport) => {
-  if (viewport === null) return { mode: "fill", width: null, height: null };
-  for (const [mode, preset] of Object.entries(PRESETS)) {
-    if (preset.width === viewport.width && preset.height === viewport.height) {
-      return { mode, width: viewport.width, height: viewport.height };
-    }
-  }
-  return { mode: "custom", width: viewport.width, height: viewport.height };
-};
-var applyViewport = async (cdp, sessionId, viewport) => {
-  if (viewport === null) {
-    await cdp.sendSession(sessionId, "Emulation.clearDeviceMetricsOverride");
-    return;
-  }
-  await cdp.sendSession(sessionId, "Emulation.setDeviceMetricsOverride", {
-    width: viewport.width,
-    height: viewport.height,
-    deviceScaleFactor: 1,
-    mobile: viewport.mobile
-  });
-};
-
 // src/browser-actions.js
 var OPEN_SETTLE_MS = 3e4;
 var withAbort = async (signal, operation) => {
@@ -4313,8 +4332,7 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
     const url = new URL(parameters.url);
     if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Open an absolute http(s) URL");
     const page2 = await runtime.ensurePage();
-    const requestedViewport = parameters.viewport ? viewportForMode(parameters.viewport) : runtime.viewport;
-    await runtime.setViewport(requestedViewport);
+    if (parameters.viewport) await runtime.applyAgentViewport(parameters.viewport);
     runtime.clearConsoleProblems();
     const load = startLoadWait(page2, OPEN_SETTLE_MS, signal);
     let navigation;
@@ -4346,7 +4364,7 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
   if (action === "browser.back") return navigateHistory(page, true, signal);
   if (action === "browser.forward") return navigateHistory(page, false, signal);
   if (action === "browser.resize") {
-    await runtime.setViewport(viewportForMode(parameters.viewport));
+    await runtime.applyAgentViewport(parameters.viewport);
     return { viewport: viewportSummary(runtime.viewport) };
   }
   if (action === "browser.capture") {
@@ -5649,10 +5667,8 @@ var createSurface = (runtime) => {
     control(controller) {
       runtime.controller = controller;
     },
-    async resize({ width, height }) {
-      await runtime.ensurePage();
-      await runtime.setViewport({ width, height, mobile: false });
-      return { width, height };
+    resize({ width, height }) {
+      return runtime.setPanelSize({ width, height });
     },
     async clipboard() {
       const current = await start();
@@ -5722,6 +5738,11 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
   let closed = false;
   let dead = null;
   const deathListeners = /* @__PURE__ */ new Set();
+  let viewportConfig = { mode: "auto", source: "viewer", mobile: false, fixed: null, panel: null };
+  const effectiveViewport = () => {
+    const size = viewportConfig.mode === "fixed" ? viewportConfig.fixed : viewportConfig.panel ?? presetViewport("desktop");
+    return { width: size.width, height: size.height, mobile: viewportConfig.mobile };
+  };
   const markDead = () => {
     if (closed || dead) return;
     dead = new Error("Chrome for this chat stopped unexpectedly; retry the action to start a new browser");
@@ -5731,7 +5752,13 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
   chrome.onExit(markDead);
   const activeTab = () => tabs.get(activeTargetId) ?? null;
   const runtime = {
-    viewport: viewportForMode("desktop"),
+    get viewport() {
+      return effectiveViewport();
+    },
+    get viewportState() {
+      const { width, height, mobile } = effectiveViewport();
+      return { mode: viewportConfig.mode, source: viewportConfig.source, width, height, mobile };
+    },
     controller: "none",
     agentActive: false,
     get url() {
@@ -5989,11 +6016,31 @@ var createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], allowedNet
     nativeSelectEnabled = enabled;
     await Promise.allSettled([...tabs.values()].filter((current) => current !== active).map((current) => current.compatibility.setEnabled(enabled)));
   };
-  runtime.setViewport = async (viewport) => {
+  const applyViewportToTabs = async () => {
+    const viewport = effectiveViewport();
     const page = await runtime.ensurePage();
     await applyViewport(page.cdp, page.sessionId, viewport);
-    runtime.viewport = viewport;
     await Promise.allSettled([...tabs.values()].filter((current) => current.sessionId !== page.sessionId).map((current) => applyViewport(cdp, current.sessionId, viewport)));
+  };
+  runtime.configureViewport = async ({ mode, source, width, height, mobile }) => {
+    viewportConfig = {
+      ...viewportConfig,
+      mode,
+      source,
+      fixed: mode === "fixed" ? { width, height } : viewportConfig.fixed,
+      mobile: typeof mobile === "boolean" ? mobile : viewportConfig.mobile
+    };
+    await applyViewportToTabs();
+  };
+  runtime.applyAgentViewport = (mode) => {
+    const preset = presetViewport(mode);
+    return preset ? runtime.configureViewport({ mode: "fixed", source: "agent", ...preset }) : runtime.configureViewport({ mode: "auto", source: "agent", mobile: false });
+  };
+  runtime.setPanelSize = async (size) => {
+    viewportConfig = { ...viewportConfig, panel: size };
+    if (viewportConfig.mode === "auto") await applyViewportToTabs();
+    const { width, height } = effectiveViewport();
+    return { width, height };
   };
   runtime.command = async (name, parameters = {}) => {
     if (closed) throw new Error("Browser runtime is closed");
@@ -6174,6 +6221,13 @@ var readObjectBody = async (request) => {
 };
 var stringProperty = (value, name) => typeof value?.[name] === "string" && value[name].length > 0 ? value[name] : null;
 var generationProperty = (value) => Number.isInteger(value?.generation) && value.generation >= 0 ? value.generation : null;
+var viewportDimension = (value) => Number.isInteger(value) && value >= 1 && value <= MAX_VIEWPORT_DIMENSION;
+var readViewportRequest = (value) => {
+  if (typeof value?.mobile !== "boolean") return null;
+  if (value.mode === "auto") return { mode: "auto", mobile: value.mobile };
+  if (value.mode !== "fixed" || !viewportDimension(value.width) || !viewportDimension(value.height)) return null;
+  return { mode: "fixed", width: value.width, height: value.height, mobile: value.mobile };
+};
 var dockErrorStatus = (error) => {
   const message = errorMessage(error);
   if (/surface is idle|browser view changed/i.test(message)) return 409;
@@ -6255,6 +6309,30 @@ var createService = ({ runtime, token, port = 0 }) => {
         if (tabOperation === "new") await runtime.newTab(generation);
         else if (tabOperation === "select") await runtime.selectTab(tabId, generation);
         else await runtime.closeTab(tabId, generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/browser/viewer") {
+      const body = await readObjectBody(request);
+      const ratio = body?.devicePixelRatio;
+      if (typeof ratio !== "number" || !Number.isFinite(ratio) || ratio < 0.25 || ratio > 8) {
+        return text(response, 400, "devicePixelRatio must be a number from 0.25 to 8\n");
+      }
+      await runtime.setDevicePixelRatio(ratio);
+      return json(response, 200, runtime.state());
+    }
+    if (request.method === "POST" && url.pathname === "/browser/viewport") {
+      const body = await readObjectBody(request);
+      const generation = generationProperty(body);
+      const viewport = readViewportRequest(body);
+      if (generation === null || !viewport) {
+        return text(response, 400, `generation, mode, and mobile are required, and a fixed size needs width and height from 1 to ${MAX_VIEWPORT_DIMENSION}
+`);
+      }
+      try {
+        await runtime.setViewport(viewport, generation);
         return json(response, 200, runtime.state());
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });

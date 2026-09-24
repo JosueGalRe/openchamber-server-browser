@@ -20,6 +20,7 @@ import {
   readSurfaceInputBatch,
   readSurfaceResizeRequest,
 } from '@openchamber/sdk';
+import { MAX_VIEWPORT_DIMENSION } from './viewports.js';
 
 const BODY_MAX_BYTES = 17 * 1024 * 1024;
 
@@ -103,6 +104,15 @@ const stringProperty = (value, name) => (
 const generationProperty = (value) => (
   Number.isInteger(value?.generation) && value.generation >= 0 ? value.generation : null
 );
+
+const viewportDimension = (value) => Number.isInteger(value) && value >= 1 && value <= MAX_VIEWPORT_DIMENSION;
+
+const readViewportRequest = (value) => {
+  if (typeof value?.mobile !== 'boolean') return null;
+  if (value.mode === 'auto') return { mode: 'auto', mobile: value.mobile };
+  if (value.mode !== 'fixed' || !viewportDimension(value.width) || !viewportDimension(value.height)) return null;
+  return { mode: 'fixed', width: value.width, height: value.height, mobile: value.mobile };
+};
 
 const dockErrorStatus = (error) => {
   const message = errorMessage(error);
@@ -194,6 +204,31 @@ export const createService = ({ runtime, token, port = 0 }) => {
         if (tabOperation === 'new') await runtime.newTab(generation);
         else if (tabOperation === 'select') await runtime.selectTab(tabId, generation);
         else await runtime.closeTab(tabId, generation);
+        return json(response, 200, runtime.state());
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+
+    if (request.method === 'POST' && url.pathname === '/browser/viewer') {
+      const body = await readObjectBody(request);
+      const ratio = body?.devicePixelRatio;
+      if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio < 0.25 || ratio > 8) {
+        return text(response, 400, 'devicePixelRatio must be a number from 0.25 to 8\n');
+      }
+      await runtime.setDevicePixelRatio(ratio);
+      return json(response, 200, runtime.state());
+    }
+
+    if (request.method === 'POST' && url.pathname === '/browser/viewport') {
+      const body = await readObjectBody(request);
+      const generation = generationProperty(body);
+      const viewport = readViewportRequest(body);
+      if (generation === null || !viewport) {
+        return text(response, 400, `generation, mode, and mobile are required, and a fixed size needs width and height from 1 to ${MAX_VIEWPORT_DIMENSION}\n`);
+      }
+      try {
+        await runtime.setViewport(viewport, generation);
         return json(response, 200, runtime.state());
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });

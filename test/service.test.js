@@ -29,6 +29,8 @@ const createRuntime = () => {
     async selectScope(id, generation) { calls.push(['select', id, generation]); },
     async navigate(url, generation) { calls.push(['navigate', url, generation]); },
     async reload(generation) { calls.push(['reload', generation]); },
+    async setDevicePixelRatio(ratio) { calls.push(['ratio', ratio]); },
+    async setViewport(viewport, generation) { calls.push(['viewport', viewport, generation]); },
     async newTab(generation) { calls.push(['tab-new', generation]); },
     async selectTab(tabId, generation) { calls.push(['tab-select', tabId, generation]); },
     async closeTab(tabId, generation) { calls.push(['tab-close', tabId, generation]); },
@@ -290,4 +292,24 @@ test('dock tab routes validate their fields and reach the manager', async (conte
   assert.equal(unknown.status, 404);
   assert.deepEqual([created.status, selected.status, closed.status], [200, 200, 200]);
   assert.deepEqual(fixture.runtime.calls, [['tab-new', 1], ['tab-select', 'tab-2', 1], ['tab-close', 'tab-2', 1]]);
+});
+
+test('validates viewer ratio and viewport requests at the service boundary', async (context) => {
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+  const post = (path, body) => fetch(`${fixture.origin}${path}`, {
+    method: 'POST', headers: authorization, body: JSON.stringify(body),
+  });
+
+  const badRatio = await post('/browser/viewer', { devicePixelRatio: 'x' });
+  const ratio = await post('/browser/viewer', { devicePixelRatio: 1.5 });
+  const missingMobile = await post('/browser/viewport', { generation: 1, mode: 'auto' });
+  const tooWide = await post('/browser/viewport', { generation: 1, mode: 'fixed', width: 4000, height: 800, mobile: false });
+  const fixed = await post('/browser/viewport', { generation: 1, mode: 'fixed', width: 800, height: 600, mobile: true, source: 'agent' });
+
+  assert.deepEqual([badRatio.status, ratio.status, missingMobile.status, tooWide.status, fixed.status], [400, 200, 400, 400, 200]);
+  assert.deepEqual(fixture.runtime.calls, [
+    ['ratio', 1.5],
+    ['viewport', { mode: 'fixed', width: 800, height: 600, mobile: true }, 1],
+  ]);
 });

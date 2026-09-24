@@ -5,7 +5,7 @@ import { networkGrants, originGrants } from './config.js';
 import { createNativeSelectCompatibility } from './native-select-compatibility.js';
 import { createPolicyProxy } from './policy-proxy.js';
 import { createSurface } from './surface.js';
-import { applyViewport, viewportForMode } from './viewports.js';
+import { applyViewport, presetViewport } from './viewports.js';
 
 const boundedText = (value, maximum = 1_000) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maximum);
 
@@ -52,6 +52,14 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
   let closed = false;
   let dead = null;
   const deathListeners = new Set();
+  // 'auto' follows the viewer's panel; 'fixed' keeps a chosen size. The source
+  // says who chose it, so an agent's size is not replaced by a panel resize.
+  let viewportConfig = { mode: 'auto', source: 'viewer', mobile: false, fixed: null, panel: null };
+
+  const effectiveViewport = () => {
+    const size = viewportConfig.mode === 'fixed' ? viewportConfig.fixed : viewportConfig.panel ?? presetViewport('desktop');
+    return { width: size.width, height: size.height, mobile: viewportConfig.mobile };
+  };
 
   const markDead = () => {
     if (closed || dead) return;
@@ -64,7 +72,13 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
   const activeTab = () => tabs.get(activeTargetId) ?? null;
 
   const runtime = {
-    viewport: viewportForMode('desktop'),
+    get viewport() {
+      return effectiveViewport();
+    },
+    get viewportState() {
+      const { width, height, mobile } = effectiveViewport();
+      return { mode: viewportConfig.mode, source: viewportConfig.source, width, height, mobile };
+    },
     controller: 'none',
     agentActive: false,
     get url() {
@@ -339,13 +353,40 @@ export const createBrowserRuntime = ({ chromePath = null, allowedOrigins = [], a
       .map((current) => current.compatibility.setEnabled(enabled)));
   };
 
-  runtime.setViewport = async (viewport) => {
+  const applyViewportToTabs = async () => {
+    const viewport = effectiveViewport();
     const page = await runtime.ensurePage();
     await applyViewport(page.cdp, page.sessionId, viewport);
-    runtime.viewport = viewport;
     await Promise.allSettled([...tabs.values()]
       .filter((current) => current.sessionId !== page.sessionId)
       .map((current) => applyViewport(cdp, current.sessionId, viewport)));
+  };
+
+  runtime.configureViewport = async ({ mode, source, width, height, mobile }) => {
+    viewportConfig = {
+      ...viewportConfig,
+      mode,
+      source,
+      fixed: mode === 'fixed' ? { width, height } : viewportConfig.fixed,
+      mobile: typeof mobile === 'boolean' ? mobile : viewportConfig.mobile,
+    };
+    await applyViewportToTabs();
+  };
+
+  runtime.applyAgentViewport = (mode) => {
+    const preset = presetViewport(mode);
+    return preset
+      ? runtime.configureViewport({ mode: 'fixed', source: 'agent', ...preset })
+      : runtime.configureViewport({ mode: 'auto', source: 'agent', mobile: false });
+  };
+
+  // The CSS size the viewer's panel can show. A fixed viewport keeps its own
+  // size and the host letterboxes it.
+  runtime.setPanelSize = async (size) => {
+    viewportConfig = { ...viewportConfig, panel: size };
+    if (viewportConfig.mode === 'auto') await applyViewportToTabs();
+    const { width, height } = effectiveViewport();
+    return { width, height };
   };
 
   // Dock commands return once Chrome accepts them; loading and history state
