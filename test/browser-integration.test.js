@@ -446,6 +446,19 @@ test('follows pages the site opens as tabs and returns to the opener when they c
   assert.equal((await runtime.perform('browser.snapshot', {})).title, 'Tabs');
 });
 
+test('streams frames when the viewer\'s first frame request opens the page', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a scope with no page yet, like one opened from the dock for a chat.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+
+  // When the viewer asks for a frame first and the page then loads, then frames arrive.
+  const frame = runtime.surfaceFrame({ after: 0, wait: 10_000 });
+  await runtime.perform('browser.open', { url: web.origin });
+  assert.ok(await frame, 'the stream opened with the page never delivered a frame');
+});
+
 test('sizes pages in CSS pixels for the viewer and keeps a chosen size fixed', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
   // Given a visible scope in a panel measured at twice the CSS pixel density.
   const web = await startWebFixture();

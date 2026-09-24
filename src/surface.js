@@ -175,8 +175,9 @@ export const createSurface = (runtime) => {
         throw new Error('Surface is closed');
       }
       if (expected === target) return current;
-      // The active tab changed while this stream started; stop it and follow.
-      stopScreencast(current);
+      // The active tab changed while this stream started (opening the first
+      // page does that too); drop it so the next pass streams from scratch.
+      detach();
     }
   };
 

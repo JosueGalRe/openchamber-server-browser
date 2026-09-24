@@ -6506,7 +6506,7 @@ var createSurface = (runtime) => {
         throw new Error("Surface is closed");
       }
       if (expected === target) return current;
-      stopScreencast(current);
+      detach();
     }
   };
   const start = () => {
