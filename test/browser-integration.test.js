@@ -46,6 +46,33 @@ const startWebFixture = async () => {
       `, 'Select compatibility'));
       return;
     }
+    if (request.url === '/form') {
+      response.end(html(`
+        <section id="dialog"><p>Inside the dialog</p>
+          <select id="country" aria-label="Country">
+            <option value="">Choose</option>
+            <option value="ca">  Canada
+              (CA) </option>
+            <option value="us" label="United States">US</option>
+            <option value="mx" disabled>Mexico</option>
+            <optgroup label="Closed" disabled><option value="xx">Nowhere</option></optgroup>
+            <option value="t1">Twin</option>
+            <option value="t2">Twin</option>
+          </select>
+        </section>
+        <p>Outside the dialog</p>
+        <select id="many" multiple><option>A</option></select>
+        <select id="long"></select>
+        <button id="custom" role="combobox">Custom</button>
+        <script>
+          window.changes = 0;
+          document.querySelector('#country').addEventListener('change', () => { window.changes += 1; });
+          const long = document.querySelector('#long');
+          for (let i = 0; i < 40; i += 1) long.add(new Option(i === 0 ? 'x'.repeat(100) : 'Option ' + i, String(i)));
+        </script>
+      `, 'Form'));
+      return;
+    }
     if (request.url === '/next') {
       response.end(html('<h1>Next page</h1><a href="/">Home</a>', 'Next'));
       return;
@@ -594,6 +621,60 @@ test('closes only the tabs the agent opened, newest first', { skip: chromePath ?
 
   // Then the viewer's tab is the one left, still in front.
   assert.deepEqual(runtime.tabs.map((tab) => [tab.id, tab.active]), [[viewerTab, true]]);
+});
+
+test('selects native options by exact label or value and lists them in a scoped snapshot', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a page with a native select inside a dialog, a multiple select, a long select, and a custom control.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/form` });
+  const page = await runtime.ensurePage();
+  const evaluate = async (expression) => (await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', { expression, returnByValue: true })).result.value;
+
+  // When the agent reads the page, then each select lists its options, capped and flagged when cut.
+  const snapshot = await runtime.perform('browser.snapshot', {});
+  const country = snapshot.elements.find((element) => element.selector === '#country');
+  const long = snapshot.elements.find((element) => element.selector === '#long');
+  assert.equal(country.multiple, false);
+  assert.deepEqual(country.options.slice(1, 5), [
+    { label: 'Canada (CA)', value: 'ca', selected: false, disabled: false },
+    { label: 'United States', value: 'us', selected: false, disabled: false },
+    { label: 'Mexico', value: 'mx', selected: false, disabled: true },
+    { label: 'Nowhere', value: 'xx', selected: false, disabled: true },
+  ]);
+  assert.equal(country.optionsTruncated, undefined);
+  assert.equal(snapshot.elements.find((element) => element.selector === '#many').multiple, true);
+  assert.equal(long.options.length, 32);
+  assert.equal(long.options[0].label.length, 80);
+  assert.equal(long.optionsTruncated, true);
+
+  // When the snapshot is scoped, then its text comes from that element alone.
+  const scoped = await runtime.perform('browser.snapshot', { selector: '#dialog' });
+  assert.match(scoped.text, /Inside the dialog/);
+  assert.doesNotMatch(scoped.text, /Outside the dialog/);
+
+  // When it selects by label and then by value, then the page sees each change.
+  assert.deepEqual(await runtime.perform('browser.select', { selector: '#country', label: 'Canada (CA)' }), {
+    selector: '#country', label: 'Canada (CA)', value: 'ca', url: `${web.origin}/form`,
+  });
+  assert.equal((await runtime.perform('browser.select', { selector: '#country', value: 'us' })).label, 'United States');
+  assert.equal(await evaluate('window.changes'), 2);
+
+  // When a request is ambiguous, disabled, missing, or for another kind of control, then the page is left as it was.
+  const refusals = [
+    [{ selector: '#country', label: 'Twin' }, /More than one option/],
+    [{ selector: '#country', value: 'mx' }, /disabled/],
+    [{ selector: '#country', value: 'xx' }, /disabled/],
+    [{ selector: '#country', label: 'Atlantis' }, /No option/],
+    [{ selector: '#country', label: 'US', value: 'us' }, /exactly one of label or value/],
+    [{ selector: '#many', label: 'A' }, /Multiple selects/],
+    [{ selector: '#custom', label: 'Custom' }, /not a native HTML select/],
+  ];
+  for (const [parameters, error] of refusals) await assert.rejects(runtime.perform('browser.select', parameters), error);
+  assert.equal(await evaluate('document.querySelector("#country").value'), 'us');
+  assert.equal(await evaluate('window.changes'), 2);
 });
 
 test('streams frames when the viewer\'s first frame request opens the page', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {

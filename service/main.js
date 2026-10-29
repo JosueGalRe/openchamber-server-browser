@@ -4926,9 +4926,11 @@ var readSurfaceResizeRequest = (body) => {
 var MAX_TEXT_CHARS = 6e3;
 var MAX_ELEMENTS = 120;
 var MAX_LABEL_CHARS = 80;
+var MAX_OPTION_COUNT = 32;
 var HELPERS = `
   var MAX_ELEMENTS = ${MAX_ELEMENTS};
   var MAX_LABEL_CHARS = ${MAX_LABEL_CHARS};
+  var MAX_OPTION_COUNT = ${MAX_OPTION_COUNT};
   var visible = function (element) {
     var rect = element.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return false;
@@ -4944,6 +4946,28 @@ var HELPERS = `
     if (value) return String(value).slice(0, MAX_LABEL_CHARS);
     var placeholder = element.getAttribute('placeholder');
     return placeholder ? placeholder.trim().slice(0, MAX_LABEL_CHARS) : '';
+  };
+  var boundedText = function (value) {
+    var text = String(value);
+    if (text.length <= MAX_LABEL_CHARS) return { value: text, truncated: false };
+    var end = MAX_LABEL_CHARS;
+    var last = text.charCodeAt(end - 1);
+    if (last >= 0xD800 && last <= 0xDBFF) end -= 1;
+    return { value: text.slice(0, end), truncated: true };
+  };
+  // An explicit label attribute is used verbatim; option text is collapsed like the select shows it.
+  var selectOptionLabel = function (option) {
+    var explicit = option.getAttribute('label');
+    if (explicit !== null) return explicit;
+    return String(option.textContent || '').replace(/\\s+/g, ' ').trim();
+  };
+  var isOptionDisabled = function (element) {
+    if (element.disabled === true) return true;
+    if (typeof element.matches === 'function' && element.matches(':disabled')) return true;
+    for (var parent = element.parentElement; parent; parent = parent.parentElement) {
+      if (parent.tagName === 'OPTGROUP' && parent.disabled === true) return true;
+    }
+    return false;
   };
   var unique = function (selector) {
     try { return document.querySelectorAll(selector).length === 1; } catch { return false; }
@@ -5033,10 +5057,26 @@ var buildSnapshotScript = ({ selector } = {}) => wrapPageScript(`
     var role = element.getAttribute('role'); if (role) entry.role = role;
     var text = label(element); if (text) entry.label = text;
     if (element.disabled === true) entry.disabled = true;
+    if (element.tagName === 'SELECT') {
+      entry.multiple = element.multiple === true;
+      entry.options = [];
+      for (var o = 0; o < element.options.length && o < MAX_OPTION_COUNT; o += 1) {
+        var option = element.options[o];
+        var optionLabel = boundedText(selectOptionLabel(option));
+        var optionValue = boundedText(option.value);
+        if (optionLabel.truncated || optionValue.truncated) entry.optionsTruncated = true;
+        entry.options.push({
+          label: optionLabel.value, value: optionValue.value,
+          selected: option.selected === true, disabled: isOptionDisabled(option)
+        });
+      }
+      if (element.options.length > MAX_OPTION_COUNT) entry.optionsTruncated = true;
+    }
     if (!accessibleName(element)) entry.missingAccessibleName = true;
     elements.push(entry);
   }
-  var raw = document.body ? (document.body.innerText || '') : '';
+  var textRoot = root === document ? document.body : root;
+  var raw = textRoot ? (textRoot.innerText || textRoot.textContent || '') : '';
   var text = raw.replace(/\\n{3,}/g, '\\n\\n').trim();
   var result = {
     ok: true, url: String(location.href), title: String(document.title || ''),
@@ -5092,6 +5132,40 @@ var buildTypeScript = ({ selector, value, submit }) => wrapPageScript(`
   }
   return { ok: true, selector: cssPath(target), url: String(location.href) };
 `);
+var buildSelectScript = ({ selector, label, value }) => {
+  const byLabel = typeof label === "string";
+  const criterion = byLabel === (typeof value === "string") ? "" : byLabel ? "label" : "value";
+  return wrapPageScript(`
+  var selector = ${JSON.stringify(selector ?? "")};
+  var criterion = ${JSON.stringify(criterion)};
+  var wanted = ${JSON.stringify(byLabel ? label : value ?? "")};
+  if (!criterion) return { ok: false, error: 'browser.select requires exactly one of label or value' };
+  var target = null;
+  try { target = document.querySelector(selector); }
+  catch { return { ok: false, error: 'Invalid selector: ' + selector }; }
+  if (!target) return { ok: false, error: 'No element matches ' + selector };
+  if (!(target instanceof HTMLSelectElement)) return { ok: false, error: selector + ' is not a native HTML select' };
+  if (isOptionDisabled(target)) return { ok: false, error: 'The select ' + selector + ' is disabled' };
+  if (target.multiple) return { ok: false, error: 'Multiple selects are not supported for browser.select' };
+  var matches = [];
+  for (var i = 0; i < target.options.length; i += 1) {
+    var option = target.options[i];
+    if ((criterion === 'label' ? selectOptionLabel(option) : String(option.value)) === wanted) matches.push(option);
+  }
+  if (matches.length === 0) return { ok: false, error: 'No option in ' + selector + ' has the exact ' + criterion + ' ' + wanted };
+  if (matches.length > 1) return { ok: false, error: 'More than one option in ' + selector + ' has the exact ' + criterion + ' ' + wanted };
+  var match = matches[0];
+  if (isOptionDisabled(match)) return { ok: false, error: 'The matching option in ' + selector + ' is disabled' };
+  target.scrollIntoView({ block: 'center' });
+  for (var j = 0; j < target.options.length; j += 1) target.options[j].selected = target.options[j] === match;
+  if (target.selectedOptions.length !== 1 || target.selectedOptions[0] !== match || target.value !== match.value) {
+    return { ok: false, error: 'The option in ' + selector + ' could not be selected' };
+  }
+  target.dispatchEvent(new Event('input', { bubbles: true }));
+  target.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true, selector: cssPath(target), label: selectOptionLabel(match), value: String(target.value), url: String(location.href) };
+`);
+};
 
 // src/page-scripts-more.js
 var INSPECTED_STYLE_PROPERTIES = [
@@ -5306,6 +5380,7 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
   }
   if (action === "browser.click") return runPageScript(page, buildClickScript(parameters), signal);
   if (action === "browser.type") return runPageScript(page, buildTypeScript(parameters), signal);
+  if (action === "browser.select") return runPageScript(page, buildSelectScript(parameters), signal);
   if (action === "browser.scroll") return runPageScript(page, buildScrollScript(parameters), signal);
   if (action === "browser.inspect") return runPageScript(page, buildInspectScript(parameters), signal);
   if (action === "browser.back") return navigateHistory(page, true, signal);

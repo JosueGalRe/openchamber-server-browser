@@ -1,4 +1,4 @@
-import { buildClickScript, buildSnapshotScript, buildTypeScript } from './page-scripts.js';
+import { buildClickScript, buildSelectScript, buildSnapshotScript, buildTypeScript } from './page-scripts.js';
 import { buildInspectScript, buildScrollScript } from './page-scripts-more.js';
 import { viewportSummary } from './viewports.js';
 
@@ -136,6 +136,7 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
   }
   if (action === 'browser.click') return runPageScript(page, buildClickScript(parameters), signal);
   if (action === 'browser.type') return runPageScript(page, buildTypeScript(parameters), signal);
+  if (action === 'browser.select') return runPageScript(page, buildSelectScript(parameters), signal);
   if (action === 'browser.scroll') return runPageScript(page, buildScrollScript(parameters), signal);
   if (action === 'browser.inspect') return runPageScript(page, buildInspectScript(parameters), signal);
   if (action === 'browser.back') return navigateHistory(page, true, signal);
