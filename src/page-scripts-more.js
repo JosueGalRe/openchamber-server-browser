@@ -41,6 +41,56 @@ export const buildScrollScript = ({ selector, direction }) => wrapPageScript(`
   return settle({ direction: direction });
 `);
 
+// Resolves once no resource arrived and the DOM tree and text did not change
+// for quietMs, or after maxMs. The load event comes while an app still fetches
+// its lazy chunks behind a splash. Attribute changes are ignored because hover
+// styles change on finished pages; an animation that will end counts, one that
+// loops forever or follows scrolling does not.
+export const buildQuietScript = ({ quietMs, maxMs }) => wrapPageScript(`
+  var quietMs = ${JSON.stringify(quietMs)};
+  var maxMs = ${JSON.stringify(maxMs)};
+  return new Promise(function (resolve) {
+    var startedAt = performance.now();
+    var lastChange = startedAt;
+    var bump = function () { lastChange = performance.now(); };
+    var mutations = new MutationObserver(bump);
+    mutations.observe(document, { subtree: true, childList: true, characterData: true });
+    var resources = null;
+    try {
+      resources = new PerformanceObserver(bump);
+      resources.observe({ type: 'resource' });
+    } catch { resources = null; }
+    var animating = function () {
+      try {
+        if (typeof document.getAnimations !== 'function') return false;
+        var list = document.getAnimations();
+        for (var i = 0; i < list.length; i += 1) {
+          var animation = list[i];
+          if (animation.playState !== 'running' && !animation.pending) continue;
+          if (animation.timeline && animation.timeline !== document.timeline) continue;
+          var timing = animation.effect && animation.effect.getTiming ? animation.effect.getTiming() : null;
+          if (timing && timing.iterations === Infinity) continue;
+          return true;
+        }
+      } catch { return false; }
+      return false;
+    };
+    var check = function () {
+      var now = performance.now();
+      if (animating()) lastChange = now;
+      var quiet = now - lastChange >= quietMs;
+      if (quiet || now - startedAt >= maxMs) {
+        mutations.disconnect();
+        if (resources) resources.disconnect();
+        resolve({ ok: true, quiet: quiet });
+        return;
+      }
+      setTimeout(check, Math.max(16, Math.min(quietMs - (now - lastChange), maxMs - (now - startedAt))));
+    };
+    setTimeout(check, quietMs);
+  });
+`);
+
 export const buildInspectScript = ({ selector }) => wrapPageScript(`
   var selector = ${JSON.stringify(selector)};
   var target = null;

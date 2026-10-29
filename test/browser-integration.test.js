@@ -73,6 +73,24 @@ const startWebFixture = async () => {
       `, 'Form'));
       return;
     }
+    if (request.url === '/splash') {
+      response.end(html(`
+        <h1 id="status">Loading splash</h1>
+        <script>
+          addEventListener('load', () => setTimeout(() => fetch('/api/chunk').then(() => {
+            document.querySelector('#status').textContent = 'App ready';
+          }), 300));
+        </script>
+      `, 'Splash'));
+      return;
+    }
+    if (request.url === '/busy') {
+      response.end(html(`
+        <output id="ticks">0</output>
+        <script>setInterval(() => { const t = document.querySelector('#ticks'); t.textContent = String(Number(t.textContent) + 1); }, 100);</script>
+      `, 'Busy'));
+      return;
+    }
     if (request.url === '/next') {
       response.end(html('<h1>Next page</h1><a href="/">Home</a>', 'Next'));
       return;
@@ -675,6 +693,25 @@ test('selects native options by exact label or value and lists them in a scoped 
   for (const [parameters, error] of refusals) await assert.rejects(runtime.perform('browser.select', parameters), error);
   assert.equal(await evaluate('document.querySelector("#country").value'), 'us');
   assert.equal(await evaluate('window.changes'), 2);
+});
+
+test('reports a page as settled only once it stops changing after its load', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given an app that replaces its splash after a lazy fetch, and a page that never stops ticking.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+
+  // When the agent opens the app, then the answer waits for it and a snapshot right after shows it.
+  const app = await runtime.perform('browser.open', { url: `${web.origin}/splash` });
+  assert.equal(app.settled, true);
+  assert.match((await runtime.perform('browser.snapshot', {})).text, /App ready/);
+
+  // When the page keeps changing, then the open gives up waiting and says it has not settled.
+  const started = Date.now();
+  const busy = await runtime.perform('browser.open', { url: `${web.origin}/busy`, tabId: app.tabId });
+  assert.equal(busy.settled, false);
+  assert.ok(Date.now() - started < 8_000, `opening took ${Date.now() - started} ms`);
 });
 
 test('streams frames when the viewer\'s first frame request opens the page', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {

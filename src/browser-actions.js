@@ -1,8 +1,11 @@
 import { buildClickScript, buildSelectScript, buildSnapshotScript, buildTypeScript } from './page-scripts.js';
-import { buildInspectScript, buildScrollScript } from './page-scripts-more.js';
+import { buildInspectScript, buildQuietScript, buildScrollScript } from './page-scripts-more.js';
 import { viewportSummary } from './viewports.js';
 
 const OPEN_SETTLE_MS = 30_000;
+const QUIET_MS = 500;
+const OPEN_QUIET_MAX_MS = 5_000;
+const CAPTURE_QUIET_MAX_MS = 3_000;
 
 const withAbort = async (signal, operation) => {
   signal?.throwIfAborted();
@@ -82,6 +85,18 @@ const startLoadWait = (page, timeoutMs, signal) => {
   };
 };
 
+// A page that navigates again during the wait destroys the script's context;
+// that is a page still changing, not a failed action.
+const waitForQuiet = async (page, maxMs, signal) => {
+  try {
+    const result = await evaluate(page, buildQuietScript({ quietMs: QUIET_MS, maxMs }), signal);
+    return result?.quiet === true;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return false;
+  }
+};
+
 const navigateHistory = async (page, goingBack, signal) => {
   const history = await withAbort(signal, page.cdp.sendSession(page.sessionId, 'Page.getNavigationHistory'));
   const currentIndex = typeof history.currentIndex === 'number' ? history.currentIndex : -1;
@@ -117,7 +132,7 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
       await load.cancel();
       throw error;
     }
-    const settled = await load.promise;
+    const settled = await load.promise && await waitForQuiet(page, OPEN_QUIET_MAX_MS, signal);
     const info = await readPageInfo(page, signal);
     return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport), tabId: page.targetId };
   }
@@ -148,6 +163,7 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
   }
   if (action === 'browser.capture') {
     await withAbort(signal, page.cdp.sendSession(page.sessionId, 'Page.enable'));
+    await waitForQuiet(page, CAPTURE_QUIET_MAX_MS, signal);
     const capture = await withAbort(signal, page.cdp.sendSession(page.sessionId, 'Page.captureScreenshot', { format: 'png' }));
     const metrics = await withAbort(signal, page.cdp.sendSession(page.sessionId, 'Page.getLayoutMetrics'));
     const info = await readPageInfo(page, signal);

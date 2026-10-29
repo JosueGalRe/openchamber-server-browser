@@ -5230,6 +5230,50 @@ var buildScrollScript = ({ selector, direction }) => wrapPageScript(`
   else return { ok: false, error: 'Unknown scroll direction: ' + direction };
   return settle({ direction: direction });
 `);
+var buildQuietScript = ({ quietMs, maxMs }) => wrapPageScript(`
+  var quietMs = ${JSON.stringify(quietMs)};
+  var maxMs = ${JSON.stringify(maxMs)};
+  return new Promise(function (resolve) {
+    var startedAt = performance.now();
+    var lastChange = startedAt;
+    var bump = function () { lastChange = performance.now(); };
+    var mutations = new MutationObserver(bump);
+    mutations.observe(document, { subtree: true, childList: true, characterData: true });
+    var resources = null;
+    try {
+      resources = new PerformanceObserver(bump);
+      resources.observe({ type: 'resource' });
+    } catch { resources = null; }
+    var animating = function () {
+      try {
+        if (typeof document.getAnimations !== 'function') return false;
+        var list = document.getAnimations();
+        for (var i = 0; i < list.length; i += 1) {
+          var animation = list[i];
+          if (animation.playState !== 'running' && !animation.pending) continue;
+          if (animation.timeline && animation.timeline !== document.timeline) continue;
+          var timing = animation.effect && animation.effect.getTiming ? animation.effect.getTiming() : null;
+          if (timing && timing.iterations === Infinity) continue;
+          return true;
+        }
+      } catch { return false; }
+      return false;
+    };
+    var check = function () {
+      var now = performance.now();
+      if (animating()) lastChange = now;
+      var quiet = now - lastChange >= quietMs;
+      if (quiet || now - startedAt >= maxMs) {
+        mutations.disconnect();
+        if (resources) resources.disconnect();
+        resolve({ ok: true, quiet: quiet });
+        return;
+      }
+      setTimeout(check, Math.max(16, Math.min(quietMs - (now - lastChange), maxMs - (now - startedAt))));
+    };
+    setTimeout(check, quietMs);
+  });
+`);
 var buildInspectScript = ({ selector }) => wrapPageScript(`
   var selector = ${JSON.stringify(selector)};
   var target = null;
@@ -5253,6 +5297,9 @@ var buildInspectScript = ({ selector }) => wrapPageScript(`
 
 // src/browser-actions.js
 var OPEN_SETTLE_MS = 3e4;
+var QUIET_MS = 500;
+var OPEN_QUIET_MAX_MS = 5e3;
+var CAPTURE_QUIET_MAX_MS = 3e3;
 var withAbort = async (signal, operation) => {
   signal?.throwIfAborted();
   if (!signal) return operation;
@@ -5328,6 +5375,15 @@ var startLoadWait = (page, timeoutMs, signal) => {
     }
   };
 };
+var waitForQuiet = async (page, maxMs, signal) => {
+  try {
+    const result = await evaluate(page, buildQuietScript({ quietMs: QUIET_MS, maxMs }), signal);
+    return result?.quiet === true;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return false;
+  }
+};
 var navigateHistory = async (page, goingBack, signal) => {
   const history = await withAbort(signal, page.cdp.sendSession(page.sessionId, "Page.getNavigationHistory"));
   const currentIndex = typeof history.currentIndex === "number" ? history.currentIndex : -1;
@@ -5362,7 +5418,7 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
       await load.cancel();
       throw error;
     }
-    const settled = await load.promise;
+    const settled = await load.promise && await waitForQuiet(page2, OPEN_QUIET_MAX_MS, signal);
     const info = await readPageInfo(page2, signal);
     return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport), tabId: page2.targetId };
   }
@@ -5391,6 +5447,7 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
   }
   if (action === "browser.capture") {
     await withAbort(signal, page.cdp.sendSession(page.sessionId, "Page.enable"));
+    await waitForQuiet(page, CAPTURE_QUIET_MAX_MS, signal);
     const capture = await withAbort(signal, page.cdp.sendSession(page.sessionId, "Page.captureScreenshot", { format: "png" }));
     const metrics = await withAbort(signal, page.cdp.sendSession(page.sessionId, "Page.getLayoutMetrics"));
     const info = await readPageInfo(page, signal);
