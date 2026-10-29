@@ -5477,12 +5477,17 @@ var connectCdp = async (webSocketDebuggerUrl, {
 };
 
 // src/chrome-process.js
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 var MINIMUM_CHROME_MAJOR_VERSION = 109;
 var SYSTEM_NAMES = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
+var USER_AGENT_PLATFORMS = Object.freeze({
+  darwin: "Macintosh; Intel Mac OS X 10_15_7",
+  linux: "X11; Linux x86_64"
+});
 var executable = (candidate) => {
   try {
     fs.accessSync(candidate, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
@@ -5519,6 +5524,18 @@ var parseEndpoint = (contents) => {
   return `ws://127.0.0.1:${port}${suffix}`;
 };
 var wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+var userAgentArgs = async (binary) => {
+  const platform = USER_AGENT_PLATFORMS[process.platform];
+  if (!platform) return [];
+  try {
+    const { stdout } = await promisify(execFile)(binary, ["--version"], { timeout: 5e3 });
+    const major = stdout.match(/(\d+)\.\d+\.\d+\.\d+/)?.[1];
+    if (!major) return [];
+    return [`--user-agent=Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`];
+  } catch {
+    return [];
+  }
+};
 var probeVersion = async (endpoint) => {
   const cdp = await connectCdp(endpoint, { commandTimeoutMs: 5e3 });
   try {
@@ -5568,9 +5585,13 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
     const binary = resolveChromePath(chromePath);
     profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "openchamber-server-browser-"));
     await fs.promises.chmod(profileDir, 448);
+    const userAgent = await userAgentArgs(binary);
     if (closed) throw new Error("Chrome launch was cancelled");
     child = spawn(binary, [
       "--headless=new",
+      // Headless mode sets navigator.webdriver, which Google sign-in also refuses.
+      "--disable-blink-features=AutomationControlled",
+      ...userAgent,
       "--webrtc-ip-handling-policy=disable_non_proxied_udp",
       "--remote-debugging-port=0",
       "--remote-debugging-address=127.0.0.1",

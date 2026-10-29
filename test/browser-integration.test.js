@@ -87,6 +87,11 @@ const startWebFixture = async () => {
       `, 'Tabs'));
       return;
     }
+    if (request.url === '/headers') {
+      const sent = { userAgent: request.headers['user-agent'], hints: request.headers['sec-ch-ua'] ?? null };
+      response.end(html(`<pre id="headers">${JSON.stringify(sent)}</pre>`, 'Headers'));
+      return;
+    }
     if (request.url === '/title') {
       response.end(html('<button id="surface" onclick="document.title = \'Renamed by the page\'">Rename</button>', 'Title before'));
       return;
@@ -223,6 +228,33 @@ test('removes the temporary Chrome profile on shutdown', { skip: chromePath ? fa
 
   assert.equal(fs.existsSync(profileDir), false);
   assert.notEqual(running.process.exitCode === null && running.process.signalCode === null, true);
+});
+
+const chromeIdentitySkip = !chromePath ? 'Chrome is unavailable'
+  : process.platform === 'win32' ? 'Chrome on Windows keeps its HeadlessChrome User-Agent' : false;
+
+test('presents itself as regular Chrome, which Google sign-in requires', { skip: chromeIdentitySkip }, async (context) => {
+  // Given a page that shows the headers its request came with.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+
+  // When the browser opens it.
+  await runtime.perform('browser.open', { url: `${web.origin}/headers` });
+  const page = await runtime.ensurePage();
+  const evaluate = async (expression) => (await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', {
+    expression,
+    returnByValue: true,
+  })).result.value;
+
+  // Then neither the request nor the page says the browser is headless or automated, and the client hints stay.
+  const sent = JSON.parse(await evaluate('document.querySelector("#headers").textContent'));
+  assert.match(sent.userAgent, / Chrome\/\d+\.0\.0\.0 /);
+  assert.doesNotMatch(sent.userAgent, /Headless/);
+  assert.match(sent.hints ?? '', /Chromium/);
+  assert.equal(await evaluate('navigator.userAgent'), sent.userAgent);
+  assert.equal(await evaluate('navigator.webdriver'), false);
 });
 
 test('stops Chrome at once on close even when its page no longer answers', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {

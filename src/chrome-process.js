@@ -1,11 +1,18 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { connectCdp } from './cdp-client.js';
 
 const MINIMUM_CHROME_MAJOR_VERSION = 109;
 const SYSTEM_NAMES = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'];
+// The platform part of Chrome's reduced User-Agent is frozen per OS.
+// shortcut: no Windows entry, as chrome.exe --version prints nothing there; read the version folder next to chrome.exe if Windows hosts need Google sign-in.
+const USER_AGENT_PLATFORMS = Object.freeze({
+  darwin: 'Macintosh; Intel Mac OS X 10_15_7',
+  linux: 'X11; Linux x86_64',
+});
 
 const executable = (candidate) => {
   try {
@@ -48,6 +55,22 @@ const parseEndpoint = (contents) => {
 };
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+// Headless Chrome calls itself HeadlessChrome, and Google then refuses sign-in
+// ("This browser or app may not be secure"). The flag, unlike a per-page
+// override, also covers popups and workers and keeps the Sec-CH-UA hints.
+const userAgentArgs = async (binary) => {
+  const platform = USER_AGENT_PLATFORMS[process.platform];
+  if (!platform) return [];
+  try {
+    const { stdout } = await promisify(execFile)(binary, ['--version'], { timeout: 5_000 });
+    const major = stdout.match(/(\d+)\.\d+\.\d+\.\d+/)?.[1];
+    if (!major) return [];
+    return [`--user-agent=Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`];
+  } catch {
+    return [];
+  }
+};
 
 const probeVersion = async (endpoint) => {
   const cdp = await connectCdp(endpoint, { commandTimeoutMs: 5_000 });
@@ -97,9 +120,13 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
     const binary = resolveChromePath(chromePath);
     profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'openchamber-server-browser-'));
     await fs.promises.chmod(profileDir, 0o700);
+    const userAgent = await userAgentArgs(binary);
     if (closed) throw new Error('Chrome launch was cancelled');
     child = spawn(binary, [
       '--headless=new',
+      // Headless mode sets navigator.webdriver, which Google sign-in also refuses.
+      '--disable-blink-features=AutomationControlled',
+      ...userAgent,
       '--webrtc-ip-handling-policy=disable_non_proxied_udp',
       '--remote-debugging-port=0',
       '--remote-debugging-address=127.0.0.1',
