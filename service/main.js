@@ -4665,8 +4665,9 @@ import crypto3 from "node:crypto";
 var GUEST_SCROLLING_ATTRIBUTE = "data-oc-scrolling";
 var GUEST_SCROLLBAR_CSS = `
 :root {
-  --oc-scrollbar-thumb: color-mix(in srgb, var(--oc-muted, currentColor) 40%, transparent);
-  --oc-scrollbar-thumb-hover: color-mix(in srgb, var(--oc-muted, currentColor) 65%, transparent);
+  /* Quiet at rest like the app's own thumbs; hover gives a clear grab target. */
+  --oc-scrollbar-thumb: color-mix(in srgb, var(--oc-muted, currentColor) 18%, transparent);
+  --oc-scrollbar-thumb-hover: color-mix(in srgb, var(--oc-muted, currentColor) 36%, transparent);
   scrollbar-gutter: stable;
 }
 * {
@@ -4723,6 +4724,7 @@ var GUEST_SCROLLBAR_SCRIPT = `(${installGuestScrollbarActivity.toString()})(docu
 // node_modules/@openchamber/sdk/dist/contract.js
 var GUEST_FILE_STAT_KINDS = ["file", "directory", "other", "missing"];
 var GUEST_CLIPBOARD_TEXT_MAX = 32e3;
+var GUEST_GENERATE_LATE_KEEP_MS = 60 * 6e4;
 var HOST_REQUEST_ERROR_CODES = [
   "HOST_UNAVAILABLE",
   "HOST_TIMEOUT",
@@ -4733,6 +4735,8 @@ var HOST_REQUEST_ERROR_CODES = [
   "NO_INTEGRATION",
   "NO_SERVICE",
   "SERVICE_FAILED",
+  "REQUEST_FAILED",
+  "RESPONSE_TOO_LARGE",
   "NO_SESSION",
   "SESSION_BUSY",
   "NOT_GRANTED",
@@ -4756,12 +4760,14 @@ var BROWSER_CONTROL_ACTIONS = [
   "browser.snapshot",
   "browser.click",
   "browser.type",
+  "browser.select",
   "browser.scroll",
   "browser.back",
   "browser.forward",
   "browser.inspect",
   "browser.capture",
-  "browser.resize"
+  "browser.resize",
+  "browser.close"
 ];
 var BROWSER_PROVIDER_OPEN_TIMEOUT_MS = 45e3;
 var BROWSER_PROVIDER_ACTION_TIMEOUT_MS = 2e4;
@@ -4795,6 +4801,7 @@ var readBrowserProviderRequest = (body) => {
     return null;
   return { requestId, action, parameters, context: readContext(context) };
 };
+var SOURCE_CONTROL_PROVIDER_IDLE_MS = 10 * 6e4;
 
 // node_modules/@openchamber/sdk/dist/service-surface.js
 var SURFACE_FRAME_PATH = "/surface/frame";

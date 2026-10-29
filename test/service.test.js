@@ -128,6 +128,26 @@ test('dispatches SDK browser and surface protocol requests', async (context) => 
   assert.deepEqual(fixture.runtime.calls[0][3], { directory: '/repo', sessionId: 'ses_1' });
 });
 
+test('passes browser.select and browser.close to the runtime', async (context) => {
+  // Given a running service.
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+  const request = (action, parameters) => fetch(`${fixture.origin}/browser-control`, {
+    method: 'POST', headers: authorization,
+    body: JSON.stringify({ requestId: action, action, parameters, context: { directory: '/repo', sessionId: 'ses_1' } }),
+  });
+
+  // When the host sends the actions OpenChamber 2.5 added, then neither is refused as unknown.
+  const selected = await request('browser.select', { selector: '#country', label: 'Canada' });
+  const closed = await request('browser.close', { tabId: 'tab-1' });
+
+  assert.deepEqual([selected.status, closed.status], [200, 200]);
+  assert.deepEqual(fixture.runtime.calls.map((call) => call.slice(0, 3)), [
+    ['perform', 'browser.select', { selector: '#country', label: 'Canada' }],
+    ['perform', 'browser.close', { tabId: 'tab-1' }],
+  ]);
+});
+
 test('serves dock state and serializes scope and navigation commands', async (context) => {
   // Given a running service with one browser scope.
   const fixture = await startFixture();
