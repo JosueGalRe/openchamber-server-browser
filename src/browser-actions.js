@@ -121,6 +121,7 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
     const info = await readPageInfo(page, signal);
     return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport), tabId: page.targetId };
   }
+  if (action === 'browser.close') return { closed: true, tabId: await runtime.agentCloseTab(parameters.tabId) };
 
   const page = await runtime.agentPage(parameters.tabId);
   if (action === 'browser.snapshot') {

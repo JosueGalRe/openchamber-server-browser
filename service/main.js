@@ -5292,6 +5292,7 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
     const info = await readPageInfo(page2, signal);
     return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport), tabId: page2.targetId };
   }
+  if (action === "browser.close") return { closed: true, tabId: await runtime.agentCloseTab(parameters.tabId) };
   const page = await runtime.agentPage(parameters.tabId);
   if (action === "browser.snapshot") {
     const data = await runPageScript(page, buildSnapshotScript(parameters), signal);
@@ -6766,6 +6767,7 @@ var createBrowserRuntime = ({
   const sessions = /* @__PURE__ */ new Map();
   const attaching = /* @__PURE__ */ new Map();
   const backgroundTargets = /* @__PURE__ */ new Set();
+  const agentTargets = /* @__PURE__ */ new Set();
   let targetCreation = Promise.resolve();
   const tabListeners = /* @__PURE__ */ new Set();
   let activeTargetId = null;
@@ -6911,6 +6913,7 @@ var createBrowserRuntime = ({
     const current = tabs.get(targetId);
     if (!current) return;
     tabs.delete(targetId);
+    agentTargets.delete(targetId);
     sessions.delete(current.sessionId);
     clearTimeout(current.navigationTimer);
     contextMenu.forget(current.sessionId);
@@ -7095,10 +7098,21 @@ var createBrowserRuntime = ({
   runtime.agentPage = async (tabId) => pageOf(await agentTab(tabId));
   runtime.agentOpenPage = async (tabId) => {
     const current = await agentTab(tabId);
-    if (tabId !== void 0 || current.url === "about:blank" && !current.canGoBack && !current.canGoForward) {
-      return pageOf(current);
-    }
-    return pageOf(await openTab({ background: true }));
+    if (tabId !== void 0) return pageOf(current);
+    const untouched = current.url === "about:blank" && !current.canGoBack && !current.canGoForward;
+    const opened = untouched ? current : await openTab({ background: true });
+    agentTargets.delete(opened.targetId);
+    agentTargets.add(opened.targetId);
+    return pageOf(opened);
+  };
+  runtime.agentCloseTab = async (tabId) => {
+    const targetId = tabId ?? [...agentTargets].at(-1);
+    if (targetId === void 0) throw new Error("The agent has no tab of its own open in this chat's browser; browser.close closes only tabs browser.open opened.");
+    if (!tabs.has(targetId)) throw new Error(`This chat's browser has no tab ${JSON.stringify(String(targetId))}. Use an id from browser.snapshot's tabs.`);
+    if (!agentTargets.has(targetId)) throw new Error(`Tab ${JSON.stringify(targetId)} was not opened by the agent, so it stays open; browser.close closes only tabs browser.open opened.`);
+    await cdp.send("Target.closeTarget", { targetId });
+    removeTab(targetId);
+    return targetId;
   };
   runtime.setNativeSelectCompatibility = async (enabled) => {
     await runtime.ensurePage();

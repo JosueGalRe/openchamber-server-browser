@@ -569,6 +569,33 @@ test('lets the agent name tabs by id without moving the viewer off its tab', { s
   assert.ok(await next, 'the viewer stopped getting frames of its page');
 });
 
+test('closes only the tabs the agent opened, newest first', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given the agent's first page, a tab the viewer opened and navigated, and the agent's background tab.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  const first = await runtime.perform('browser.open', { url: `${web.origin}/next` });
+  await runtime.command('tab-new');
+  await runtime.command('navigate', { url: `${web.origin}/title` });
+  await waitFor(() => runtime.url === `${web.origin}/title` && runtime.canGoBack);
+  const viewerTab = runtime.tabs.find((tab) => tab.active).id;
+  const background = await runtime.perform('browser.open', { url: `${web.origin}/` });
+
+  // When the agent names the viewer's tab or one that does not exist, then nothing closes.
+  await assert.rejects(runtime.perform('browser.close', { tabId: viewerTab }), /not opened by the agent/);
+  await assert.rejects(runtime.perform('browser.close', { tabId: 'missing' }), /no tab "missing"/);
+  assert.equal(runtime.tabs.length, 3);
+
+  // When it closes without a tab id, then its newest tab goes first, then its older one.
+  assert.deepEqual(await runtime.perform('browser.close', {}), { closed: true, tabId: background.tabId });
+  assert.deepEqual(await runtime.perform('browser.close', {}), { closed: true, tabId: first.tabId });
+  await assert.rejects(runtime.perform('browser.close', {}), /no tab of its own/);
+
+  // Then the viewer's tab is the one left, still in front.
+  assert.deepEqual(runtime.tabs.map((tab) => [tab.id, tab.active]), [[viewerTab, true]]);
+});
+
 test('streams frames when the viewer\'s first frame request opens the page', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
   // Given a scope with no page yet, like one opened from the dock for a chat.
   const web = await startWebFixture();

@@ -54,6 +54,8 @@ export const createBrowserRuntime = ({
   const sessions = new Map();
   const attaching = new Map();
   const backgroundTargets = new Set();
+  // Tabs browser.open opened for the agent, oldest first; browser.close may close only these.
+  const agentTargets = new Set();
   let targetCreation = Promise.resolve();
   const tabListeners = new Set();
   let activeTargetId = null;
@@ -213,6 +215,7 @@ export const createBrowserRuntime = ({
     const current = tabs.get(targetId);
     if (!current) return;
     tabs.delete(targetId);
+    agentTargets.delete(targetId);
     sessions.delete(current.sessionId);
     clearTimeout(current.navigationTimer);
     contextMenu.forget(current.sessionId);
@@ -413,13 +416,28 @@ export const createBrowserRuntime = ({
   runtime.agentPage = async (tabId) => pageOf(await agentTab(tabId));
 
   // browser.open without a tab never replaces the viewer's page: it opens a
-  // background tab, unless the viewer is on an untouched blank tab.
+  // background tab, unless the viewer is on an untouched blank tab. Either
+  // way the page is the agent's, so browser.close may close it.
   runtime.agentOpenPage = async (tabId) => {
     const current = await agentTab(tabId);
-    if (tabId !== undefined || (current.url === 'about:blank' && !current.canGoBack && !current.canGoForward)) {
-      return pageOf(current);
-    }
-    return pageOf(await openTab({ background: true }));
+    if (tabId !== undefined) return pageOf(current);
+    const untouched = current.url === 'about:blank' && !current.canGoBack && !current.canGoForward;
+    const opened = untouched ? current : await openTab({ background: true });
+    agentTargets.delete(opened.targetId);
+    agentTargets.add(opened.targetId);
+    return pageOf(opened);
+  };
+
+  // Without a tab, browser.close closes the agent's most recent one. A tab the
+  // viewer or a page opened is refused, never closed.
+  runtime.agentCloseTab = async (tabId) => {
+    const targetId = tabId ?? [...agentTargets].at(-1);
+    if (targetId === undefined) throw new Error('The agent has no tab of its own open in this chat\'s browser; browser.close closes only tabs browser.open opened.');
+    if (!tabs.has(targetId)) throw new Error(`This chat's browser has no tab ${JSON.stringify(String(targetId))}. Use an id from browser.snapshot's tabs.`);
+    if (!agentTargets.has(targetId)) throw new Error(`Tab ${JSON.stringify(targetId)} was not opened by the agent, so it stays open; browser.close closes only tabs browser.open opened.`);
+    await cdp.send('Target.closeTarget', { targetId });
+    removeTab(targetId);
+    return targetId;
   };
 
   // The active tab decides; other tabs follow on a best-effort basis.
