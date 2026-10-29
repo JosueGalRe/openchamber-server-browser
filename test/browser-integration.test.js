@@ -542,10 +542,12 @@ test('follows pages the site opens as tabs and returns to the opener when they c
     { type: 'pointer', action: 'up', x, y, button: 0, buttons: 0, modifiers },
   ]);
 
-  // When the user follows the link, then the new page becomes the active tab and the agent works there.
+  // When the user follows the link, then the new page becomes the active tab, and the agent stays in its own until it names the new one.
   await click(30, 30);
   await waitFor(() => runtime.tabs.length === 2 && runtime.url === `${web.origin}/next`);
-  assert.equal((await runtime.perform('browser.snapshot', {})).title, 'Next');
+  assert.equal((await runtime.perform('browser.snapshot', {})).title, 'Tabs');
+  const followed = runtime.tabs.find((tab) => tab.active).id;
+  assert.equal((await runtime.perform('browser.snapshot', { tabId: followed })).title, 'Next');
 
   // When that tab closes, then its opener comes back.
   await runtime.command('tab-close', { tabId: runtime.tabs.find((tab) => tab.active).id });
@@ -555,12 +557,14 @@ test('follows pages the site opens as tabs and returns to the opener when they c
   await click(30, 128);
   await waitFor(() => runtime.tabs.length === 2 && runtime.url === `${web.origin}/next`);
 
-  // When the dock opens a blank tab and then selects the opener, then the agent follows the selection.
+  // When the dock opens a blank tab and selects the opener again, then the viewer follows the dock, and the
+  // agent, whose last tab closed, works in the newest tab it opened.
   await runtime.command('tab-new');
   assert.equal(runtime.tabs.length, 3);
   assert.equal(runtime.url, 'about:blank');
-  await runtime.command('tab-select', { tabId: opener });
   assert.equal((await runtime.perform('browser.snapshot', {})).title, 'Tabs');
+  await runtime.command('tab-select', { tabId: opener });
+  assert.equal(runtime.url, `${web.origin}/tabs`);
 });
 
 test('lets the agent name tabs by id without moving the viewer off its tab', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
@@ -575,12 +579,13 @@ test('lets the agent name tabs by id without moving the viewer off its tab', { s
   const before = await runtime.surfaceFrame({ after: 0, wait: 10_000 });
   assert.ok(before, 'the viewer got no frame of its page');
 
-  // When the agent opens another page, then it gets a background tab and the viewer stays put.
+  // When the agent opens another page, then it gets a background tab, the viewer stays put, and actions
+  // without a tab id follow the agent there.
   const opened = await runtime.perform('browser.open', { url: `${web.origin}/` });
   assert.notEqual(opened.tabId, shown);
   assert.equal(opened.title, 'Fixture');
   const snapshot = await runtime.perform('browser.snapshot', {});
-  assert.equal(snapshot.title, 'Next');
+  assert.equal(snapshot.title, 'Fixture');
   assert.deepEqual(snapshot.tabs, [
     { id: shown, title: 'Next', url: `${web.origin}/next`, active: true },
     { id: opened.tabId, title: 'Fixture', url: `${web.origin}/`, active: false },
@@ -601,6 +606,10 @@ test('lets the agent name tabs by id without moving the viewer off its tab', { s
   assert.equal((await runtime.perform('browser.snapshot', { tabId: opened.tabId })).title, 'Fixture');
   assert.equal(runtime.url, `${web.origin}/next`);
   assert.equal(runtime.tabs.find((tab) => tab.active).id, shown);
+
+  // When the agent names the viewer's tab, then its later actions without an id stay there.
+  await runtime.perform('browser.snapshot', { tabId: shown });
+  assert.equal((await runtime.perform('browser.snapshot', {})).title, 'Next');
 
   // When an id is not one this browser issued, then the action is refused instead of running elsewhere.
   await assert.rejects(runtime.perform('browser.click', { tabId: 'missing', selector: '#mark' }), /no tab "missing"/);

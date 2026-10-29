@@ -56,6 +56,7 @@ export const createBrowserRuntime = ({
   const backgroundTargets = new Set();
   // Tabs browser.open opened for the agent, oldest first; browser.close may close only these.
   const agentTargets = new Set();
+  let lastUsedTargetId = null;
   let targetCreation = Promise.resolve();
   const tabListeners = new Set();
   let activeTargetId = null;
@@ -401,11 +402,14 @@ export const createBrowserRuntime = ({
     return pageOf(await pagePromise);
   };
 
-  // Agent actions name a tab from browser.snapshot's tabs or act on the one the
-  // viewer sees. An id this browser did not issue is refused, never replaced by
-  // another tab.
+  // Agent actions name a tab from browser.snapshot's tabs. Without one they use
+  // the tab the agent last used, else its newest, else the one the viewer sees,
+  // as OpenChamber's tool tells agents. An id this browser did not issue is
+  // refused, never replaced by another tab.
   const agentTab = async (tabId) => {
     if (tabId === undefined) {
+      const own = tabs.get(lastUsedTargetId) ?? tabs.get([...agentTargets].at(-1));
+      if (own) return own;
       await runtime.ensurePage();
       return activeTab();
     }
@@ -413,19 +417,23 @@ export const createBrowserRuntime = ({
     if (!current) throw new Error(`This chat's browser has no tab ${JSON.stringify(String(tabId))}. Use an id from browser.snapshot's tabs.`);
     return current;
   };
-  runtime.agentPage = async (tabId) => pageOf(await agentTab(tabId));
+  const useTab = (current) => {
+    lastUsedTargetId = current.targetId;
+    return pageOf(current);
+  };
+  runtime.agentPage = async (tabId) => useTab(await agentTab(tabId));
 
   // browser.open without a tab never replaces the viewer's page: it opens a
   // background tab, unless the viewer is on an untouched blank tab. Either
   // way the page is the agent's, so browser.close may close it.
   runtime.agentOpenPage = async (tabId) => {
     const current = await agentTab(tabId);
-    if (tabId !== undefined) return pageOf(current);
+    if (tabId !== undefined) return useTab(current);
     const untouched = current.url === 'about:blank' && !current.canGoBack && !current.canGoForward;
     const opened = untouched ? current : await openTab({ background: true });
     agentTargets.delete(opened.targetId);
     agentTargets.add(opened.targetId);
-    return pageOf(opened);
+    return useTab(opened);
   };
 
   // Without a tab, browser.close closes the agent's most recent one. A tab the
@@ -579,7 +587,7 @@ export const createBrowserRuntime = ({
       runtime.agentActive = true;
       try {
         const data = await execute(action, parameters, signal);
-        await (tabs.get(data?.tabId ?? parameters?.tabId) ?? activeTab())?.compatibility.whenIdle();
+        await (tabs.get(data?.tabId ?? parameters?.tabId ?? lastUsedTargetId) ?? activeTab())?.compatibility.whenIdle();
         return data;
       } finally {
         runtime.agentActive = false;

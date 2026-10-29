@@ -6900,6 +6900,7 @@ var createBrowserRuntime = ({
   const attaching = /* @__PURE__ */ new Map();
   const backgroundTargets = /* @__PURE__ */ new Set();
   const agentTargets = /* @__PURE__ */ new Set();
+  let lastUsedTargetId = null;
   let targetCreation = Promise.resolve();
   const tabListeners = /* @__PURE__ */ new Set();
   let activeTargetId = null;
@@ -7220,6 +7221,8 @@ var createBrowserRuntime = ({
   };
   const agentTab = async (tabId) => {
     if (tabId === void 0) {
+      const own = tabs.get(lastUsedTargetId) ?? tabs.get([...agentTargets].at(-1));
+      if (own) return own;
       await runtime.ensurePage();
       return activeTab();
     }
@@ -7227,15 +7230,19 @@ var createBrowserRuntime = ({
     if (!current) throw new Error(`This chat's browser has no tab ${JSON.stringify(String(tabId))}. Use an id from browser.snapshot's tabs.`);
     return current;
   };
-  runtime.agentPage = async (tabId) => pageOf(await agentTab(tabId));
+  const useTab = (current) => {
+    lastUsedTargetId = current.targetId;
+    return pageOf(current);
+  };
+  runtime.agentPage = async (tabId) => useTab(await agentTab(tabId));
   runtime.agentOpenPage = async (tabId) => {
     const current = await agentTab(tabId);
-    if (tabId !== void 0) return pageOf(current);
+    if (tabId !== void 0) return useTab(current);
     const untouched = current.url === "about:blank" && !current.canGoBack && !current.canGoForward;
     const opened = untouched ? current : await openTab({ background: true });
     agentTargets.delete(opened.targetId);
     agentTargets.add(opened.targetId);
-    return pageOf(opened);
+    return useTab(opened);
   };
   runtime.agentCloseTab = async (tabId) => {
     const targetId = tabId ?? [...agentTargets].at(-1);
@@ -7362,7 +7369,7 @@ var createBrowserRuntime = ({
       runtime.agentActive = true;
       try {
         const data = await execute(action, parameters, signal);
-        await (tabs.get(data?.tabId ?? parameters?.tabId) ?? activeTab())?.compatibility.whenIdle();
+        await (tabs.get(data?.tabId ?? parameters?.tabId ?? lastUsedTargetId) ?? activeTab())?.compatibility.whenIdle();
         return data;
       } finally {
         runtime.agentActive = false;
