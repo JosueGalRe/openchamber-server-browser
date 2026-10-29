@@ -397,7 +397,7 @@ test('types editing keys, Enter, select-all, and composed characters like a loca
     type: 'key', action, key, code, modifiers: { ...modifiers, ...pressed },
   })));
 
-  // When the viewer types text, Enter, AltGr and Option characters, and two shortcuts.
+  // When the viewer types text, Enter, AltGr and Option characters, two shortcuts, and punctuation.
   await evaluate('document.querySelector("#notes").focus()');
   await press('a', 'KeyA');
   await press('Enter', 'Enter');
@@ -406,9 +406,15 @@ test('types editing keys, Enter, select-all, and composed characters like a loca
   await press('@', 'Digit2', { alt: true });
   await press('c', 'KeyC', { ctrl: true });
   await press('d', 'KeyD', { alt: true });
+  // Punctuation whose character codes match editing keys: '.' is Delete, "'" is ArrowRight, '!' is PageUp.
+  await press('.', 'Period');
+  await press('-', 'Minus');
+  await press("'", 'Quote');
+  await press('!', 'Digit1', { shift: true });
+  await press('(', 'Digit9', { shift: true });
 
-  // Then Enter adds a line, composed characters are typed, and shortcuts type nothing.
-  assert.equal(await evaluate('document.querySelector("#notes").value'), 'a\nb@@');
+  // Then Enter adds a line, composed characters and punctuation are typed, and shortcuts type nothing.
+  assert.equal(await evaluate('document.querySelector("#notes").value'), "a\nb@@.-'!(");
 
   // When the caret moves with End and Home, and Meta+A selects the field.
   await evaluate('document.querySelector("#field").focus(); document.querySelector("#field").setSelectionRange(5, 5)');

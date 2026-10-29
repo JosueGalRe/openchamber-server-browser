@@ -6624,6 +6624,22 @@ var KEY_CODES = Object.freeze({
   Insert: 45,
   Delete: 46
 });
+var CODE_KEY_CODES = Object.freeze({
+  Space: 32,
+  Semicolon: 186,
+  Equal: 187,
+  Comma: 188,
+  Minus: 189,
+  Period: 190,
+  Slash: 191,
+  Backquote: 192,
+  BracketLeft: 219,
+  Backslash: 220,
+  BracketRight: 221,
+  Quote: 222,
+  IntlBackslash: 226
+});
+var virtualKeyCode = (key, code) => KEY_CODES[key] ?? (/^[a-z\d]$/i.test(key) ? key.toUpperCase().charCodeAt(0) : /^(Key[A-Z]|Digit\d)$/.test(code) ? code.charCodeAt(code.length - 1) : CODE_KEY_CODES[code] ?? 0);
 var modifiersMask = (modifiers) => (modifiers.alt ? 1 : 0) | (modifiers.ctrl ? 2 : 0) | (modifiers.meta ? 4 : 0) | (modifiers.shift ? 8 : 0);
 var mouseButton = (button) => BUTTON_NAMES[button] ?? "none";
 var heldButton = (buttons) => buttons & 1 ? "left" : buttons & 2 ? "right" : buttons & 4 ? "middle" : "none";
@@ -6658,7 +6674,7 @@ var dispatchInput = async (page, event) => {
     return;
   }
   const { alt, ctrl, meta, shift } = event.modifiers;
-  const keyCode = KEY_CODES[event.key] ?? (event.key.length === 1 ? event.key.toUpperCase().charCodeAt(0) : 0);
+  const keyCode = virtualKeyCode(event.key, event.code);
   const single = [...event.key].length === 1;
   const composed = single && alt && !baseCharacter(event.key, event.code);
   const modifiers = composed && ctrl ? { alt: false, ctrl: false, meta, shift } : event.modifiers;

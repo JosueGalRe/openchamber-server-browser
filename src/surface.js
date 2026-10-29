@@ -5,6 +5,17 @@ const KEY_CODES = Object.freeze({
   Backspace: 8, Tab: 9, Enter: 13, Escape: 27, PageUp: 33, PageDown: 34, End: 35, Home: 36,
   ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Insert: 45, Delete: 46,
 });
+// Windows virtual keys for physical keys. Punctuation can't use its character
+// code: '.' is 46 (Delete), "'" 39 (ArrowRight), '!' 33 (PageUp), and Chrome
+// runs that key's editing command instead of typing the character.
+const CODE_KEY_CODES = Object.freeze({
+  Space: 32, Semicolon: 186, Equal: 187, Comma: 188, Minus: 189, Period: 190, Slash: 191,
+  Backquote: 192, BracketLeft: 219, Backslash: 220, BracketRight: 221, Quote: 222, IntlBackslash: 226,
+});
+const virtualKeyCode = (key, code) => KEY_CODES[key]
+  ?? (/^[a-z\d]$/i.test(key) ? key.toUpperCase().charCodeAt(0)
+    : /^(Key[A-Z]|Digit\d)$/.test(code) ? code.charCodeAt(code.length - 1)
+      : CODE_KEY_CODES[code] ?? 0);
 
 const modifiersMask = (modifiers) => (
   (modifiers.alt ? 1 : 0)
@@ -50,7 +61,7 @@ const dispatchInput = async (page, event) => {
     return;
   }
   const { alt, ctrl, meta, shift } = event.modifiers;
-  const keyCode = KEY_CODES[event.key] ?? (event.key.length === 1 ? event.key.toUpperCase().charCodeAt(0) : 0);
+  const keyCode = virtualKeyCode(event.key, event.code);
   const single = [...event.key].length === 1;
   // Option (Mac) and AltGr (Ctrl+Alt on Windows) compose characters. Chords that
   // leave the key on its base character are shortcuts. Linux Chrome refuses to
