@@ -275,10 +275,7 @@ test('removes the temporary Chrome profile on shutdown', { skip: chromePath ? fa
   assert.notEqual(running.process.exitCode === null && running.process.signalCode === null, true);
 });
 
-const chromeIdentitySkip = !chromePath ? 'Chrome is unavailable'
-  : process.platform === 'win32' ? 'Chrome on Windows keeps its HeadlessChrome User-Agent' : false;
-
-test('presents itself as regular Chrome, which Google sign-in requires', { skip: chromeIdentitySkip }, async (context) => {
+test('presents itself as regular Chrome, which Google sign-in requires', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
   // Given a page that shows the headers its request came with.
   const web = await startWebFixture();
   context.after(() => close(web.server));

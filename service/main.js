@@ -5626,8 +5626,11 @@ var MINIMUM_CHROME_MAJOR_VERSION = 109;
 var SYSTEM_NAMES = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
 var USER_AGENT_PLATFORMS = Object.freeze({
   darwin: "Macintosh; Intel Mac OS X 10_15_7",
-  linux: "X11; Linux x86_64"
+  linux: "X11; Linux x86_64",
+  win32: "Windows NT 10.0; Win64; x64"
 });
+var VERSION_RESOURCE_KEY = Buffer.from("VS_VERSION_INFO\0", "utf16le");
+var FIXED_FILE_INFO_SIGNATURE = 4277077181;
 var executable = (candidate) => {
   try {
     fs.accessSync(candidate, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
@@ -5664,13 +5667,26 @@ var parseEndpoint = (contents) => {
   return `ws://127.0.0.1:${port}${suffix}`;
 };
 var wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+var windowsChromeMajor = (image) => {
+  for (let key = image.indexOf(VERSION_RESOURCE_KEY); key >= 0; key = image.indexOf(VERSION_RESOURCE_KEY, key + 1)) {
+    const fixed = key + 34;
+    if (fixed + 12 <= image.length && image.readUInt32LE(fixed) === FIXED_FILE_INFO_SIGNATURE) {
+      return image.readUInt16LE(fixed + 10);
+    }
+  }
+  return null;
+};
+var chromeMajorVersion = async (binary) => {
+  if (process.platform === "win32") return windowsChromeMajor(await fs.promises.readFile(binary));
+  const { stdout } = await promisify(execFile)(binary, ["--version"], { timeout: 5e3 });
+  return Number.parseInt(stdout.match(/(\d+)\.\d+\.\d+\.\d+/)?.[1] ?? "", 10);
+};
 var userAgentArgs = async (binary) => {
   const platform = USER_AGENT_PLATFORMS[process.platform];
   if (!platform) return [];
   try {
-    const { stdout } = await promisify(execFile)(binary, ["--version"], { timeout: 5e3 });
-    const major = stdout.match(/(\d+)\.\d+\.\d+\.\d+/)?.[1];
-    if (!major) return [];
+    const major = await chromeMajorVersion(binary);
+    if (!(major >= MINIMUM_CHROME_MAJOR_VERSION)) return [];
     return [`--user-agent=Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`];
   } catch {
     return [];
