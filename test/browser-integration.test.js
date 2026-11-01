@@ -416,6 +416,14 @@ test('types editing keys, Enter, select-all, and composed characters like a loca
   // Then Enter adds a line, composed characters and punctuation are typed, and shortcuts type nothing.
   assert.equal(await evaluate('document.querySelector("#notes").value'), "a\nb@@.-'!(");
 
+  // When a German keyboard's '-', on the US Slash key, arrives with the keyCode the viewer's browser reported, and then without one.
+  await evaluate('window.keyCodes = []; document.addEventListener("keydown", (event) => window.keyCodes.push(event.keyCode))');
+  await runtime.surfaceInput(['down', 'up'].map((action) => ({ type: 'key', action, key: '-', code: 'Slash', keyCode: 189, modifiers })));
+  await press('-', 'Slash');
+
+  // Then the page sees the viewer's code, and the US code of the key without it.
+  assert.equal(await evaluate('JSON.stringify(window.keyCodes)'), '[189,191]');
+
   // When the caret moves with End and Home, and Meta+A selects the field.
   await evaluate('document.querySelector("#field").focus(); document.querySelector("#field").setSelectionRange(5, 5)');
   const selection = 'JSON.stringify([document.querySelector("#field").selectionStart, document.querySelector("#field").selectionEnd])';

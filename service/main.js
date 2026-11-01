@@ -6674,7 +6674,7 @@ var dispatchInput = async (page, event) => {
     return;
   }
   const { alt, ctrl, meta, shift } = event.modifiers;
-  const keyCode = virtualKeyCode(event.key, event.code);
+  const keyCode = event.keyCode || virtualKeyCode(event.key, event.code);
   const single = [...event.key].length === 1;
   const composed = single && alt && !baseCharacter(event.key, event.code);
   const modifiers = composed && ctrl ? { alt: false, ctrl: false, meta, shift } : event.modifiers;

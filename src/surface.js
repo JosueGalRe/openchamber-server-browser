@@ -61,7 +61,8 @@ const dispatchInput = async (page, event) => {
     return;
   }
   const { alt, ctrl, meta, shift } = event.modifiers;
-  const keyCode = virtualKeyCode(event.key, event.code);
+  // The viewer's browser knows the user's layout; hosts before openchamber/openchamber#6051 omit it, and Firefox sends 0 for keys without one.
+  const keyCode = event.keyCode || virtualKeyCode(event.key, event.code);
   const single = [...event.key].length === 1;
   // Option (Mac) and AltGr (Ctrl+Alt on Windows) compose characters. Chords that
   // leave the key on its base character are shortcuts. Linux Chrome refuses to
