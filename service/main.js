@@ -4204,6 +4204,7 @@ var PRESETS = Object.freeze({
   desktop: Object.freeze({ width: 1440, height: 900, mobile: false })
 });
 var MAX_VIEWPORT_DIMENSION = 3840;
+var viewerScale = (ratio) => Number.isFinite(ratio) ? Math.min(3, Math.max(1, ratio)) : 1;
 var presetViewport = (mode) => PRESETS[mode] ?? null;
 var viewportSummary = ({ width, height }) => {
   for (const [mode, preset] of Object.entries(PRESETS)) {
@@ -4222,7 +4223,7 @@ var cssSize = ({ width, height }, devicePixelRatio) => ({
 var applyViewport = (cdp, sessionId, viewport) => cdp.sendSession(sessionId, "Emulation.setDeviceMetricsOverride", {
   width: viewport.width,
   height: viewport.height,
-  deviceScaleFactor: 1,
+  deviceScaleFactor: viewport.deviceScaleFactor ?? 1,
   mobile: viewport.mobile
 });
 
@@ -4518,7 +4519,7 @@ var createBrowserManager = ({
         const measuredWithoutRatio = devicePixelRatio === null;
         devicePixelRatio = ratio;
         if (!measuredWithoutRatio || !surfaceViewport) return;
-        surfaceSize = cssSize(surfaceViewport, ratio);
+        surfaceSize = { ...cssSize(surfaceViewport, ratio), scale: ratio };
         const entry = selected();
         if (entry) await entry.runtime.surfaceResize(surfaceSize);
       });
@@ -4615,7 +4616,7 @@ var createBrowserManager = ({
     surfaceResize(size) {
       return enqueue(() => {
         surfaceViewport = size;
-        surfaceSize = cssSize(size, devicePixelRatio ?? 1);
+        surfaceSize = { ...cssSize(size, devicePixelRatio ?? 1), scale: devicePixelRatio ?? 1 };
         return requireSelected().runtime.surfaceResize(surfaceSize);
       });
     },
@@ -5468,8 +5469,10 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
   if (action === "browser.capture") {
     await withAbort(signal, page.cdp.sendSession(page.sessionId, "Page.enable"));
     await waitForQuiet(page, CAPTURE_QUIET_MAX_MS, signal);
-    const capture = await withAbort(signal, page.cdp.sendSession(page.sessionId, "Page.captureScreenshot", { format: "png" }));
     const metrics = await withAbort(signal, page.cdp.sendSession(page.sessionId, "Page.getLayoutMetrics"));
+    const visible = metrics.cssVisualViewport;
+    const clip = runtime.scale > 1 && visible ? { x: visible.pageX, y: visible.pageY, width: visible.clientWidth, height: visible.clientHeight, scale: (visible.scale ?? 1) / runtime.scale } : void 0;
+    const capture = await withAbort(signal, page.cdp.sendSession(page.sessionId, "Page.captureScreenshot", { format: "png", ...clip ? { clip } : {} }));
     const info = await readPageInfo(page, signal);
     const viewport = metrics.cssLayoutViewport ?? metrics.layoutViewport;
     return {
@@ -6280,7 +6283,7 @@ var createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId }) => {
   let contextId = null;
   let session = null;
   let creation = Promise.resolve();
-  const frontendViewport = (size) => ({ width: size.width, height: size.height, mobile: false });
+  const frontendViewport = (size) => ({ width: size.width, height: size.height, mobile: false, deviceScaleFactor: size.deviceScaleFactor });
   const connect = (client, request) => {
     const current = session;
     if (!current || request.url !== `/devtools/${current.token}`) {
@@ -7058,7 +7061,7 @@ var modifiersMask = (modifiers) => (modifiers.alt ? 1 : 0) | (modifiers.ctrl ? 2
 var mouseButton = (button) => BUTTON_NAMES[button] ?? "none";
 var heldButton = (buttons) => buttons & 1 ? "left" : buttons & 2 ? "right" : buttons & 4 ? "middle" : "none";
 var baseCharacter = (key, code) => code === `Key${key.toUpperCase()}` || code === `Digit${key}`;
-var dispatchInput = async (page, event, clickCount) => {
+var dispatchInput = async (page, event, scale, clickCount) => {
   if (event.type === "text") {
     await page.cdp.sendSession(page.sessionId, "Input.insertText", { text: event.text });
     return;
@@ -7067,8 +7070,8 @@ var dispatchInput = async (page, event, clickCount) => {
     const types = { down: "mousePressed", up: "mouseReleased", move: "mouseMoved" };
     await page.cdp.sendSession(page.sessionId, "Input.dispatchMouseEvent", {
       type: types[event.action],
-      x: event.x,
-      y: event.y,
+      x: event.x / scale,
+      y: event.y / scale,
       button: event.action === "move" ? heldButton(event.buttons) : mouseButton(event.button),
       buttons: event.buttons,
       clickCount,
@@ -7079,8 +7082,8 @@ var dispatchInput = async (page, event, clickCount) => {
   if (event.type === "wheel") {
     await page.cdp.sendSession(page.sessionId, "Input.dispatchMouseEvent", {
       type: "mouseWheel",
-      x: event.x,
-      y: event.y,
+      x: event.x / scale,
+      y: event.y / scale,
       deltaX: event.deltaX,
       deltaY: event.deltaY,
       modifiers: modifiersMask(event.modifiers)
@@ -7199,15 +7202,16 @@ var createSurface = (runtime) => {
           sequence,
           bytes,
           mime: "image/jpeg",
-          width: Math.round(event.params.metadata?.deviceWidth ?? runtime.viewport?.width ?? 0),
-          height: Math.round(event.params.metadata?.deviceHeight ?? runtime.viewport?.height ?? 0),
+          width: Math.round((event.params.metadata?.deviceWidth ?? runtime.viewport?.width ?? 0) * runtime.scale),
+          height: Math.round((event.params.metadata?.deviceHeight ?? runtime.viewport?.height ?? 0) * runtime.scale),
           title: runtime.title
         });
       });
       try {
         await current.cdp.sendSession(current.sessionId, "Page.startScreencast", {
           format: "jpeg",
-          quality: 72,
+          // DevTools is small text; 72 blurs it.
+          quality: current.devtools ? 90 : 72,
           everyNthFrame: 1
         });
       } catch (error) {
@@ -7276,7 +7280,7 @@ var createSurface = (runtime) => {
         }
         if (secondary && event.action === "down") await menu.observe(current).catch(() => {
         });
-        await dispatchInput(current, event, clickCount(event));
+        await dispatchInput(current, event, runtime.scale, clickCount(event));
         if (secondary && event.action === "up") await menu.settle(current, theme).catch(() => {
         });
       }
@@ -7285,8 +7289,8 @@ var createSurface = (runtime) => {
       if (runtime.controller !== controller) void runtime.contextMenu.close();
       runtime.controller = controller;
     },
-    resize({ width, height }) {
-      return runtime.setPanelSize({ width, height });
+    resize(size) {
+      return runtime.setPanelSize(size);
     },
     async clipboard() {
       const current = await start();
@@ -7373,10 +7377,14 @@ var createBrowserRuntime = ({
   let dead = null;
   const deathListeners = /* @__PURE__ */ new Set();
   let viewportConfig = { mode: "auto", source: "viewer", mobile: false, fixed: null, panel: null };
+  let requestedScale = 1;
+  let scale = 1;
+  let primaryScreen = null;
   const effectiveViewport = () => {
     const size = viewportConfig.mode === "fixed" ? viewportConfig.fixed : viewportConfig.panel ?? presetViewport("desktop");
-    return { width: size.width, height: size.height, mobile: viewportConfig.mobile };
+    return { width: size.width, height: size.height, mobile: viewportConfig.mobile, deviceScaleFactor: scale };
   };
+  const devtoolsSize = () => ({ ...viewportConfig.panel ?? presetViewport("desktop"), deviceScaleFactor: scale });
   const markDead = () => {
     if (closed || dead) return;
     dead = new Error("Chrome for this chat stopped unexpectedly; retry the action to start a new browser");
@@ -7427,6 +7435,10 @@ var createBrowserRuntime = ({
     },
     get devtoolsOpen() {
       return activeTargetId !== null && devtools?.targetId === activeTargetId;
+    },
+    // Frame pixels per CSS pixel.
+    get scale() {
+      return scale;
     },
     // Text the viewer asked to copy from the page menu; the dock offers it through a host toast.
     get copyRequest() {
@@ -7645,6 +7657,7 @@ var createBrowserRuntime = ({
       cdp.onClose(markDead);
       eventCleanup = cdp.onEvent(handleEvent);
       await cdp.send("Target.setDiscoverTargets", { discover: true });
+      await applyScale();
     } catch (error) {
       if (nextContextId && nextCdp?.isOpen) {
         await nextCdp.send("Target.disposeBrowserContext", { browserContextId: nextContextId }).catch(() => {
@@ -7733,10 +7746,36 @@ var createBrowserRuntime = ({
     await Promise.allSettled([...tabs.values()].filter((current) => current !== active).map((current) => current.compatibility.setEnabled(enabled)));
   };
   const applyViewportToTabs = async () => {
-    const viewport = effectiveViewport();
     const page = await runtime.ensurePage();
+    const viewport = effectiveViewport();
     await applyViewport(page.cdp, page.sessionId, viewport);
     await Promise.allSettled([...tabs.values()].filter((current) => current.sessionId !== page.sessionId).map((current) => applyViewport(cdp, current.sessionId, viewport)));
+  };
+  const applyScale = async () => {
+    if (requestedScale === scale || primaryScreen === false || !cdp) return;
+    const next = requestedScale;
+    try {
+      if (!primaryScreen) {
+        const [screen] = (await cdp.send("Emulation.getScreenInfos")).screenInfos;
+        primaryScreen = { id: screen.id, width: screen.width, height: screen.height };
+      }
+      await cdp.send("Emulation.updateScreen", {
+        screenId: primaryScreen.id,
+        width: Math.round(primaryScreen.width * next),
+        height: Math.round(primaryScreen.height * next),
+        devicePixelRatio: next
+      });
+    } catch {
+      primaryScreen ||= false;
+      return;
+    }
+    scale = next;
+    const viewport = effectiveViewport();
+    await Promise.allSettled([...tabs.values()].map(async (current) => {
+      if (viewport.mobile) await cdp.sendSession(current.sessionId, "Emulation.clearDeviceMetricsOverride");
+      await applyViewport(cdp, current.sessionId, viewport);
+    }));
+    await devtools?.resize(devtoolsSize());
   };
   runtime.configureViewport = async ({ mode, source, width, height, mobile }) => {
     viewportConfig = {
@@ -7753,9 +7792,11 @@ var createBrowserRuntime = ({
     return preset ? runtime.configureViewport({ mode: "fixed", source: "agent", ...preset }) : runtime.configureViewport({ mode: "auto", source: "agent", mobile: false });
   };
   runtime.setPanelSize = async (size) => {
-    viewportConfig = { ...viewportConfig, panel: size };
+    viewportConfig = { ...viewportConfig, panel: { width: size.width, height: size.height } };
+    requestedScale = viewerScale(size.scale);
+    await applyScale();
     if (viewportConfig.mode === "auto") await applyViewportToTabs();
-    await devtools?.resize(size);
+    await devtools?.resize(devtoolsSize());
     const { width, height } = effectiveViewport();
     return { width, height };
   };
@@ -7770,7 +7811,7 @@ var createBrowserRuntime = ({
       if (parameters.open) {
         const page2 = await runtime.ensurePage();
         if (devtools.targetId === page2.targetId) return;
-        await devtools.open(page2.targetId, { size: viewportConfig.panel ?? presetViewport("desktop"), colorScheme: parameters.colorScheme }).catch(async (error) => {
+        await devtools.open(page2.targetId, { size: devtoolsSize(), colorScheme: parameters.colorScheme }).catch(async (error) => {
           await devtools.close();
           throw error;
         });

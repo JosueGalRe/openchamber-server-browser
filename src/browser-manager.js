@@ -43,7 +43,8 @@ export const createBrowserManager = ({
   // dock reports the ratio. Pages keep the CSS size worked out when the host
   // measured, so a ratio change alone (a window moving to another display)
   // does not shrink them. Only a panel measured before the first ratio report
-  // is worked out again when that report arrives.
+  // is worked out again when that report arrives. The ratio goes along as
+  // scale, at which pages and DevTools render.
   let surfaceViewport = null;
   let surfaceSize = null;
   let devicePixelRatio = null;
@@ -337,7 +338,7 @@ export const createBrowserManager = ({
         const measuredWithoutRatio = devicePixelRatio === null;
         devicePixelRatio = ratio;
         if (!measuredWithoutRatio || !surfaceViewport) return;
-        surfaceSize = cssSize(surfaceViewport, ratio);
+        surfaceSize = { ...cssSize(surfaceViewport, ratio), scale: ratio };
         const entry = selected();
         if (entry) await entry.runtime.surfaceResize(surfaceSize);
       });
@@ -437,7 +438,7 @@ export const createBrowserManager = ({
     surfaceResize(size) {
       return enqueue(() => {
         surfaceViewport = size;
-        surfaceSize = cssSize(size, devicePixelRatio ?? 1);
+        surfaceSize = { ...cssSize(size, devicePixelRatio ?? 1), scale: devicePixelRatio ?? 1 };
         return requireSelected().runtime.surfaceResize(surfaceSize);
       });
     },

@@ -783,8 +783,10 @@ test('sizes pages in CSS pixels for the viewer and keeps a chosen size fixed', {
     returnByValue: true,
   })).result.value;
 
-  // Then the page lays out at the panel's CSS size.
+  // Then the page lays out at the panel's CSS size and renders at its ratio, on a screen of the same CSS size as before.
   assert.equal(await innerSize(), '[700,500]');
+  const screen = await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', { expression: 'JSON.stringify([devicePixelRatio, screen.width, screen.height])', returnByValue: true });
+  assert.equal(screen.result.value, '[2,800,600]');
 
   // When the dock fixes a size, then a later panel resize keeps it.
   await manager.setViewport({ mode: 'fixed', width: 500, height: 400, mobile: false }, manager.state().generation);
@@ -900,6 +902,14 @@ test('captures console and network for the inspector and runs JavaScript in the 
   assert.throws(() => runtime.inspector.events(captureId, cursor), (error) => error.code === 'CAPTURE_GONE');
 });
 
+// Width and height from the JPEG's start-of-frame segment.
+const jpegSize = (bytes) => {
+  for (let offset = 2; offset < bytes.length; offset += 2 + bytes.readUInt16BE(offset + 2)) {
+    if (bytes[offset + 1] >= 0xc0 && bytes[offset + 1] <= 0xc2) return [bytes.readUInt16BE(offset + 7), bytes.readUInt16BE(offset + 5)];
+  }
+  return null;
+};
+
 const openSocket = (url, options) => new Promise((resolve, reject) => {
   const socket = new WebSocket(url, options);
   socket.once('open', () => resolve(socket));
@@ -907,18 +917,28 @@ const openSocket = (url, options) => new Promise((resolve, reject) => {
 });
 
 test('shows Chrome DevTools for the visible tab, reaching it only through the relay\'s policy', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
-  // Given a page at a fixed mobile size in a wider panel.
+  // Given a page at a fixed mobile size in a wider panel on a 2x display.
   const web = await startWebFixture();
   context.after(() => close(web.server));
   const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
   context.after(() => runtime.close());
   await runtime.perform('browser.open', { url: `${web.origin}/`, viewport: 'mobile' });
-  await runtime.surfaceResize({ width: 1000, height: 700 });
+  await runtime.surfaceResize({ width: 1000, height: 700, scale: 2 });
   const page = await runtime.ensurePage();
-  const pageFrame = await runtime.surfaceFrame({ after: 0, wait: 10_000 });
-  assert.equal(pageFrame.width, 390);
+  const pageEval = async (expression) => (await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', { expression, returnByValue: true })).result.value;
 
-  // When the dock opens DevTools, then the surface shows Chrome's frontend at the panel's size, connected to the page.
+  // Then the loaded page renders at the viewer's ratio with its layout kept (a page without a
+  // viewport tag lays out 980px wide on a phone), and the agent's capture stays in CSS pixels.
+  let pageFrame = null;
+  await waitFor(async () => {
+    pageFrame = (await runtime.surfaceFrame({ after: pageFrame?.sequence ?? 0, wait: 2_000 })) ?? pageFrame;
+    return pageFrame?.width === 780 && pageFrame.height === 1688 && JSON.stringify(jpegSize(pageFrame.bytes)) === '[780,1688]';
+  }, 10_000);
+  assert.equal(await pageEval('JSON.stringify([devicePixelRatio, innerWidth])'), '[2,980]');
+  const capture = Buffer.from((await runtime.perform('browser.capture', {})).base64, 'base64');
+  assert.deepEqual([capture.readUInt32BE(16), capture.readUInt32BE(20)], [390, 844]);
+
+  // When the dock opens DevTools, then the surface shows Chrome's frontend at the panel's size and the viewer's ratio, connected to the page.
   await runtime.command('devtools', { open: true, colorScheme: 'dark' });
   assert.equal(runtime.devtoolsOpen, true);
   const frontend = await runtime.surfacePage();
@@ -926,7 +946,14 @@ test('shows Chrome DevTools for the visible tab, reaching it only through the re
   const frontendInfo = async () => (await page.cdp.send('Target.getTargetInfo', { targetId: frontend.targetId })).targetInfo;
   await waitFor(async () => /^DevTools - /.test((await frontendInfo()).title), 15_000);
   const devtoolsFrame = await runtime.surfaceFrame({ after: pageFrame.sequence, wait: 10_000 });
-  assert.equal(devtoolsFrame.width, 1000);
+  assert.deepEqual([devtoolsFrame.width, devtoolsFrame.height], [2000, 1400]);
+  assert.deepEqual(jpegSize(devtoolsFrame.bytes), [2000, 1400]);
+
+  // Then the host's frame pixels reach DevTools as CSS pixels.
+  const frontendEval = async (expression) => (await frontend.cdp.sendSession(frontend.sessionId, 'Runtime.evaluate', { expression, returnByValue: true })).result.value;
+  await frontendEval('window.lastMove = null; addEventListener("mousemove", (event) => { window.lastMove = [event.clientX, event.clientY]; }, true); true');
+  await runtime.surfaceInput([{ type: 'pointer', action: 'move', x: 400, y: 300, button: 0, buttons: 0, modifiers }]);
+  await waitFor(async () => JSON.stringify(await frontendEval('window.lastMove')) === '[200,150]');
 
   // Then the relay takes only the frontend, and the frontend gets only what the policy allows.
   const relayUrl = `ws://${new URL((await frontendInfo()).url).searchParams.get('ws')}`;
@@ -966,11 +993,20 @@ test('shows Chrome DevTools for the visible tab, reaching it only through the re
   // When the dock closes DevTools, then the page shows again at its own size and the frontend is gone.
   await runtime.command('devtools', { open: false });
   assert.equal(runtime.devtoolsOpen, false);
-  assert.equal((await runtime.surfaceFrame({ after: devtoolsFrame.sequence, wait: 10_000 })).width, 390);
+  assert.equal((await runtime.surfaceFrame({ after: devtoolsFrame.sequence, wait: 10_000 })).width, 780);
   await waitFor(async () => !(await page.cdp.send('Target.getTargets')).targetInfos.some((info) => info.targetId === frontend.targetId));
 
-  // When another tab comes forward while DevTools are open, then they close.
+  // When the viewer moves to a 1x display with DevTools open, then frames come at CSS pixels, not enlarged, and the page is back at 1x.
   await runtime.command('devtools', { open: true });
+  await runtime.surfaceResize({ width: 1000, height: 700, scale: 1 });
+  let latest = null;
+  await waitFor(async () => {
+    latest = (await runtime.surfaceFrame({ after: latest?.sequence ?? 0, wait: 2_000 })) ?? latest;
+    return latest?.width === 1000 && JSON.stringify(jpegSize(latest.bytes)) === '[1000,700]';
+  }, 10_000);
+  assert.equal(await pageEval('devicePixelRatio'), 1);
+
+  // When another tab comes forward while DevTools are open, then they close.
   await runtime.command('tab-new');
   assert.equal(runtime.devtoolsOpen, false);
 });

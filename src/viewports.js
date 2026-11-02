@@ -6,6 +6,9 @@ const PRESETS = Object.freeze({
 
 export const MAX_VIEWPORT_DIMENSION = 3840;
 
+// The viewer's pixel ratio, at which pages render; below 1 they would only blur.
+export const viewerScale = (ratio) => (Number.isFinite(ratio) ? Math.min(3, Math.max(1, ratio)) : 1);
+
 export const presetViewport = (mode) => PRESETS[mode] ?? null;
 
 export const viewportSummary = ({ width, height }) => {
@@ -29,6 +32,6 @@ export const cssSize = ({ width, height }, devicePixelRatio) => ({
 export const applyViewport = (cdp, sessionId, viewport) => cdp.sendSession(sessionId, 'Emulation.setDeviceMetricsOverride', {
   width: viewport.width,
   height: viewport.height,
-  deviceScaleFactor: 1,
+  deviceScaleFactor: viewport.deviceScaleFactor ?? 1,
   mobile: viewport.mobile,
 });

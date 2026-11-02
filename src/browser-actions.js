@@ -164,8 +164,14 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
   if (action === 'browser.capture') {
     await withAbort(signal, page.cdp.sendSession(page.sessionId, 'Page.enable'));
     await waitForQuiet(page, CAPTURE_QUIET_MAX_MS, signal);
-    const capture = await withAbort(signal, page.cdp.sendSession(page.sessionId, 'Page.captureScreenshot', { format: 'png' }));
     const metrics = await withAbort(signal, page.cdp.sendSession(page.sessionId, 'Page.getLayoutMetrics'));
+    // Pages render at the viewer's pixel ratio; the agent still gets one pixel
+    // per CSS pixel of the viewport, with a zoomed-out mobile page zoomed out.
+    const visible = metrics.cssVisualViewport;
+    const clip = runtime.scale > 1 && visible
+      ? { x: visible.pageX, y: visible.pageY, width: visible.clientWidth, height: visible.clientHeight, scale: (visible.scale ?? 1) / runtime.scale }
+      : undefined;
+    const capture = await withAbort(signal, page.cdp.sendSession(page.sessionId, 'Page.captureScreenshot', { format: 'png', ...(clip ? { clip } : {}) }));
     const info = await readPageInfo(page, signal);
     const viewport = metrics.cssLayoutViewport ?? metrics.layoutViewport;
     return {

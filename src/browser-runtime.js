@@ -10,7 +10,7 @@ import { networkGrants, originGrants } from './config.js';
 import { createNativeSelectCompatibility } from './native-select-compatibility.js';
 import { createPolicyProxy } from './policy-proxy.js';
 import { createSurface } from './surface.js';
-import { applyViewport, presetViewport } from './viewports.js';
+import { applyViewport, presetViewport, viewerScale } from './viewports.js';
 
 const boundedText = (value, maximum = 1_000) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maximum);
 
@@ -76,11 +76,17 @@ export const createBrowserRuntime = ({
   // 'auto' follows the viewer's panel; 'fixed' keeps a chosen size. The source
   // says who chose it, so an agent's size is not replaced by a panel resize.
   let viewportConfig = { mode: 'auto', source: 'viewer', mobile: false, fixed: null, panel: null };
+  // Pages render at the viewer's pixel ratio once the headless screen has it.
+  let requestedScale = 1;
+  let scale = 1;
+  // The primary screen's id and CSS size, or false where Chrome cannot change it.
+  let primaryScreen = null;
 
   const effectiveViewport = () => {
     const size = viewportConfig.mode === 'fixed' ? viewportConfig.fixed : viewportConfig.panel ?? presetViewport('desktop');
-    return { width: size.width, height: size.height, mobile: viewportConfig.mobile };
+    return { width: size.width, height: size.height, mobile: viewportConfig.mobile, deviceScaleFactor: scale };
   };
+  const devtoolsSize = () => ({ ...(viewportConfig.panel ?? presetViewport('desktop')), deviceScaleFactor: scale });
 
   const markDead = () => {
     if (closed || dead) return;
@@ -134,6 +140,10 @@ export const createBrowserRuntime = ({
     },
     get devtoolsOpen() {
       return activeTargetId !== null && devtools?.targetId === activeTargetId;
+    },
+    // Frame pixels per CSS pixel.
+    get scale() {
+      return scale;
     },
     // Text the viewer asked to copy from the page menu; the dock offers it through a host toast.
     get copyRequest() {
@@ -370,6 +380,7 @@ export const createBrowserRuntime = ({
       cdp.onClose(markDead);
       eventCleanup = cdp.onEvent(handleEvent);
       await cdp.send('Target.setDiscoverTargets', { discover: true });
+      await applyScale();
     } catch (error) {
       if (nextContextId && nextCdp?.isOpen) {
         await nextCdp.send('Target.disposeBrowserContext', { browserContextId: nextContextId }).catch(() => {});
@@ -481,12 +492,48 @@ export const createBrowserRuntime = ({
   };
 
   const applyViewportToTabs = async () => {
-    const viewport = effectiveViewport();
+    // Starting the browser can change the pixel ratio, so the size comes after.
     const page = await runtime.ensurePage();
+    const viewport = effectiveViewport();
     await applyViewport(page.cdp, page.sessionId, viewport);
     await Promise.allSettled([...tabs.values()]
       .filter((current) => current.sessionId !== page.sessionId)
       .map((current) => applyViewport(cdp, current.sessionId, viewport)));
+  };
+
+  // Chrome caps a screencast at its screen's pixel ratio, whatever a page
+  // emulates, so the headless screen takes the viewer's ratio. Its size in CSS
+  // pixels stays, so sites see only devicePixelRatio change, as on the
+  // viewer's own display.
+  const applyScale = async () => {
+    if (requestedScale === scale || primaryScreen === false || !cdp) return;
+    const next = requestedScale;
+    try {
+      if (!primaryScreen) {
+        const [screen] = (await cdp.send('Emulation.getScreenInfos')).screenInfos;
+        primaryScreen = { id: screen.id, width: screen.width, height: screen.height };
+      }
+      // Takes device pixels; getScreenInfos answers in CSS pixels.
+      await cdp.send('Emulation.updateScreen', {
+        screenId: primaryScreen.id,
+        width: Math.round(primaryScreen.width * next),
+        height: Math.round(primaryScreen.height * next),
+        devicePixelRatio: next,
+      });
+    } catch {
+      // Chrome before Emulation.updateScreen keeps 1x frames.
+      primaryScreen ||= false;
+      return;
+    }
+    scale = next;
+    const viewport = effectiveViewport();
+    await Promise.allSettled([...tabs.values()].map(async (current) => {
+      // A live ratio change leaves a mobile page without a viewport tag at a
+      // fraction of its 980px fallback width until the emulation starts over.
+      if (viewport.mobile) await cdp.sendSession(current.sessionId, 'Emulation.clearDeviceMetricsOverride');
+      await applyViewport(cdp, current.sessionId, viewport);
+    }));
+    await devtools?.resize(devtoolsSize());
   };
 
   runtime.configureViewport = async ({ mode, source, width, height, mobile }) => {
@@ -510,10 +557,12 @@ export const createBrowserRuntime = ({
   // The CSS size the viewer's panel can show. A fixed viewport keeps its own
   // size and the host letterboxes it.
   runtime.setPanelSize = async (size) => {
-    viewportConfig = { ...viewportConfig, panel: size };
+    viewportConfig = { ...viewportConfig, panel: { width: size.width, height: size.height } };
+    requestedScale = viewerScale(size.scale);
+    await applyScale();
     if (viewportConfig.mode === 'auto') await applyViewportToTabs();
     // DevTools always fill the panel, whatever size the page keeps.
-    await devtools?.resize(size);
+    await devtools?.resize(devtoolsSize());
     const { width, height } = effectiveViewport();
     return { width, height };
   };
@@ -531,7 +580,7 @@ export const createBrowserRuntime = ({
       if (parameters.open) {
         const page = await runtime.ensurePage();
         if (devtools.targetId === page.targetId) return;
-        await devtools.open(page.targetId, { size: viewportConfig.panel ?? presetViewport('desktop'), colorScheme: parameters.colorScheme }).catch(async (error) => {
+        await devtools.open(page.targetId, { size: devtoolsSize(), colorScheme: parameters.colorScheme }).catch(async (error) => {
           await devtools.close();
           throw error;
         });

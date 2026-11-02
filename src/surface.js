@@ -35,7 +35,8 @@ const heldButton = (buttons) => (buttons & 1 ? 'left' : buttons & 2 ? 'right' : 
 
 const baseCharacter = (key, code) => code === `Key${key.toUpperCase()}` || code === `Digit${key}`;
 
-const dispatchInput = async (page, event, clickCount) => {
+// scale: frame pixels per CSS pixel; the host sends positions in frame pixels.
+const dispatchInput = async (page, event, scale, clickCount) => {
   if (event.type === 'text') {
     await page.cdp.sendSession(page.sessionId, 'Input.insertText', { text: event.text });
     return;
@@ -44,8 +45,8 @@ const dispatchInput = async (page, event, clickCount) => {
     const types = { down: 'mousePressed', up: 'mouseReleased', move: 'mouseMoved' };
     await page.cdp.sendSession(page.sessionId, 'Input.dispatchMouseEvent', {
       type: types[event.action],
-      x: event.x,
-      y: event.y,
+      x: event.x / scale,
+      y: event.y / scale,
       button: event.action === 'move' ? heldButton(event.buttons) : mouseButton(event.button),
       buttons: event.buttons,
       clickCount,
@@ -56,8 +57,8 @@ const dispatchInput = async (page, event, clickCount) => {
   if (event.type === 'wheel') {
     await page.cdp.sendSession(page.sessionId, 'Input.dispatchMouseEvent', {
       type: 'mouseWheel',
-      x: event.x,
-      y: event.y,
+      x: event.x / scale,
+      y: event.y / scale,
       deltaX: event.deltaX,
       deltaY: event.deltaY,
       modifiers: modifiersMask(event.modifiers),
@@ -188,19 +189,22 @@ export const createSurface = (runtime) => {
         const bytes = Buffer.from(String(event.params.data ?? ''), 'base64');
         if (bytes.length === 0 || bytes.length > SURFACE_FRAME_MAX_BYTES) return;
         sequence += 1;
+        // In image pixels, which the host gives its canvas, so a frame at the
+        // viewer's pixel ratio is drawn one to one instead of scaled down.
         publish({
           sequence,
           bytes,
           mime: 'image/jpeg',
-          width: Math.round(event.params.metadata?.deviceWidth ?? runtime.viewport?.width ?? 0),
-          height: Math.round(event.params.metadata?.deviceHeight ?? runtime.viewport?.height ?? 0),
+          width: Math.round((event.params.metadata?.deviceWidth ?? runtime.viewport?.width ?? 0) * runtime.scale),
+          height: Math.round((event.params.metadata?.deviceHeight ?? runtime.viewport?.height ?? 0) * runtime.scale),
           title: runtime.title,
         });
       });
       try {
         await current.cdp.sendSession(current.sessionId, 'Page.startScreencast', {
           format: 'jpeg',
-          quality: 72,
+          // DevTools is small text; 72 blurs it.
+          quality: current.devtools ? 90 : 72,
           everyNthFrame: 1,
         });
       } catch (error) {
@@ -273,7 +277,7 @@ export const createSurface = (runtime) => {
           }
         }
         if (secondary && event.action === 'down') await menu.observe(current).catch(() => {});
-        await dispatchInput(current, event, clickCount(event));
+        await dispatchInput(current, event, runtime.scale, clickCount(event));
         if (secondary && event.action === 'up') await menu.settle(current, theme).catch(() => {});
       }
     },
@@ -283,8 +287,8 @@ export const createSurface = (runtime) => {
       if (runtime.controller !== controller) void runtime.contextMenu.close();
       runtime.controller = controller;
     },
-    resize({ width, height }) {
-      return runtime.setPanelSize({ width, height });
+    resize(size) {
+      return runtime.setPanelSize(size);
     },
     async clipboard() {
       const current = await start();

@@ -332,7 +332,7 @@ test('applies the current viewer size before publishing a newly selected scope',
   // When the user selects that scope, then the surface viewport is applied before it becomes visible.
   await manager.selectScope(manager.state().scopes[1].id, manager.state().generation);
   const calls = runtimes.get('ses_two').calls;
-  assert.deepEqual(calls.at(-1), ['resize', { width: 700, height: 500 }]);
+  assert.deepEqual(calls.at(-1), ['resize', { width: 700, height: 500, scale: 1 }]);
   assert.equal(manager.state().selectedScopeId, manager.state().scopes[1].id);
 });
 
@@ -508,14 +508,14 @@ test('converts the viewer panel with its pixel ratio and sizes a first scope cre
   // When the first scope appears, then it gets the panel's CSS size.
   await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
   const runtime = runtimes.get('ses_one');
-  assert.deepEqual(runtime.calls.find(([kind]) => kind === 'resize'), ['resize', { width: 700, height: 500 }]);
+  assert.deepEqual(runtime.calls.find(([kind]) => kind === 'resize'), ['resize', { width: 700, height: 500, scale: 2 }]);
 
   // When the window moves to a 1x display, then the page keeps its CSS size, and the host's next measurement uses the new ratio.
   const callCount = runtime.calls.length;
   await manager.setDevicePixelRatio(1);
   assert.equal(runtime.calls.length, callCount);
   await manager.surfaceResize({ width: 800, height: 600 });
-  assert.deepEqual(runtime.calls.at(-1), ['resize', { width: 800, height: 600 }]);
+  assert.deepEqual(runtime.calls.at(-1), ['resize', { width: 800, height: 600, scale: 1 }]);
 
   // When the dock sets a viewport, then it is marked as the viewer's and guarded like other dock mutations.
   await manager.setViewport({ mode: 'fixed', width: 500, height: 400, mobile: false }, manager.state().generation);
@@ -533,7 +533,7 @@ test('works out a panel measured before the dock reported its pixel ratio once t
 
   // When the ratio arrives, then the page gets the panel's CSS size.
   await manager.setDevicePixelRatio(2);
-  assert.deepEqual(runtime.calls.at(-1), ['resize', { width: 700, height: 500 }]);
+  assert.deepEqual(runtime.calls.at(-1), ['resize', { width: 700, height: 500, scale: 2 }]);
 });
 
 test('lists the visible tab\'s errors and warnings only for a dock whose console is open', async () => {

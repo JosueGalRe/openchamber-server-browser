@@ -28,8 +28,8 @@ export const createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId }) 
   let contextId = null;
   let session = null;
   let creation = Promise.resolve();
-  // The panel's CSS size.
-  const frontendViewport = (size) => ({ width: size.width, height: size.height, mobile: false });
+  // The panel's CSS size and the viewer's pixel ratio.
+  const frontendViewport = (size) => ({ width: size.width, height: size.height, mobile: false, deviceScaleFactor: size.deviceScaleFactor });
 
   const connect = (client, request) => {
     const current = session;
