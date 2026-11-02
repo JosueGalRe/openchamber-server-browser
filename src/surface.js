@@ -1,6 +1,10 @@
 import { SURFACE_FRAME_MAX_BYTES, SURFACE_TEXT_MAX } from '@openchamber/sdk';
 
 const BUTTON_NAMES = ['left', 'middle', 'right'];
+// Hosts send no click count, so a press this soon after one this close (in
+// frame pixels) continues it, and double and triple clicks select a word and a line.
+const MULTI_CLICK_MS = 500;
+const MULTI_CLICK_DISTANCE = 4;
 const KEY_CODES = Object.freeze({
   Backspace: 8, Tab: 9, Enter: 13, Escape: 27, PageUp: 33, PageDown: 34, End: 35, Home: 36,
   ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Insert: 45, Delete: 46,
@@ -31,7 +35,7 @@ const heldButton = (buttons) => (buttons & 1 ? 'left' : buttons & 2 ? 'right' : 
 
 const baseCharacter = (key, code) => code === `Key${key.toUpperCase()}` || code === `Digit${key}`;
 
-const dispatchInput = async (page, event) => {
+const dispatchInput = async (page, event, clickCount) => {
   if (event.type === 'text') {
     await page.cdp.sendSession(page.sessionId, 'Input.insertText', { text: event.text });
     return;
@@ -44,7 +48,7 @@ const dispatchInput = async (page, event) => {
       y: event.y,
       button: event.action === 'move' ? heldButton(event.buttons) : mouseButton(event.button),
       buttons: event.buttons,
-      clickCount: event.action === 'move' ? 0 : 1,
+      clickCount,
       modifiers: modifiersMask(event.modifiers),
     });
     return;
@@ -133,6 +137,17 @@ export const createSurface = (runtime) => {
   // Bumps whenever the runtime's active tab changes.
   let target = 0;
   let swallowEscapeUp = false;
+  let lastPress = null;
+
+  const clickCount = (event) => {
+    if (event.type !== 'pointer' || event.action === 'move') return 0;
+    if (event.action === 'up') return lastPress?.count ?? 1;
+    const now = Date.now();
+    const continues = lastPress?.button === event.button && now - lastPress.at <= MULTI_CLICK_MS
+      && Math.abs(event.x - lastPress.x) <= MULTI_CLICK_DISTANCE && Math.abs(event.y - lastPress.y) <= MULTI_CLICK_DISTANCE;
+    lastPress = { at: now, x: event.x, y: event.y, button: event.button, count: continues ? lastPress.count + 1 : 1 };
+    return lastPress.count;
+  };
 
   const finishWaiter = (waiter, value) => {
     if (!waiters.delete(waiter)) return;
@@ -257,7 +272,7 @@ export const createSurface = (runtime) => {
           }
         }
         if (secondary && event.action === 'down') await menu.observe(current).catch(() => {});
-        await dispatchInput(current, event);
+        await dispatchInput(current, event, clickCount(event));
         if (secondary && event.action === 'up') await menu.settle(current, theme).catch(() => {});
       }
     },
@@ -282,6 +297,7 @@ export const createSurface = (runtime) => {
     // the next request starts on the new tab.
     retarget() {
       target += 1;
+      lastPress = null;
       detach();
       latest = null;
       for (const waiter of waiters) finishWaiter(waiter, null);

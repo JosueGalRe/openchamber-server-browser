@@ -6623,6 +6623,8 @@ var createNativeSelectCompatibility = ({ ensurePage, reportError }) => {
 
 // src/surface.js
 var BUTTON_NAMES = ["left", "middle", "right"];
+var MULTI_CLICK_MS = 500;
+var MULTI_CLICK_DISTANCE = 4;
 var KEY_CODES = Object.freeze({
   Backspace: 8,
   Tab: 9,
@@ -6659,7 +6661,7 @@ var modifiersMask = (modifiers) => (modifiers.alt ? 1 : 0) | (modifiers.ctrl ? 2
 var mouseButton = (button) => BUTTON_NAMES[button] ?? "none";
 var heldButton = (buttons) => buttons & 1 ? "left" : buttons & 2 ? "right" : buttons & 4 ? "middle" : "none";
 var baseCharacter = (key, code) => code === `Key${key.toUpperCase()}` || code === `Digit${key}`;
-var dispatchInput = async (page, event) => {
+var dispatchInput = async (page, event, clickCount) => {
   if (event.type === "text") {
     await page.cdp.sendSession(page.sessionId, "Input.insertText", { text: event.text });
     return;
@@ -6672,7 +6674,7 @@ var dispatchInput = async (page, event) => {
       y: event.y,
       button: event.action === "move" ? heldButton(event.buttons) : mouseButton(event.button),
       buttons: event.buttons,
-      clickCount: event.action === "move" ? 0 : 1,
+      clickCount,
       modifiers: modifiersMask(event.modifiers)
     });
     return;
@@ -6751,6 +6753,15 @@ var createSurface = (runtime) => {
   let startPromise = null;
   let target = 0;
   let swallowEscapeUp = false;
+  let lastPress = null;
+  const clickCount = (event) => {
+    if (event.type !== "pointer" || event.action === "move") return 0;
+    if (event.action === "up") return lastPress?.count ?? 1;
+    const now = Date.now();
+    const continues = lastPress?.button === event.button && now - lastPress.at <= MULTI_CLICK_MS && Math.abs(event.x - lastPress.x) <= MULTI_CLICK_DISTANCE && Math.abs(event.y - lastPress.y) <= MULTI_CLICK_DISTANCE;
+    lastPress = { at: now, x: event.x, y: event.y, button: event.button, count: continues ? lastPress.count + 1 : 1 };
+    return lastPress.count;
+  };
   const finishWaiter = (waiter, value) => {
     if (!waiters.delete(waiter)) return;
     clearTimeout(waiter.timer);
@@ -6868,7 +6879,7 @@ var createSurface = (runtime) => {
         }
         if (secondary && event.action === "down") await menu.observe(current).catch(() => {
         });
-        await dispatchInput(current, event);
+        await dispatchInput(current, event, clickCount(event));
         if (secondary && event.action === "up") await menu.settle(current, theme).catch(() => {
         });
       }
@@ -6892,6 +6903,7 @@ var createSurface = (runtime) => {
     // the next request starts on the new tab.
     retarget() {
       target += 1;
+      lastPress = null;
       detach();
       latest = null;
       for (const waiter of waiters) finishWaiter(waiter, null);

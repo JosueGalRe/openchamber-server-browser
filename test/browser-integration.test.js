@@ -477,6 +477,18 @@ test('drags across page text to select it like a held mouse button', { skip: chr
     { type: 'pointer', action: 'up', x: 200, y: 40, button: 0, buttons: 0, modifiers },
   ]);
   assert.equal(await runtime.surfaceClipboard(), 'Next page');
+
+  // When the viewer double-clicks a word and triple-clicks the line, then they are selected, as hosts send no click count.
+  const click = (x) => [
+    { type: 'pointer', action: 'down', x, y: 40, button: 0, buttons: 1, modifiers },
+    { type: 'pointer', action: 'up', x, y: 40, button: 0, buttons: 0, modifiers },
+  ];
+  await runtime.surfaceInput([...click(80), ...click(80)]);
+  assert.equal(await runtime.surfaceClipboard(), 'page');
+  // A press after the double click's window starts a new count.
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  await runtime.surfaceInput([...click(80), ...click(80), ...click(81)]);
+  assert.equal((await runtime.surfaceClipboard()).trim(), 'Next page');
 });
 
 test('replaces a scope whose Chrome stopped with a fresh browser on the next action', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
