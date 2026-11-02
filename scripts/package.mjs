@@ -7,4 +7,6 @@ const output = `artifacts/openchamber-server-browser-${version}.zip`;
 await rm(output, { force: true });
 execFileSync('zip', ['-j', output, 'package.json', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_LICENSES', 'config.example.json'], { stdio: 'inherit' });
 execFileSync('zip', [output, 'service/main.js', 'panel/index.html', 'panel/main.js', 'panel/inspector.html', 'panel/inspector.js'], { stdio: 'inherit' });
+// The README links to these.
+execFileSync('zip', ['-r', output, 'docs'], { stdio: 'inherit' });
 console.log(output);
