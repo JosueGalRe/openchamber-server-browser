@@ -8,6 +8,26 @@ const MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
 // A side that stops reading is cut off instead of buffering without bound.
 const MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
 const MAX_QUEUED_COMMANDS = 1_024;
+const COPY_BINDING = 'openchamberDevtoolsCopy';
+// Headless Chrome draws no native menus and keeps what DevTools copy on the
+// server, so DevTools draw their own menus and hand copies to the service.
+const FRONTEND_SCRIPT = `(() => {
+  const setUp = () => {
+    if (globalThis.openchamberDevtoolsReady) return;
+    globalThis.openchamberDevtoolsReady = true;
+    void Promise.all([import('./ui/legacy/legacy.js'), import('./core/host/host.js')]).then(([legacy, host]) => {
+      legacy.ContextMenu.ContextMenu.useSoftMenu = true;
+      const frontendHost = host.InspectorFrontendHost.InspectorFrontendHostInstance;
+      const copyText = frontendHost.copyText.bind(frontendHost);
+      frontendHost.copyText = (text) => {
+        if (text !== null && text !== undefined) globalThis.${COPY_BINDING}(String(text));
+        copyText(text);
+      };
+    });
+  };
+  if (document.readyState === 'complete') setUp();
+  else addEventListener('load', setUp, { once: true });
+})()`;
 
 const pageSocketUrl = (browserEndpoint, targetId) => {
   const url = new URL(browserEndpoint);
@@ -21,7 +41,7 @@ const pageSocketUrl = (browserEndpoint, targetId) => {
 // reaches the tab only through this relay and its policy. That context's proxy
 // lets the relay through and sends everything else the frontend loads or opens
 // through the scope's egress policy.
-export const createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId }) => {
+export const createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId, onCopy }) => {
   let relayStart = null;
   let relay = null;
   let contextStart = null;
@@ -30,6 +50,10 @@ export const createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId }) 
   let creation = Promise.resolve();
   // The panel's CSS size and the viewer's pixel ratio.
   const frontendViewport = (size) => ({ width: size.width, height: size.height, mobile: false, deviceScaleFactor: size.deviceScaleFactor });
+  const stopCopies = cdp.onEvent((event) => {
+    if (event.method === 'Runtime.bindingCalled' && event.params.name === COPY_BINDING
+      && session?.page && event.sessionId === session.page.sessionId) onCopy(String(event.params.payload ?? ''));
+  });
 
   const connect = (client, request) => {
     const current = session;
@@ -161,6 +185,11 @@ export const createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId }) 
       stillOpening();
       const sessionId = await cdp.attach(current.frontendTargetId);
       stillOpening();
+      // Registered before the evaluation, so the frontend's document gets the
+      // script whether it committed already or commits after.
+      await cdp.sendSession(sessionId, 'Runtime.addBinding', { name: COPY_BINDING });
+      await cdp.sendSession(sessionId, 'Page.addScriptToEvaluateOnNewDocument', { source: FRONTEND_SCRIPT });
+      await cdp.sendSession(sessionId, 'Runtime.evaluate', { expression: FRONTEND_SCRIPT });
       await applyViewport(cdp, sessionId, frontendViewport(size));
       // DevTools follows the system theme by default.
       if (colorScheme) {
@@ -190,6 +219,7 @@ export const createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId }) 
       return true;
     },
     async dispose() {
+      stopCopies();
       await close();
       for (const client of relay?.clients ?? []) client.terminate();
       await new Promise((resolve) => (relay ? relay.close(() => resolve()) : resolve()));

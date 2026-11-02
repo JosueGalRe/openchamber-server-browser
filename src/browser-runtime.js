@@ -145,7 +145,7 @@ export const createBrowserRuntime = ({
     get scale() {
       return scale;
     },
-    // Text the viewer asked to copy from the page menu; the dock offers it through a host toast.
+    // Text copied from the page menu or DevTools, for the dock to put on the viewer's clipboard.
     get copyRequest() {
       if (!copyRequest || Date.now() - copyRequest.at > 10_000) return null;
       return { id: copyRequest.id, text: copyRequest.text };
@@ -376,7 +376,13 @@ export const createBrowserRuntime = ({
       if (closed) throw new Error('Browser runtime is closed');
       cdp = nextCdp;
       contextId = nextContextId;
-      devtools = createDevTools({ cdp, endpoint: processInfo.endpoint, proxyAddress, scopeContextId: contextId });
+      devtools = createDevTools({
+        cdp,
+        endpoint: processInfo.endpoint,
+        proxyAddress,
+        scopeContextId: contextId,
+        onCopy: (text) => offerCopy(text, { devtools: true }),
+      });
       cdp.onClose(markDead);
       eventCleanup = cdp.onEvent(handleEvent);
       await cdp.send('Target.setDiscoverTargets', { discover: true });
@@ -636,7 +642,11 @@ export const createBrowserRuntime = ({
   const execute = createBrowserActions(runtime);
   const surface = createSurface(runtime);
 
+  // Text copied in the shared browser, for the dock to put on the viewer's clipboard.
   let copyRequest = null;
+  const offerCopy = (text, { devtools = false } = {}) => {
+    copyRequest = { id: crypto.randomUUID(), text: text.length > GUEST_CLIPBOARD_TEXT_MAX ? null : text, at: Date.now(), devtools };
+  };
   const contextMenu = createContextMenu({
     navigationState: () => ({ canGoBack: runtime.canGoBack, canGoForward: runtime.canGoForward }),
     readSelection: () => surface.clipboard(),
@@ -644,7 +654,7 @@ export const createBrowserRuntime = ({
       if (action === 'back' || action === 'forward' || action === 'reload') {
         void runtime.command(action).catch(() => {});
       } else if (action === 'copy') {
-        copyRequest = { id: crypto.randomUUID(), text: selection.length > GUEST_CLIPBOARD_TEXT_MAX ? null : selection, at: Date.now() };
+        offerCopy(selection);
       }
     },
   });
@@ -688,7 +698,17 @@ export const createBrowserRuntime = ({
   runtime.surfaceInput = (events, theme) => surface.input(events, theme);
   runtime.surfaceControl = (controller) => surface.control(controller);
   runtime.surfaceResize = (size) => surface.resize(size);
-  runtime.surfaceClipboard = () => surface.clipboard();
+  // DevTools copy some things themselves on Cmd/Ctrl+C, such as a selected
+  // element in Elements; the host reads right after the chord, so that copy
+  // goes out here instead of through the dock.
+  runtime.surfaceClipboard = async () => {
+    if (copyRequest?.devtools && copyRequest.text && Date.now() - copyRequest.at < 1_000) {
+      const { text } = copyRequest;
+      copyRequest = null;
+      return text;
+    }
+    return surface.clipboard();
+  };
   runtime.onDead = (listener) => {
     deathListeners.add(listener);
     return () => deathListeners.delete(listener);

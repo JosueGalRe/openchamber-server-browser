@@ -955,6 +955,33 @@ test('shows Chrome DevTools for the visible tab, reaching it only through the re
   await runtime.surfaceInput([{ type: 'pointer', action: 'move', x: 400, y: 300, button: 0, buttons: 0, modifiers }]);
   await waitFor(async () => JSON.stringify(await frontendEval('window.lastMove')) === '[200,150]');
 
+  // When the viewer right-clicks an element, then DevTools draw their own menu, which headless Chrome would not.
+  const findInFrontend = (test) => `(() => {
+    const walk = (root) => {
+      for (const element of root.querySelectorAll('*')) {
+        if (${test}) return element;
+        const found = element.shadowRoot && walk(element.shadowRoot);
+        if (found) return found;
+      }
+      return null;
+    };
+    return walk(document);
+  })()`;
+  let bodyRow = null;
+  await waitFor(async () => {
+    bodyRow = await frontendEval(`(() => { const tag = ${findInFrontend('element.classList.contains("webkit-html-tag-name") && element.textContent === "body"')}; const box = tag?.getBoundingClientRect(); return box ? [box.left + box.width / 2, box.top + box.height / 2] : null; })()`);
+    return bodyRow !== null;
+  });
+  await runtime.surfaceInput(['down', 'up'].map((action) => ({ type: 'pointer', action, x: bodyRow[0] * 2, y: bodyRow[1] * 2, button: 2, buttons: action === 'down' ? 2 : 0, modifiers })));
+  await waitFor(async () => await frontendEval(`${findInFrontend('element.classList.contains("soft-context-menu")')} !== null`));
+  await runtime.surfaceInput(['down', 'up'].map((action) => ({ type: 'key', action, key: 'Escape', code: 'Escape', modifiers })));
+
+  // When DevTools copy something, then the viewer's copy chord gets it rather than the server's clipboard.
+  await frontendEval('import("./core/host/host.js").then((m) => { m.InspectorFrontendHost.InspectorFrontendHostInstance.copyText("<body>copied</body>"); return true; })');
+  await waitFor(() => runtime.copyRequest?.text === '<body>copied</body>');
+  assert.equal(await runtime.surfaceClipboard(), '<body>copied</body>');
+  assert.equal(runtime.copyRequest, null);
+
   // Then the relay takes only the frontend, and the frontend gets only what the policy allows.
   const relayUrl = `ws://${new URL((await frontendInfo()).url).searchParams.get('ws')}`;
   await assert.rejects(openSocket(relayUrl), /401/);

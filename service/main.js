@@ -6271,12 +6271,30 @@ var FRONTEND_ORIGIN = "devtools://devtools";
 var MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
 var MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
 var MAX_QUEUED_COMMANDS = 1024;
+var COPY_BINDING = "openchamberDevtoolsCopy";
+var FRONTEND_SCRIPT = `(() => {
+  const setUp = () => {
+    if (globalThis.openchamberDevtoolsReady) return;
+    globalThis.openchamberDevtoolsReady = true;
+    void Promise.all([import('./ui/legacy/legacy.js'), import('./core/host/host.js')]).then(([legacy, host]) => {
+      legacy.ContextMenu.ContextMenu.useSoftMenu = true;
+      const frontendHost = host.InspectorFrontendHost.InspectorFrontendHostInstance;
+      const copyText = frontendHost.copyText.bind(frontendHost);
+      frontendHost.copyText = (text) => {
+        if (text !== null && text !== undefined) globalThis.${COPY_BINDING}(String(text));
+        copyText(text);
+      };
+    });
+  };
+  if (document.readyState === 'complete') setUp();
+  else addEventListener('load', setUp, { once: true });
+})()`;
 var pageSocketUrl = (browserEndpoint, targetId) => {
   const url = new URL(browserEndpoint);
   url.pathname = `/devtools/page/${encodeURIComponent(targetId)}`;
   return url.href;
 };
-var createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId }) => {
+var createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId, onCopy }) => {
   let relayStart = null;
   let relay = null;
   let contextStart = null;
@@ -6284,6 +6302,9 @@ var createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId }) => {
   let session = null;
   let creation = Promise.resolve();
   const frontendViewport = (size) => ({ width: size.width, height: size.height, mobile: false, deviceScaleFactor: size.deviceScaleFactor });
+  const stopCopies = cdp.onEvent((event) => {
+    if (event.method === "Runtime.bindingCalled" && event.params.name === COPY_BINDING && session?.page && event.sessionId === session.page.sessionId) onCopy(String(event.params.payload ?? ""));
+  });
   const connect = (client, request) => {
     const current = session;
     if (!current || request.url !== `/devtools/${current.token}`) {
@@ -6411,6 +6432,9 @@ var createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId }) => {
       stillOpening();
       const sessionId = await cdp.attach(current.frontendTargetId);
       stillOpening();
+      await cdp.sendSession(sessionId, "Runtime.addBinding", { name: COPY_BINDING });
+      await cdp.sendSession(sessionId, "Page.addScriptToEvaluateOnNewDocument", { source: FRONTEND_SCRIPT });
+      await cdp.sendSession(sessionId, "Runtime.evaluate", { expression: FRONTEND_SCRIPT });
       await applyViewport(cdp, sessionId, frontendViewport(size));
       if (colorScheme) {
         await cdp.sendSession(sessionId, "Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: colorScheme }] });
@@ -6440,6 +6464,7 @@ var createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId }) => {
       return true;
     },
     async dispose() {
+      stopCopies();
       await close();
       for (const client of relay?.clients ?? []) client.terminate();
       await new Promise((resolve) => relay ? relay.close(() => resolve()) : resolve());
@@ -7440,7 +7465,7 @@ var createBrowserRuntime = ({
     get scale() {
       return scale;
     },
-    // Text the viewer asked to copy from the page menu; the dock offers it through a host toast.
+    // Text copied from the page menu or DevTools, for the dock to put on the viewer's clipboard.
     get copyRequest() {
       if (!copyRequest || Date.now() - copyRequest.at > 1e4) return null;
       return { id: copyRequest.id, text: copyRequest.text };
@@ -7653,7 +7678,13 @@ var createBrowserRuntime = ({
       if (closed) throw new Error("Browser runtime is closed");
       cdp = nextCdp;
       contextId = nextContextId;
-      devtools = createDevTools({ cdp, endpoint: processInfo.endpoint, proxyAddress, scopeContextId: contextId });
+      devtools = createDevTools({
+        cdp,
+        endpoint: processInfo.endpoint,
+        proxyAddress,
+        scopeContextId: contextId,
+        onCopy: (text2) => offerCopy(text2, { devtools: true })
+      });
       cdp.onClose(markDead);
       eventCleanup = cdp.onEvent(handleEvent);
       await cdp.send("Target.setDiscoverTargets", { discover: true });
@@ -7863,6 +7894,9 @@ var createBrowserRuntime = ({
   const execute = createBrowserActions(runtime);
   const surface = createSurface(runtime);
   let copyRequest = null;
+  const offerCopy = (text2, { devtools: devtools2 = false } = {}) => {
+    copyRequest = { id: crypto4.randomUUID(), text: text2.length > GUEST_CLIPBOARD_TEXT_MAX ? null : text2, at: Date.now(), devtools: devtools2 };
+  };
   const contextMenu = createContextMenu({
     navigationState: () => ({ canGoBack: runtime.canGoBack, canGoForward: runtime.canGoForward }),
     readSelection: () => surface.clipboard(),
@@ -7871,7 +7905,7 @@ var createBrowserRuntime = ({
         void runtime.command(action).catch(() => {
         });
       } else if (action === "copy") {
-        copyRequest = { id: crypto4.randomUUID(), text: selection.length > GUEST_CLIPBOARD_TEXT_MAX ? null : selection, at: Date.now() };
+        offerCopy(selection);
       }
     }
   });
@@ -7911,7 +7945,14 @@ var createBrowserRuntime = ({
   runtime.surfaceInput = (events, theme) => surface.input(events, theme);
   runtime.surfaceControl = (controller) => surface.control(controller);
   runtime.surfaceResize = (size) => surface.resize(size);
-  runtime.surfaceClipboard = () => surface.clipboard();
+  runtime.surfaceClipboard = async () => {
+    if (copyRequest?.devtools && copyRequest.text && Date.now() - copyRequest.at < 1e3) {
+      const { text: text2 } = copyRequest;
+      copyRequest = null;
+      return text2;
+    }
+    return surface.clipboard();
+  };
   runtime.onDead = (listener) => {
     deathListeners.add(listener);
     return () => deathListeners.delete(listener);

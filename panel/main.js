@@ -2410,8 +2410,17 @@ ${tab.url}`;
   var offerCopy = (copy) => {
     if (!copy || copy.id === lastCopyId) return;
     lastCopyId = copy.id;
-    const toast = copy.text === null ? { kind: "error", message: "This selection is too long to copy from the menu. Use Ctrl/Cmd+C instead." } : copy.text ? { kind: "info", message: "The selected text is ready to copy.", copy: { text: copy.text } } : { kind: "info", message: "Select text on the page to copy it." };
-    void host.toast(toast).catch(() => {
+    if (copy.text === null) {
+      void host.toast({ kind: "error", message: "This text is too long to copy from the shared browser." }).catch(() => {
+      });
+      return;
+    }
+    if (!copy.text) {
+      void host.toast({ kind: "info", message: "Select text on the page to copy it." }).catch(() => {
+      });
+      return;
+    }
+    void host.writeClipboard(copy.text).catch(() => host.toast({ kind: "info", message: "The copied text is ready.", copy: { text: copy.text } })).catch(() => {
     });
   };
   var refresh = async () => {
