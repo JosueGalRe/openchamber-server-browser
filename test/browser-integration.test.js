@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import fs from 'node:fs';
 import http from 'node:http';
 import test from 'node:test';
+import { WebSocket } from 'ws';
 import { createBrowserManager } from '../src/browser-manager.js';
 import { createBrowserRuntime } from '../src/browser-runtime.js';
 import { createChromeProcess, resolveChromePath } from '../src/chrome-process.js';
@@ -896,4 +898,79 @@ test('captures console and network for the inspector and runs JavaScript in the 
   // When another tab comes forward, then this capture is gone.
   await runtime.command('tab-new');
   assert.throws(() => runtime.inspector.events(captureId, cursor), (error) => error.code === 'CAPTURE_GONE');
+});
+
+const openSocket = (url, options) => new Promise((resolve, reject) => {
+  const socket = new WebSocket(url, options);
+  socket.once('open', () => resolve(socket));
+  socket.once('error', reject);
+});
+
+test('shows Chrome DevTools for the visible tab, reaching it only through the relay\'s policy', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a page at a fixed mobile size in a wider panel.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const runtime = createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] });
+  context.after(() => runtime.close());
+  await runtime.perform('browser.open', { url: `${web.origin}/`, viewport: 'mobile' });
+  await runtime.surfaceResize({ width: 1000, height: 700 });
+  const page = await runtime.ensurePage();
+  const pageFrame = await runtime.surfaceFrame({ after: 0, wait: 10_000 });
+  assert.equal(pageFrame.width, 390);
+
+  // When the dock opens DevTools, then the surface shows Chrome's frontend at the panel's size, connected to the page.
+  await runtime.command('devtools', { open: true, colorScheme: 'dark' });
+  assert.equal(runtime.devtoolsOpen, true);
+  const frontend = await runtime.surfacePage();
+  assert.notEqual(frontend.targetId, page.targetId);
+  const frontendInfo = async () => (await page.cdp.send('Target.getTargetInfo', { targetId: frontend.targetId })).targetInfo;
+  await waitFor(async () => /^DevTools - /.test((await frontendInfo()).title), 15_000);
+  const devtoolsFrame = await runtime.surfaceFrame({ after: pageFrame.sequence, wait: 10_000 });
+  assert.equal(devtoolsFrame.width, 1000);
+
+  // Then the relay takes only the frontend, and the frontend gets only what the policy allows.
+  const relayUrl = `ws://${new URL((await frontendInfo()).url).searchParams.get('ws')}`;
+  await assert.rejects(openSocket(relayUrl), /401/);
+  const client = await openSocket(relayUrl, { origin: 'devtools://devtools' });
+  context.after(() => client.terminate());
+  const replies = new Map();
+  client.on('message', (data) => {
+    const message = JSON.parse(data.toString());
+    replies.get(message.id)?.(message);
+  });
+  const call = (id, method, params = {}) => new Promise((resolve) => {
+    replies.set(id, resolve);
+    client.send(JSON.stringify({ id, method, params }));
+  });
+  assert.equal((await call(1, 'Runtime.evaluate', { expression: 'document.title', returnByValue: true })).result.result.value, 'Fixture');
+  assert.match((await call(2, 'Browser.close')).error.message, /not available/);
+  const disconnected = once(client, 'close');
+  client.send(JSON.stringify({ id: 3, method: 'Page.navigate', params: { url: 'file:///etc/passwd' } }));
+  await disconnected;
+
+  // When the frontend opens a page, then it is closed instead of sitting in a window nobody sees.
+  const stray = { id: null, created: Promise.withResolvers(), destroyed: Promise.withResolvers() };
+  const stopWatching = page.cdp.onEvent((event) => {
+    const info = event.params.targetInfo;
+    if (event.method === 'Target.targetCreated' && info?.type === 'page' && info.openerId === frontend.targetId) {
+      stray.id = info.targetId;
+      stray.created.resolve();
+    }
+    if (event.method === 'Target.targetDestroyed' && event.params.targetId === stray.id) stray.destroyed.resolve();
+  });
+  context.after(stopWatching);
+  await frontend.cdp.sendSession(frontend.sessionId, 'Runtime.evaluate', { expression: 'void window.open("about:blank")', userGesture: true });
+  await stray.created.promise;
+  await stray.destroyed.promise;
+
+  // When the dock closes DevTools, then the page shows again at its own size and the frontend is gone.
+  await runtime.command('devtools', { open: false });
+  assert.equal(runtime.devtoolsOpen, false);
+  assert.equal((await runtime.surfaceFrame({ after: devtoolsFrame.sequence, wait: 10_000 })).width, 390);
+  await waitFor(async () => !(await page.cdp.send('Target.getTargets')).targetInfos.some((info) => info.targetId === frontend.targetId));
+
+  // When another tab comes forward while DevTools are open, then they close.
+  await runtime.command('devtools', { open: true });
+  await runtime.command('tab-new');
+  assert.equal(runtime.devtoolsOpen, false);
 });

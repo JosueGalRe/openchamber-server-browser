@@ -4272,7 +4272,7 @@ var createBrowserManager = ({
   let view = { key: null, firstSequence: 1 };
   const observeView = () => {
     const entry = selected();
-    const key = entry ? JSON.stringify([entry.id, entry.runtime.tabs?.find((tab) => tab.active)?.id ?? null]) : null;
+    const key = entry ? JSON.stringify([entry.id, entry.runtime.tabs?.find((tab) => tab.active)?.id ?? null, entry.runtime.devtoolsOpen === true]) : null;
     if (key !== view.key) view = { key, firstSequence: frameSequence + 1 };
   };
   const shownEarlierView = (frameSeq) => {
@@ -4435,6 +4435,7 @@ var createBrowserManager = ({
           canGoForward: entry.runtime.canGoForward === true,
           nativeSelectCompatibility: entry.runtime.nativeSelectCompatibility === true,
           nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? "",
+          devtools: entry.runtime.devtoolsOpen === true,
           tabs: entry.runtime.tabs ?? [],
           viewport: entry.runtime.viewportState ?? null,
           problems: entry.runtime.problemCounts ?? { errors: 0, warnings: 0 }
@@ -4495,6 +4496,10 @@ var createBrowserManager = ({
     closeTab(tabId, expectedGeneration, access) {
       return dockCommand("tab-close", { tabId }, expectedGeneration, access);
     },
+    setDevTools(open, expectedGeneration, access) {
+      const colorScheme = viewerTheme ? viewerTheme.dark ? "dark" : "light" : null;
+      return dockCommand("devtools", { open, colorScheme }, expectedGeneration, access);
+    },
     setViewport({ mode, width, height, mobile }, expectedGeneration, access) {
       return enqueue(async () => {
         requireDockAccess(access);
@@ -4541,8 +4546,8 @@ var createBrowserManager = ({
       signal?.throwIfAborted();
       if (!entry) {
         if (wait2 === 0) return null;
-        return new Promise((resolve, reject) => {
-          const waiter = { signal, resolve, reject, timer: null, onAbort: null };
+        return new Promise((resolve, reject2) => {
+          const waiter = { signal, resolve, reject: reject2, timer: null, onAbort: null };
           waiter.onAbort = () => finishSelectionWaiter(
             waiter,
             signal.reason ?? new DOMException("Frame request cancelled", "AbortError")
@@ -4659,7 +4664,7 @@ var createBrowserManager = ({
 };
 
 // src/browser-runtime.js
-import crypto3 from "node:crypto";
+import crypto4 from "node:crypto";
 
 // node_modules/@openchamber/sdk/dist/scrollbar-style.js
 var GUEST_SCROLLING_ATTRIBUTE = "data-oc-scrolling";
@@ -5319,8 +5324,8 @@ var withAbort = async (signal, operation) => {
   signal?.throwIfAborted();
   if (!signal) return operation;
   let rejectAbort;
-  const aborted = new Promise((resolve, reject) => {
-    rejectAbort = reject;
+  const aborted = new Promise((resolve, reject2) => {
+    rejectAbort = reject2;
   });
   const onAbort = () => rejectAbort(signal.reason ?? new DOMException("Action cancelled", "AbortError"));
   signal.addEventListener("abort", onAbort, { once: true });
@@ -5355,7 +5360,7 @@ var readPageInfo = async (page, signal) => {
     title: typeof value?.title === "string" ? value.title : ""
   };
 };
-var waitForLoad = (page, timeoutMs, signal) => new Promise((resolve, reject) => {
+var waitForLoad = (page, timeoutMs, signal) => new Promise((resolve, reject2) => {
   let unsubscribe = null;
   const cleanup = () => {
     clearTimeout(timer);
@@ -5368,7 +5373,7 @@ var waitForLoad = (page, timeoutMs, signal) => new Promise((resolve, reject) => 
   };
   const onAbort = () => {
     cleanup();
-    reject(signal.reason ?? new DOMException("Action cancelled", "AbortError"));
+    reject2(signal.reason ?? new DOMException("Action cancelled", "AbortError"));
   };
   const timer = setTimeout(() => finish(false), timeoutMs);
   timer.unref?.();
@@ -5525,19 +5530,19 @@ var connectCdp = async (webSocketDebuggerUrl, {
       return Promise.reject(commandError(method, "connection is closed"));
     }
     const id = nextId++;
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, reject2) => {
       const timeout = setTimeout(() => {
         pending.delete(id);
-        reject(commandError(method, `timed out after ${commandTimeoutMs}ms`));
+        reject2(commandError(method, `timed out after ${commandTimeoutMs}ms`));
       }, commandTimeoutMs);
       timeout.unref?.();
-      pending.set(id, { method, sessionId, resolve, reject, timeout });
+      pending.set(id, { method, sessionId, resolve, reject: reject2, timeout });
       try {
         socket.send(JSON.stringify({ id, method, params, ...sessionId ? { sessionId } : {} }));
       } catch (error) {
         clearTimeout(timeout);
         pending.delete(id);
-        reject(commandError(method, error instanceof Error ? error.message : String(error)));
+        reject2(commandError(method, error instanceof Error ? error.message : String(error)));
       }
     });
   };
@@ -5568,14 +5573,14 @@ var connectCdp = async (webSocketDebuggerUrl, {
   });
   socket.on("close", () => disconnect("connection closed"));
   socket.on("error", (error) => disconnect(error instanceof Error ? error.message : "connection error"));
-  await new Promise((resolve, reject) => {
+  await new Promise((resolve, reject2) => {
     const handshakeTimer = setTimeout(() => {
       cleanup();
       try {
         socket.terminate();
       } catch {
       }
-      reject(new Error(`WebSocket opening handshake timed out after ${handshakeTimeoutMs}ms`));
+      reject2(new Error(`WebSocket opening handshake timed out after ${handshakeTimeoutMs}ms`));
     }, handshakeTimeoutMs);
     handshakeTimer.unref?.();
     const cleanup = () => {
@@ -5591,11 +5596,11 @@ var connectCdp = async (webSocketDebuggerUrl, {
     };
     const onError = (error) => {
       cleanup();
-      reject(error instanceof Error ? error : new Error(String(error)));
+      reject2(error instanceof Error ? error : new Error(String(error)));
     };
     const onClose = () => {
       cleanup();
-      reject(new Error("CDP connection closed before opening"));
+      reject2(new Error("CDP connection closed before opening"));
     };
     socket.once("open", onOpen);
     socket.once("error", onError);
@@ -6047,6 +6052,398 @@ var createContextMenu = ({ navigationState, readSelection, onAction }) => {
   };
 };
 
+// src/devtools.js
+import crypto3 from "node:crypto";
+
+// src/devtools-policy.js
+var PAGE_DOMAINS = /* @__PURE__ */ new Set([
+  "Accessibility",
+  "Animation",
+  "Audits",
+  "Autofill",
+  "BackgroundService",
+  "BluetoothEmulation",
+  "CSS",
+  "CacheStorage",
+  "Console",
+  "DOM",
+  "DOMDebugger",
+  "DOMSnapshot",
+  "DOMStorage",
+  "Debugger",
+  "DeviceOrientation",
+  "Emulation",
+  "EventBreakpoints",
+  "FedCm",
+  "Fetch",
+  "FileSystem",
+  "HeadlessExperimental",
+  "HeapProfiler",
+  "IndexedDB",
+  "Input",
+  "Inspector",
+  "LayerTree",
+  "Log",
+  "Media",
+  "Network",
+  "Overlay",
+  "Page",
+  "Performance",
+  "PerformanceTimeline",
+  "Preload",
+  "Profiler",
+  "Runtime",
+  "Schema",
+  "Security",
+  "ServiceWorker",
+  "Storage",
+  "WebAudio",
+  "WebAuthn"
+]);
+var BLOCKED_PAGE_METHODS = /* @__PURE__ */ new Set([
+  "Page.setDownloadBehavior",
+  // Both hand the page files from the server's disk.
+  "DOM.setFileInputFiles",
+  "Input.dispatchDragEvent",
+  // The dock owns the page's size; DevTools' device mode would replace it.
+  "Emulation.setDeviceMetricsOverride",
+  "Emulation.clearDeviceMetricsOverride"
+]);
+var TARGET_METHODS = /* @__PURE__ */ new Set([
+  "Target.setAutoAttach",
+  "Target.autoAttachRelated",
+  "Target.getTargetInfo",
+  "Target.attachToTarget",
+  "Target.detachFromTarget"
+]);
+var TRACING_METHODS = /* @__PURE__ */ new Set(["Tracing.start", "Tracing.end", "Tracing.getCategories"]);
+var CONTEXT_BOUND_METHODS = /* @__PURE__ */ new Set([
+  "Storage.clearCookies",
+  "Storage.getCookies",
+  "Storage.setCookies"
+]);
+var MAX_PENDING_STREAM_REQUESTS = 1024;
+var reject = () => ({ ok: false });
+var deny = (message) => {
+  const response = { id: message.id, error: { code: -32e3, message: "Command is not available for this page" } };
+  if (message.sessionId) response.sessionId = message.sessionId;
+  return { ok: false, response };
+};
+var isObject = (value) => value?.constructor === Object;
+var isIdentity = (value) => value?.constructor === String && value.length > 0 && value.length <= 256;
+var parseMessage = (raw) => {
+  if (raw?.constructor !== String) return null;
+  try {
+    const value = JSON.parse(raw);
+    return isObject(value) ? value : null;
+  } catch {
+    return null;
+  }
+};
+var safeNavigation = (params) => {
+  if (!isObject(params) || params.url?.constructor !== String) return false;
+  if (params.url === "about:blank") return true;
+  try {
+    const url = new URL(params.url);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+var createDevToolsPolicy = ({ browserContextId, targetId }) => {
+  const sessions = /* @__PURE__ */ new Map();
+  const targets = /* @__PURE__ */ new Set([targetId]);
+  const ioHandles = /* @__PURE__ */ new Map();
+  const pendingNetworkStreams = /* @__PURE__ */ new Map();
+  let pendingNetworkStreamCount = 0;
+  const rememberNetworkStream = (message) => {
+    const sessionId = message.sessionId ?? null;
+    const requests = pendingNetworkStreams.get(sessionId) ?? /* @__PURE__ */ new Set();
+    if (requests.has(message.id)) return true;
+    if (pendingNetworkStreamCount >= MAX_PENDING_STREAM_REQUESTS) return false;
+    requests.add(message.id);
+    pendingNetworkStreams.set(sessionId, requests);
+    pendingNetworkStreamCount += 1;
+    return true;
+  };
+  const registerNetworkStream = (message) => {
+    const sessionId = message.sessionId ?? null;
+    const requests = pendingNetworkStreams.get(sessionId);
+    if (!requests?.delete(message.id)) return;
+    pendingNetworkStreamCount -= 1;
+    if (requests.size === 0) pendingNetworkStreams.delete(sessionId);
+    const resource = message.result?.resource;
+    if (isObject(resource) && resource.success === true && isIdentity(resource.stream)) {
+      ioHandles.set(resource.stream, sessionId);
+    }
+  };
+  const clearSessionResources = (sessionId) => {
+    pendingNetworkStreamCount -= pendingNetworkStreams.get(sessionId)?.size ?? 0;
+    pendingNetworkStreams.delete(sessionId);
+    for (const [handle, ownerSessionId] of ioHandles) {
+      if (ownerSessionId === sessionId) ioHandles.delete(handle);
+    }
+  };
+  const contextAllowed = (params) => !isObject(params) || params.browserContextId === void 0 || params.browserContextId === browserContextId;
+  const targetCommandAllowed = (message) => {
+    if (!TARGET_METHODS.has(message.method)) return false;
+    const params = isObject(message.params) ? message.params : {};
+    if (message.method === "Target.setAutoAttach") {
+      return (params.autoAttach === true || params.autoAttach === false) && (params.autoAttach === false || params.flatten === true) && (params.waitForDebuggerOnStart === void 0 || params.waitForDebuggerOnStart === true || params.waitForDebuggerOnStart === false);
+    }
+    if (message.method === "Target.autoAttachRelated") {
+      return targets.has(params.targetId) && (params.waitForDebuggerOnStart === true || params.waitForDebuggerOnStart === false);
+    }
+    if (message.method === "Target.getTargetInfo") {
+      return params.targetId === void 0 || targets.has(params.targetId);
+    }
+    if (message.method === "Target.attachToTarget") {
+      return isIdentity(params.targetId) && targets.has(params.targetId) && params.flatten === true;
+    }
+    return isIdentity(params.sessionId) && sessions.has(params.sessionId);
+  };
+  const ioCommandAllowed = (message) => {
+    const params = isObject(message.params) ? message.params : {};
+    return (message.method === "IO.read" || message.method === "IO.close") && isIdentity(params.handle) && ioHandles.has(params.handle);
+  };
+  const command = (raw) => {
+    const message = parseMessage(raw);
+    if (!message || !Number.isSafeInteger(message.id) || message.id < 0 || message.method?.constructor !== String || message.method.length > 160 || message.params !== void 0 && !isObject(message.params)) return reject();
+    if (message.sessionId !== void 0 && (!isIdentity(message.sessionId) || !sessions.has(message.sessionId))) return reject();
+    if (!contextAllowed(message.params)) return reject();
+    if (CONTEXT_BOUND_METHODS.has(message.method)) {
+      message.params = { ...message.params ?? {}, browserContextId };
+    }
+    const domain = message.method.split(".", 1)[0];
+    if (domain === "Browser") {
+      return message.method === "Browser.getVersion" ? { ok: true, message } : deny(message);
+    }
+    if (domain === "Target") return targetCommandAllowed(message) ? { ok: true, message } : deny(message);
+    if (domain === "Tracing") return TRACING_METHODS.has(message.method) ? { ok: true, message } : deny(message);
+    if (domain === "IO") {
+      if (!ioCommandAllowed(message)) return reject();
+      if (message.method === "IO.close") ioHandles.delete(message.params.handle);
+      return { ok: true, message };
+    }
+    if (!PAGE_DOMAINS.has(domain) || BLOCKED_PAGE_METHODS.has(message.method)) return deny(message);
+    if (message.method === "Page.navigate" && !safeNavigation(message.params)) return reject();
+    if (message.method === "Network.loadNetworkResource" && !rememberNetworkStream(message)) return deny(message);
+    return { ok: true, message };
+  };
+  const event = (raw) => {
+    const message = parseMessage(raw);
+    if (!message) return reject();
+    if (message.sessionId !== void 0 && !sessions.has(message.sessionId)) return reject();
+    if (message.method === void 0) {
+      if (!Number.isSafeInteger(message.id) || message.id < 0) return reject();
+      registerNetworkStream(message);
+      return { ok: true, message };
+    }
+    if (message.method?.constructor !== String) return reject();
+    if (message.method === "Target.attachedToTarget") {
+      const params = message.params;
+      const info = params?.targetInfo;
+      if (!isIdentity(params?.sessionId) || !isIdentity(info?.targetId)) return reject();
+      const related = info.browserContextId === browserContextId || targets.has(info.openerId);
+      if (!related) return reject();
+      sessions.set(params.sessionId, info.targetId);
+      targets.add(info.targetId);
+    } else if (message.method === "Target.detachedFromTarget") {
+      const detachedSessionId = message.params?.sessionId;
+      const childTarget = sessions.get(detachedSessionId);
+      sessions.delete(detachedSessionId);
+      clearSessionResources(detachedSessionId);
+      if (childTarget) targets.delete(childTarget);
+    } else if (message.method === "Tracing.tracingComplete") {
+      const handle = message.params?.stream;
+      if (isIdentity(handle)) ioHandles.set(handle, null);
+    }
+    return { ok: true, message };
+  };
+  return { command, event };
+};
+
+// src/devtools.js
+var FRONTEND_ORIGIN = "devtools://devtools";
+var MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
+var MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
+var MAX_QUEUED_COMMANDS = 1024;
+var pageSocketUrl = (browserEndpoint, targetId) => {
+  const url = new URL(browserEndpoint);
+  url.pathname = `/devtools/page/${encodeURIComponent(targetId)}`;
+  return url.href;
+};
+var createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId }) => {
+  let relayStart = null;
+  let relay = null;
+  let contextStart = null;
+  let contextId = null;
+  let session = null;
+  let creation = Promise.resolve();
+  const frontendViewport = (size) => ({ width: size.width, height: size.height, mobile: false });
+  const connect = (client, request) => {
+    const current = session;
+    if (!current || request.url !== `/devtools/${current.token}`) {
+      client.terminate();
+      return;
+    }
+    current.link?.close();
+    const policy = createDevToolsPolicy({ browserContextId: scopeContextId, targetId: current.targetId });
+    const upstream = new import_websocket.default(pageSocketUrl(endpoint, current.targetId), { maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
+    const queued = [];
+    const link = {
+      close() {
+        client.terminate();
+        upstream.terminate();
+      }
+    };
+    current.link = link;
+    const send = (socket, text2) => {
+      if (socket.readyState !== import_websocket.default.OPEN) return;
+      if (socket.bufferedAmount > MAX_BUFFERED_BYTES) link.close();
+      else socket.send(text2);
+    };
+    client.on("message", (data, isBinary) => {
+      const result = isBinary ? { ok: false } : policy.command(data.toString("utf8"));
+      if (result.ok) {
+        const text2 = JSON.stringify(result.message);
+        if (upstream.readyState !== import_websocket.default.CONNECTING) send(upstream, text2);
+        else if (queued.push(text2) > MAX_QUEUED_COMMANDS) link.close();
+      } else if (result.response) {
+        send(client, JSON.stringify(result.response));
+      } else {
+        link.close();
+      }
+    });
+    upstream.on("open", () => {
+      for (const text2 of queued.splice(0)) send(upstream, text2);
+    });
+    upstream.on("message", (data, isBinary) => {
+      const text2 = isBinary ? null : data.toString("utf8");
+      if (text2 !== null && policy.event(text2).ok) send(client, text2);
+      else link.close();
+    });
+    for (const socket of [client, upstream]) {
+      socket.on("close", () => link.close());
+      socket.on("error", () => link.close());
+    }
+  };
+  const ensureRelay = () => {
+    relayStart ??= new Promise((resolve, reject2) => {
+      const server = new import_websocket_server.default({
+        host: "127.0.0.1",
+        port: 0,
+        maxPayload: MAX_MESSAGE_BYTES,
+        perMessageDeflate: false,
+        verifyClient: ({ origin, req }) => origin === FRONTEND_ORIGIN && session !== null && req.url === `/devtools/${session.token}`
+      });
+      server.on("connection", connect);
+      server.once("error", reject2);
+      server.once("listening", () => {
+        relay = server;
+        resolve(server.address().port);
+      });
+    }).catch((error) => {
+      relayStart = null;
+      throw error;
+    });
+    return relayStart;
+  };
+  const ensureContext = (relayPort) => {
+    contextStart ??= cdp.send("Target.createBrowserContext", {
+      proxyServer: proxyAddress,
+      proxyBypassList: `<-loopback>;127.0.0.1:${relayPort}`
+    }).then((context) => {
+      if (typeof context.browserContextId !== "string") throw new Error("Chrome returned no browser context id");
+      contextId = context.browserContextId;
+      return contextId;
+    }).catch((error) => {
+      contextStart = null;
+      throw error;
+    });
+    return contextStart;
+  };
+  const close = async () => {
+    const current = session;
+    session = null;
+    if (!current) return;
+    current.link?.close();
+    const frontendTargetId = await current.created?.then((target) => target.targetId, () => null);
+    if (frontendTargetId && cdp.isOpen) await cdp.send("Target.closeTarget", { targetId: frontendTargetId }).catch(() => {
+    });
+  };
+  return {
+    // The inspected tab, once its DevTools can be shown.
+    get targetId() {
+      return session?.page ? session.targetId : null;
+    },
+    get page() {
+      return session?.page ?? null;
+    },
+    async open(targetId, { size, colorScheme = null }) {
+      await close();
+      const current = { targetId, token: crypto3.randomBytes(32).toString("hex"), created: null, frontendTargetId: null, page: null, link: null };
+      session = current;
+      const stillOpening = () => {
+        if (session !== current) throw new Error("DevTools closed while opening");
+      };
+      const port = await ensureRelay();
+      stillOpening();
+      const browserContextId = await ensureContext(port);
+      stillOpening();
+      current.created = cdp.send("Target.createTarget", {
+        url: `devtools://devtools/bundled/inspector.html?ws=127.0.0.1:${port}/devtools/${current.token}`,
+        browserContextId,
+        // A window of its own keeps the inspected tab painting for DevTools' screencast.
+        newWindow: true,
+        background: true
+      }).then((target) => {
+        if (typeof target.targetId !== "string") throw new Error("Chrome returned no DevTools target id");
+        current.frontendTargetId = target.targetId;
+        return target;
+      });
+      creation = current.created.catch(() => {
+      });
+      await current.created;
+      stillOpening();
+      const sessionId = await cdp.attach(current.frontendTargetId);
+      stillOpening();
+      await applyViewport(cdp, sessionId, frontendViewport(size));
+      if (colorScheme) {
+        await cdp.sendSession(sessionId, "Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: colorScheme }] });
+      }
+      stillOpening();
+      current.page = { cdp, sessionId, targetId: current.frontendTargetId, devtools: true };
+      return current.page;
+    },
+    close,
+    resize(size) {
+      return session?.page ? applyViewport(cdp, session.page.sessionId, frontendViewport(size)) : Promise.resolve();
+    },
+    // Pages the frontend opens, such as a link from the Network panel, would
+    // sit in a window nobody sees.
+    targetCreated(info) {
+      if (info?.type !== "page" || !contextId || info.browserContextId !== contextId) return;
+      void creation.then(() => {
+        if (info.targetId !== session?.frontendTargetId) return cdp.send("Target.closeTarget", { targetId: info.targetId });
+      }).catch(() => {
+      });
+    },
+    // Whether the frontend that was shown went away.
+    targetDestroyed(targetId) {
+      if (!session || session.frontendTargetId !== targetId) return false;
+      session.link?.close();
+      session = null;
+      return true;
+    },
+    async dispose() {
+      await close();
+      for (const client of relay?.clients ?? []) client.terminate();
+      await new Promise((resolve) => relay ? relay.close(() => resolve()) : resolve());
+    }
+  };
+};
+
 // src/config.js
 import fs2 from "node:fs";
 import net2 from "node:net";
@@ -6384,8 +6781,8 @@ var createPolicyProxy = (policy = {}) => {
     async listen() {
       if (listening) return this.address;
       if (closed) throw new Error("Browser proxy is closed");
-      await new Promise((resolve, reject) => {
-        server.once("error", reject);
+      await new Promise((resolve, reject2) => {
+        server.once("error", reject2);
         server.listen(0, "127.0.0.1", resolve);
       });
       listening = true;
@@ -6784,7 +7181,7 @@ var createSurface = (runtime) => {
     const retryUntil = Date.now() + 2e3;
     for (; ; ) {
       const expected = target;
-      const current = await runtime.ensurePage();
+      const current = await runtime.surfacePage();
       if (closed) throw new Error("Surface is closed");
       if (page?.sessionId === current.sessionId && unsubscribe) return current;
       detach();
@@ -6847,12 +7244,12 @@ var createSurface = (runtime) => {
       signal?.throwIfAborted();
       if (latest && latest.sequence > after) return latest;
       if (wait2 === 0) return null;
-      return new Promise((resolve, reject) => {
-        const waiter = { after, signal, resolve, reject, timer: null, onAbort: null };
+      return new Promise((resolve, reject2) => {
+        const waiter = { after, signal, resolve, reject: reject2, timer: null, onAbort: null };
         waiter.onAbort = () => {
           if (!waiters.delete(waiter)) return;
           clearTimeout(waiter.timer);
-          reject(signal.reason ?? new DOMException("Frame request cancelled", "AbortError"));
+          reject2(signal.reason ?? new DOMException("Frame request cancelled", "AbortError"));
         };
         waiter.timer = setTimeout(() => finishWaiter(waiter, null), wait2);
         waiter.timer.unref?.();
@@ -6862,14 +7259,14 @@ var createSurface = (runtime) => {
     },
     async input(events, theme = null) {
       const current = await start();
-      const menu = runtime.contextMenu;
+      const menu = current.devtools ? null : runtime.contextMenu;
       for (const event of events) {
         if (event.type === "key" && event.key === "Escape" && event.action === "up" && swallowEscapeUp) {
           swallowEscapeUp = false;
           continue;
         }
-        const secondary = event.type === "pointer" && event.button === 2;
-        if (menu.isOpen) {
+        const secondary = menu !== null && event.type === "pointer" && event.button === 2;
+        if (menu?.isOpen) {
           const dismissOnly = event.type === "wheel" || event.type === "key" && event.key === "Escape";
           if (dismissOnly || event.type === "key" || secondary && event.action === "down") await menu.close();
           if (dismissOnly) {
@@ -6967,6 +7364,7 @@ var createBrowserRuntime = ({
   let nativeSelectEnabled = false;
   let cdp = null;
   let contextId = null;
+  let devtools = null;
   let eventCleanup = null;
   let startupPromise = null;
   let pagePromise = null;
@@ -7026,6 +7424,9 @@ var createBrowserRuntime = ({
     },
     get nativeSelectCompatibilityError() {
       return activeTab()?.compatibility.error ?? "";
+    },
+    get devtoolsOpen() {
+      return activeTargetId !== null && devtools?.targetId === activeTargetId;
     },
     // Text the viewer asked to copy from the page menu; the dock offers it through a host toast.
     get copyRequest() {
@@ -7092,6 +7493,7 @@ var createBrowserRuntime = ({
     if (activeTargetId === current.targetId || tabs.get(current.targetId) !== current) return;
     const previous = activeTab();
     if (previous) inspector.endTab(previous.sessionId);
+    if (devtools?.targetId) void devtools.close();
     activeTargetId = current.targetId;
     activations += 1;
     current.lastActive = activations;
@@ -7110,6 +7512,7 @@ var createBrowserRuntime = ({
     clearTimeout(current.navigationTimer);
     contextMenu.forget(current.sessionId);
     inspector.endTab(current.sessionId);
+    if (devtools?.targetId === targetId) void devtools.close();
     if (activeTargetId !== targetId) {
       notifyTabs();
       return;
@@ -7152,6 +7555,7 @@ var createBrowserRuntime = ({
   };
   const handleTargetEvent = (event) => {
     const info = event.params.targetInfo;
+    if (event.method === "Target.targetCreated") devtools?.targetCreated(info);
     if (event.method === "Target.targetCreated" && isScopePage(info, contextId)) {
       void attachTab(info.targetId, info.openerId ?? null).then(async (current) => {
         await targetCreation;
@@ -7164,6 +7568,10 @@ var createBrowserRuntime = ({
       if (typeof info.url === "string") current.url = info.url;
       if (typeof info.title === "string") current.title = info.title;
     } else if (event.method === "Target.targetDestroyed") {
+      if (devtools?.targetDestroyed(event.params.targetId)) {
+        surface.retarget();
+        notifyTabs();
+      }
       removeTab(event.params.targetId);
     } else if (event.method === "Target.detachedFromTarget") {
       const current = sessions.get(event.params.sessionId);
@@ -7233,6 +7641,7 @@ var createBrowserRuntime = ({
       if (closed) throw new Error("Browser runtime is closed");
       cdp = nextCdp;
       contextId = nextContextId;
+      devtools = createDevTools({ cdp, endpoint: processInfo.endpoint, proxyAddress, scopeContextId: contextId });
       cdp.onClose(markDead);
       eventCleanup = cdp.onEvent(handleEvent);
       await cdp.send("Target.setDiscoverTargets", { discover: true });
@@ -7294,6 +7703,10 @@ var createBrowserRuntime = ({
     return pageOf(current);
   };
   runtime.agentPage = async (tabId) => useTab(await agentTab(tabId));
+  runtime.surfacePage = async () => {
+    const page = await runtime.ensurePage();
+    return devtools?.targetId === page.targetId ? devtools.page : page;
+  };
   runtime.agentOpenPage = async (tabId) => {
     const current = await agentTab(tabId);
     if (tabId !== void 0) return useTab(current);
@@ -7342,6 +7755,7 @@ var createBrowserRuntime = ({
   runtime.setPanelSize = async (size) => {
     viewportConfig = { ...viewportConfig, panel: size };
     if (viewportConfig.mode === "auto") await applyViewportToTabs();
+    await devtools?.resize(size);
     const { width, height } = effectiveViewport();
     return { width, height };
   };
@@ -7350,6 +7764,21 @@ var createBrowserRuntime = ({
     await contextMenu.close();
     if (name === "tab-new") {
       await openTab();
+      return;
+    }
+    if (name === "devtools") {
+      if (parameters.open) {
+        const page2 = await runtime.ensurePage();
+        if (devtools.targetId === page2.targetId) return;
+        await devtools.open(page2.targetId, { size: viewportConfig.panel ?? presetViewport("desktop"), colorScheme: parameters.colorScheme }).catch(async (error) => {
+          await devtools.close();
+          throw error;
+        });
+      } else {
+        await devtools?.close();
+      }
+      surface.retarget();
+      notifyTabs();
       return;
     }
     if (name === "tab-select" || name === "tab-close") {
@@ -7401,7 +7830,7 @@ var createBrowserRuntime = ({
         void runtime.command(action).catch(() => {
         });
       } else if (action === "copy") {
-        copyRequest = { id: crypto3.randomUUID(), text: selection.length > GUEST_CLIPBOARD_TEXT_MAX ? null : selection, at: Date.now() };
+        copyRequest = { id: crypto4.randomUUID(), text: selection.length > GUEST_CLIPBOARD_TEXT_MAX ? null : selection, at: Date.now() };
       }
     }
   });
@@ -7456,6 +7885,7 @@ var createBrowserRuntime = ({
     shutdownController.abort(new DOMException("Browser runtime stopped", "AbortError"));
     await chrome.close();
     cdp?.close();
+    await devtools?.dispose();
     await surface.close();
     inspector.close();
     await pagePromise?.catch(() => {
@@ -7657,7 +8087,7 @@ var createDevServerScanner = ({
 };
 
 // src/service.js
-import crypto4 from "node:crypto";
+import crypto5 from "node:crypto";
 import http2 from "node:http";
 import net3 from "node:net";
 var BODY_MAX_BYTES = 17 * 1024 * 1024;
@@ -7678,7 +8108,7 @@ var authorized = (request, token) => {
   if (typeof header !== "string" || !header.startsWith("Bearer ")) return false;
   const provided = Buffer.from(header.slice(7));
   const expected = Buffer.from(token);
-  return provided.length === expected.length && crypto4.timingSafeEqual(provided, expected);
+  return provided.length === expected.length && crypto5.timingSafeEqual(provided, expected);
 };
 var withScheme = (address) => {
   if (/^[a-z][a-z\d+.-]*:\/\//i.test(address)) return address;
@@ -7919,6 +8349,17 @@ var createService = ({ runtime, token, port = 0 }) => {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }
     }
+    if (request.method === "POST" && url.pathname === "/browser/devtools") {
+      const body = await readObjectBody(request);
+      const generation = generationProperty(body);
+      if (typeof body?.open !== "boolean" || generation === null) return text(response, 400, "open and generation are required\n");
+      try {
+        await runtime.setDevTools(body.open, generation, access);
+        return json(response, 200, runtime.state(access));
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
     if (request.method === "POST" && url.pathname === "/browser/select-compatibility") {
       const body = await readObjectBody(request);
       const generation = generationProperty(body);
@@ -8018,8 +8459,8 @@ var createService = ({ runtime, token, port = 0 }) => {
   return {
     async listen() {
       if (listening) return this.address;
-      await new Promise((resolve, reject) => {
-        server.once("error", reject);
+      await new Promise((resolve, reject2) => {
+        server.once("error", reject2);
         server.listen(port, "127.0.0.1", resolve);
       });
       listening = true;

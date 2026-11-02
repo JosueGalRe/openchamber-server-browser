@@ -24,6 +24,7 @@ const createRuntimeFactory = () => {
       async command(name, parameters) {
         calls.push(['command', name, parameters]);
         if (name === 'navigate') runtime.url = parameters.url;
+        if (name === 'devtools') runtime.devtoolsOpen = parameters.open;
       },
       async configureViewport(request) { calls.push(['viewport', request]); },
       async surfaceFrame({ after }) {
@@ -186,6 +187,23 @@ test('refuses input and dock commands made on a picture of an earlier view', asy
   runtimes.get('ses_two').tabs = [{ id: 'tab-2', active: true }];
   await assert.rejects(manager.surfaceInput([{ type: 'text', text: 'other-tab' }], { viewer: 'viewer-a', frameSeq: second.sequence }), /view changed/);
   assert.deepEqual(inputs(), ['seen', 'blind']);
+});
+
+test('opens DevTools in the viewer\'s color scheme and refuses input made on the page they replaced', async () => {
+  // Given a frame the viewer drew of the page, in a dark theme.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  const page = await manager.surfaceFrame({ after: 0, wait: 0 });
+  manager.setViewerTheme({ dark: true, properties: {} });
+
+  // When the dock opens DevTools, then they open dark and the dock sees them.
+  await manager.setDevTools(true, manager.state().generation);
+  assert.deepEqual(runtimes.get('ses_one').calls.at(-1), ['command', 'devtools', { open: true, colorScheme: 'dark' }]);
+  assert.equal(manager.state().scopes[0].devtools, true);
+
+  // Then input made on the page's picture does not reach DevTools.
+  await assert.rejects(manager.surfaceInput([{ type: 'text', text: 'late' }], { viewer: 'viewer-a', frameSeq: page.sequence }), /view changed/);
 });
 
 test('preserves every scope and refuses new work at the configured bound', async () => {

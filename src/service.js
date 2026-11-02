@@ -333,6 +333,18 @@ export const createService = ({ runtime, token, port = 0 }) => {
       }
     }
 
+    if (request.method === 'POST' && url.pathname === '/browser/devtools') {
+      const body = await readObjectBody(request);
+      const generation = generationProperty(body);
+      if (typeof body?.open !== 'boolean' || generation === null) return text(response, 400, 'open and generation are required\n');
+      try {
+        await runtime.setDevTools(body.open, generation, access);
+        return json(response, 200, runtime.state(access));
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+
     if (request.method === 'POST' && url.pathname === '/browser/select-compatibility') {
       const body = await readObjectBody(request);
       const generation = generationProperty(body);

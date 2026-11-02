@@ -4,6 +4,7 @@ import { createBrowserActions } from './browser-actions.js';
 import { connectCdp } from './cdp-client.js';
 import { createChromeProcess } from './chrome-process.js';
 import { MENU_BINDING, MENU_WORLD, createContextMenu } from './context-menu.js';
+import { createDevTools } from './devtools.js';
 import { createInspector } from './inspector.js';
 import { networkGrants, originGrants } from './config.js';
 import { createNativeSelectCompatibility } from './native-select-compatibility.js';
@@ -64,6 +65,7 @@ export const createBrowserRuntime = ({
   let nativeSelectEnabled = false;
   let cdp = null;
   let contextId = null;
+  let devtools = null;
   let eventCleanup = null;
   let startupPromise = null;
   let pagePromise = null;
@@ -129,6 +131,9 @@ export const createBrowserRuntime = ({
     },
     get nativeSelectCompatibilityError() {
       return activeTab()?.compatibility.error ?? '';
+    },
+    get devtoolsOpen() {
+      return activeTargetId !== null && devtools?.targetId === activeTargetId;
     },
     // Text the viewer asked to copy from the page menu; the dock offers it through a host toast.
     get copyRequest() {
@@ -202,6 +207,9 @@ export const createBrowserRuntime = ({
     if (activeTargetId === current.targetId || tabs.get(current.targetId) !== current) return;
     const previous = activeTab();
     if (previous) inspector.endTab(previous.sessionId);
+    // shortcut: DevTools close when another tab comes forward instead of
+    // following it; reopen them there if switching tabs while inspecting is common.
+    if (devtools?.targetId) void devtools.close();
     activeTargetId = current.targetId;
     activations += 1;
     current.lastActive = activations;
@@ -221,6 +229,7 @@ export const createBrowserRuntime = ({
     clearTimeout(current.navigationTimer);
     contextMenu.forget(current.sessionId);
     inspector.endTab(current.sessionId);
+    if (devtools?.targetId === targetId) void devtools.close();
     if (activeTargetId !== targetId) {
       notifyTabs();
       return;
@@ -265,6 +274,7 @@ export const createBrowserRuntime = ({
 
   const handleTargetEvent = (event) => {
     const info = event.params.targetInfo;
+    if (event.method === 'Target.targetCreated') devtools?.targetCreated(info);
     if (event.method === 'Target.targetCreated' && isScopePage(info, contextId)) {
       // Pages the site opens (popups, target=_blank) come to the front like in a
       // browser; a tab the agent opened in the background stays behind.
@@ -280,6 +290,10 @@ export const createBrowserRuntime = ({
       if (typeof info.url === 'string') current.url = info.url;
       if (typeof info.title === 'string') current.title = info.title;
     } else if (event.method === 'Target.targetDestroyed') {
+      if (devtools?.targetDestroyed(event.params.targetId)) {
+        surface.retarget();
+        notifyTabs();
+      }
       removeTab(event.params.targetId);
     } else if (event.method === 'Target.detachedFromTarget') {
       const current = sessions.get(event.params.sessionId);
@@ -352,6 +366,7 @@ export const createBrowserRuntime = ({
       if (closed) throw new Error('Browser runtime is closed');
       cdp = nextCdp;
       contextId = nextContextId;
+      devtools = createDevTools({ cdp, endpoint: processInfo.endpoint, proxyAddress, scopeContextId: contextId });
       cdp.onClose(markDead);
       eventCleanup = cdp.onEvent(handleEvent);
       await cdp.send('Target.setDiscoverTargets', { discover: true });
@@ -423,6 +438,12 @@ export const createBrowserRuntime = ({
   };
   runtime.agentPage = async (tabId) => useTab(await agentTab(tabId));
 
+  // The shared surface shows the active tab, or its DevTools while they are open.
+  runtime.surfacePage = async () => {
+    const page = await runtime.ensurePage();
+    return devtools?.targetId === page.targetId ? devtools.page : page;
+  };
+
   // browser.open without a tab never replaces the viewer's page: it opens a
   // background tab, unless the viewer is on an untouched blank tab. Either
   // way the page is the agent's, so browser.close may close it.
@@ -491,6 +512,8 @@ export const createBrowserRuntime = ({
   runtime.setPanelSize = async (size) => {
     viewportConfig = { ...viewportConfig, panel: size };
     if (viewportConfig.mode === 'auto') await applyViewportToTabs();
+    // DevTools always fill the panel, whatever size the page keeps.
+    await devtools?.resize(size);
     const { width, height } = effectiveViewport();
     return { width, height };
   };
@@ -502,6 +525,21 @@ export const createBrowserRuntime = ({
     await contextMenu.close();
     if (name === 'tab-new') {
       await openTab();
+      return;
+    }
+    if (name === 'devtools') {
+      if (parameters.open) {
+        const page = await runtime.ensurePage();
+        if (devtools.targetId === page.targetId) return;
+        await devtools.open(page.targetId, { size: viewportConfig.panel ?? presetViewport('desktop'), colorScheme: parameters.colorScheme }).catch(async (error) => {
+          await devtools.close();
+          throw error;
+        });
+      } else {
+        await devtools?.close();
+      }
+      surface.retarget();
+      notifyTabs();
       return;
     }
     if (name === 'tab-select' || name === 'tab-close') {
@@ -619,6 +657,7 @@ export const createBrowserRuntime = ({
     // kill, and fails the CDP calls that the work below may still wait on.
     await chrome.close();
     cdp?.close();
+    await devtools?.dispose();
     await surface.close();
     inspector.close();
     await pagePromise?.catch(() => {});

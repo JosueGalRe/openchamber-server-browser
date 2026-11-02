@@ -66,12 +66,15 @@ export const createBrowserManager = ({
   const selected = () => selectedScopeId ? scopes.get(selectedScopeId) ?? null : null;
 
   // Viewers act on the picture they last drew, named by our frame sequence. A
-  // view is the visible scope and its active tab; input or a dock command made
-  // on a frame of an earlier view is refused so it cannot land in this one.
+  // view is the visible scope, its active tab, and whether its DevTools show;
+  // input or a dock command made on a frame of an earlier view is refused so it
+  // cannot land in this one.
   let view = { key: null, firstSequence: 1 };
   const observeView = () => {
     const entry = selected();
-    const key = entry ? JSON.stringify([entry.id, entry.runtime.tabs?.find((tab) => tab.active)?.id ?? null]) : null;
+    const key = entry
+      ? JSON.stringify([entry.id, entry.runtime.tabs?.find((tab) => tab.active)?.id ?? null, entry.runtime.devtoolsOpen === true])
+      : null;
     if (key !== view.key) view = { key, firstSequence: frameSequence + 1 };
   };
   const shownEarlierView = (frameSeq) => {
@@ -251,6 +254,7 @@ export const createBrowserManager = ({
           canGoForward: entry.runtime.canGoForward === true,
           nativeSelectCompatibility: entry.runtime.nativeSelectCompatibility === true,
           nativeSelectCompatibilityError: entry.runtime.nativeSelectCompatibilityError ?? '',
+          devtools: entry.runtime.devtoolsOpen === true,
           tabs: entry.runtime.tabs ?? [],
           viewport: entry.runtime.viewportState ?? null,
           problems: entry.runtime.problemCounts ?? { errors: 0, warnings: 0 },
@@ -310,6 +314,10 @@ export const createBrowserManager = ({
     },
     closeTab(tabId, expectedGeneration, access) {
       return dockCommand('tab-close', { tabId }, expectedGeneration, access);
+    },
+    setDevTools(open, expectedGeneration, access) {
+      const colorScheme = viewerTheme ? (viewerTheme.dark ? 'dark' : 'light') : null;
+      return dockCommand('devtools', { open, colorScheme }, expectedGeneration, access);
     },
     setViewport({ mode, width, height, mobile }, expectedGeneration, access) {
       return enqueue(async () => {

@@ -175,7 +175,7 @@ export const createSurface = (runtime) => {
     const retryUntil = Date.now() + 2_000;
     for (;;) {
       const expected = target;
-      const current = await runtime.ensurePage();
+      const current = await runtime.surfacePage();
       if (closed) throw new Error('Surface is closed');
       if (page?.sessionId === current.sessionId && unsubscribe) return current;
       detach();
@@ -254,14 +254,15 @@ export const createSurface = (runtime) => {
     },
     async input(events, theme = null) {
       const current = await start();
-      const menu = runtime.contextMenu;
+      // DevTools draw their own context menus.
+      const menu = current.devtools ? null : runtime.contextMenu;
       for (const event of events) {
         if (event.type === 'key' && event.key === 'Escape' && event.action === 'up' && swallowEscapeUp) {
           swallowEscapeUp = false;
           continue;
         }
-        const secondary = event.type === 'pointer' && event.button === 2;
-        if (menu.isOpen) {
+        const secondary = menu !== null && event.type === 'pointer' && event.button === 2;
+        if (menu?.isOpen) {
           // Escape and the wheel only dismiss the menu; other keys and a new
           // right click dismiss it and go on to the page.
           const dismissOnly = event.type === 'wheel' || (event.type === 'key' && event.key === 'Escape');

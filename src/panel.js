@@ -94,6 +94,16 @@ setIcon(selectCompatibility, (svg) => {
   addPath(svg, 'm9 10 3 3 3-3');
 });
 
+const devtoolsToggle = document.createElement('button');
+devtoolsToggle.type = 'button';
+devtoolsToggle.className = 'toolbar-button devtools-toggle';
+devtoolsToggle.setAttribute('aria-pressed', 'false');
+setIcon(devtoolsToggle, (svg) => {
+  addPath(svg, 'm8 7-5 5 5 5');
+  addPath(svg, 'm16 7 5 5-5 5');
+  addLine(svg, { x1: '14', y1: '4', x2: '10', y2: '20' });
+});
+
 const address = document.createElement('input');
 address.type = 'url';
 address.placeholder = 'https://example.com';
@@ -356,7 +366,7 @@ pageTabsRow.append(pageTabs, newTab);
 
 const navigationRow = document.createElement('div');
 navigationRow.className = 'row navigation-row';
-navigationRow.append(back, forward, reload, address, customSize, problems, viewportSelect, rotate, mobileToggle, selectCompatibility);
+navigationRow.append(back, forward, reload, address, customSize, problems, devtoolsToggle, viewportSelect, rotate, mobileToggle, selectCompatibility);
 root.append(scopeRow, pageTabsRow, navigationRow, consolePanel);
 
 let state = null;
@@ -455,6 +465,12 @@ const render = () => {
     : 'Show native select menus in the shared browser';
   selectCompatibility.title = compatibilityLabel;
   selectCompatibility.setAttribute('aria-label', compatibilityLabel);
+  const devtoolsOpen = selected?.devtools === true;
+  devtoolsToggle.disabled = disabled;
+  devtoolsToggle.setAttribute('aria-pressed', String(devtoolsOpen));
+  const devtoolsLabel = devtoolsOpen ? 'Close Chrome DevTools and show the page' : 'Open Chrome DevTools for this page';
+  devtoolsToggle.title = devtoolsLabel;
+  devtoolsToggle.setAttribute('aria-label', devtoolsLabel);
 
   const { errors = 0, warnings = 0 } = selected?.problems ?? {};
   // An open console keeps its toggle even once the page has no problems.
@@ -689,6 +705,13 @@ pageTabs.addEventListener('keydown', (event) => {
 });
 
 newTab.addEventListener('click', () => tabCommand('/browser/tabs/new', {}));
+
+devtoolsToggle.addEventListener('click', () => {
+  if (!state) return;
+  const selected = state.scopes.find((scope) => scope.id === state.selectedScopeId);
+  if (!selected) return;
+  void request('/browser/devtools', { open: selected.devtools !== true, generation: state.generation });
+});
 
 selectCompatibility.addEventListener('click', () => {
   if (!state) return;
