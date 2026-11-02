@@ -4721,6 +4721,15 @@ function installGuestScrollbarActivity(doc) {
 }
 var GUEST_SCROLLBAR_SCRIPT = `(${installGuestScrollbarActivity.toString()})(document);`;
 
+// node_modules/@openchamber/sdk/dist/manifest.js
+var TRACKER_URL_TOKENS = ["{id}", "{segment}", "{segments+}"];
+var TRACKER_URL_TOKEN_SET = new Set(TRACKER_URL_TOKENS);
+
+// node_modules/@openchamber/sdk/dist/session-events.js
+var GUEST_SESSION_EVENT_TYPES = ["turn-finished", "turn-failed", "permission-asked", "question-asked"];
+var SESSION_EVENTS_IDLE_MS = 10 * 6e4;
+var EVENT_TYPES = new Set(GUEST_SESSION_EVENT_TYPES);
+
 // node_modules/@openchamber/sdk/dist/contract.js
 var GUEST_FILE_STAT_KINDS = ["file", "directory", "other", "missing"];
 var GUEST_CLIPBOARD_TEXT_MAX = 32e3;
@@ -4802,6 +4811,8 @@ var readBrowserProviderRequest = (body) => {
   return { requestId, action, parameters, context: readContext(context) };
 };
 var SOURCE_CONTROL_PROVIDER_IDLE_MS = 10 * 6e4;
+var NOTIFICATIONS_PROVIDER_IDLE_MS = 10 * 6e4;
+var TRACKER_PROVIDER_IDLE_MS = 10 * 6e4;
 
 // node_modules/@openchamber/sdk/dist/service-surface.js
 var SURFACE_FRAME_PATH = "/surface/frame";
@@ -4861,7 +4872,11 @@ var readEvent = (value) => {
       return null;
     if (!isText(value.key) || !isText(value.code) || value.key.length > 64 || value.code.length > 64)
       return null;
-    return { type: "key", action: value.action, key: value.key, code: value.code, modifiers };
+    if (value.keyCode === void 0)
+      return { type: "key", action: value.action, key: value.key, code: value.code, modifiers };
+    if (!isFiniteNumber(value.keyCode) || !Number.isInteger(value.keyCode) || value.keyCode < 0 || value.keyCode > 255)
+      return null;
+    return { type: "key", action: value.action, key: value.key, code: value.code, keyCode: value.keyCode, modifiers };
   }
   return null;
 };
