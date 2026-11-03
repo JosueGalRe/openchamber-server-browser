@@ -97,6 +97,27 @@ The `</>` button opens Chrome's own DevTools for the visible tab in place of the
 
 The dock's error and warning count opens a list of the visible tab's latest 50 errors and warnings under the address bar, growing the dock while it is open. The count and list start over when the page loads a new document.
 
+## Work Status
+
+From OpenChamber 2.5.2, a chat's **Work Status** panel has a Server Browser section. OpenChamber draws it from what the service reports every five seconds:
+- **Chrome**: the memory of every server browser, across all projects, with a chart of the last half hour.
+- **One line per browser in the project**:
+  - the visible tab's title;
+  - a dot: amber while the agent works, the accent color while you hold control, green when idle;
+  - the page's error or warning count;
+  - its memory, when there is more than one browser;
+  - a tooltip with the address, tab count, and chat.
+- **Close**: stops that browser after a second, confirming click, even in the middle of an agent action, which then fails. Its tabs, cookies, and sign-ins go with it.
+
+How it behaves:
+- **Project, not chat.** OpenChamber tells the section which project the chat is in, not which chat, so the section lists every browser in the project.
+- **Memory.** Resident sizes would count the Chromium code that all of Chrome's processes share once per process, about three times the real figure.
+  - On macOS the service reads the physical footprint Activity Monitor shows, with `top`. That costs about half a second of CPU, so it samples every 30 seconds, and again when a browser opens or closes.
+  - On Linux it reads each process's proportional size from `/proc`, which needs kernel 4.14 or newer.
+  - Elsewhere the Chrome line is left out.
+- **Lifetimes.** Reading the section never keeps a browser alive: browsers still close after five minutes unused. A read does start the service process when it is not running, without starting Chrome, and that process stays up while Work Status is on screen.
+- **Older hosts.** OpenChamber 2.0.1 to 2.5.1 cannot draw the section and show a one-line note in its place.
+
 ## Native select menus
 
 Chrome draws a native `<select>` popup outside the page, where the panel cannot show it. After handing control back, the last toolbar button, "Show native select menus in the shared browser", applies Chromium's `appearance: base-select` for the selected scope, so single-choice selects open inside the page.

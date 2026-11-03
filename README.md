@@ -13,6 +13,7 @@ A real Chrome that runs on your OpenChamber server, shared by you and your agent
 - **Browse yourself** with tabs, an address bar, back, forward, reload, and phone, tablet, or desktop sizes.
 - **Debug with Chrome DevTools**: Elements, Console, Network, and the rest, for the page you are looking at.
 - **Keep chats apart**: every chat gets its own browser, with its own cookies and sign-ins.
+- **Check on the browsers from Work Status**: what each one is doing, its errors, how much memory Chrome takes, and a button to close one. This needs OpenChamber 2.5.2 or newer.
 
 ## Requirements
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -7,6 +8,7 @@ import { WebSocket } from 'ws';
 import { createBrowserManager } from '../src/browser-manager.js';
 import { createBrowserRuntime } from '../src/browser-runtime.js';
 import { createChromeProcess, resolveChromePath } from '../src/chrome-process.js';
+import { createStatusSection, treeBytes } from '../src/status-section.js';
 
 const modifiers = Object.freeze({ alt: false, ctrl: false, meta: false, shift: false });
 
@@ -299,6 +301,33 @@ test('presents itself as regular Chrome, which Google sign-in requires', { skip:
   assert.match(sent.hints ?? '', /Chromium/);
   assert.equal(await evaluate('navigator.userAgent'), sent.userAgent);
   assert.equal(await evaluate('navigator.webdriver'), false);
+});
+
+test('measures a real Chrome for Work Status as the system counts it, and closes it from there', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
+  // Given a chat's browser on a page.
+  const web = await startWebFixture();
+  context.after(() => close(web.server));
+  const manager = createBrowserManager({ createRuntime: () => createBrowserRuntime({ chromePath, allowedOrigins: [web.origin] }) });
+  context.after(() => manager.close());
+  await manager.perform('browser.open', { url: `${web.origin}/form` }, undefined, { directory: '/repo', sessionId: 'ses_status' });
+  const pid = manager.state().scopes[0].chromePid;
+  const section = createStatusSection({ runtime: manager });
+
+  // When the section reads, then its figure stays under the resident sizes of
+  // the same processes added up, which count shared Chromium code once per process.
+  const [chrome, browser] = (await section.view('/repo')).rows;
+  const resident = new Map(execFileSync('ps', ['-A', '-o', 'pid=,ppid=,rss='], { encoding: 'utf8' }).trim().split('\n').map((line) => {
+    const [processId, parent, kib] = line.trim().split(/\s+/).map(Number);
+    return [processId, { parent, bytes: kib * 1024 }];
+  }));
+  const residentTotal = treeBytes(resident, [pid]).get(pid);
+  assert.equal(chrome.id, 'chrome');
+  assert.ok(chrome.content.values[0] > 0 && chrome.content.values[0] < 0.8 * residentTotal, `${chrome.content.values[0]} bytes counted, ${residentTotal} resident`);
+
+  // When its Close button is used, then Chrome is gone.
+  await section.act(browser.actions[0].id);
+  assert.deepEqual(manager.state().scopes, []);
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
 });
 
 test('stops Chrome at once on close even when its page no longer answers', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {

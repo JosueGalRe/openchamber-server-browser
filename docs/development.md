@@ -14,7 +14,7 @@ bun run package
 
 | Command | What it does |
 | --- | --- |
-| `bun run build` | Bundles `src/` with esbuild into `service/main.js`, `panel/main.js`, and `panel/inspector.js`. |
+| `bun run build` | Bundles `src/` with esbuild into `service/main.js`, `panel/main.js`, `panel/inspector.js`, and `panel/status.js`. |
 | `bun run test` | Runs the suite. Chrome-dependent tests report a skip when Chrome is unavailable, and the listener test runs only on Linux. |
 | `bun run check` | Checks the service bundle's syntax. |
 | `bun run package` | Writes the installable package to `artifacts/openchamber-server-browser-<version>.zip`. |
@@ -38,6 +38,8 @@ The bundles are committed, because Git installations use them as they are. Rebui
 | `src/policy-proxy.js`, `src/config.js`, `src/dev-servers.js` | Egress policy, configuration, development-server discovery |
 | `src/panel.js` | The dock (`panel/index.html`) |
 | `src/inspector-page.js`, `src/inspector.js` | The Browser inspector page and its capture |
+| `src/status-section.js` | The Work Status section: its rows, Chrome's memory, and Close |
+| `src/status-page.js` | The note hosts before 2.5.2 show in that section's place (`panel/status.html`) |
 
 ## Validation
 

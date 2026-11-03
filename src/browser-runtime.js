@@ -108,6 +108,9 @@ export const createBrowserRuntime = ({
     },
     controller: 'none',
     agentActive: false,
+    get chromePid() {
+      return chrome.process?.pid ?? null;
+    },
     get url() {
       return activeTab()?.url ?? 'about:blank';
     },

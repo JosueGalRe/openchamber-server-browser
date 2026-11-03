@@ -107,7 +107,7 @@ export const devServerGrants = (listeners, isExcluded) => {
   return [...grants.values()];
 };
 
-const runCommand = (spawn, command, args) => new Promise((resolve) => {
+export const runCommand = (spawn, command, args) => new Promise((resolve) => {
   let child;
   try {
     child = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });

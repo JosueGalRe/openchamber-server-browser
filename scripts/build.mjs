@@ -13,7 +13,7 @@ await Promise.all([
     legalComments: 'eof',
     banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" },
   }),
-  ...[['src/panel.js', 'panel/main.js'], ['src/inspector-page.js', 'panel/inspector.js']].map(([entry, outfile]) => build({
+  ...[['src/panel.js', 'panel/main.js'], ['src/inspector-page.js', 'panel/inspector.js'], ['src/status-page.js', 'panel/status.js']].map(([entry, outfile]) => build({
     entryPoints: [entry],
     outfile,
     bundle: true,

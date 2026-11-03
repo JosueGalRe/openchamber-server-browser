@@ -259,8 +259,17 @@ export const createBrowserManager = ({
           tabs: entry.runtime.tabs ?? [],
           viewport: entry.runtime.viewportState ?? null,
           problems: entry.runtime.problemCounts ?? { errors: 0, warnings: 0 },
+          agentActive: entry.runtime.agentActive === true,
+          chromePid: entry.runtime.chromePid ?? null,
         })),
       };
+    },
+    // From the Work Status section, after the user confirmed. Not queued behind
+    // an agent action: closing Chrome ends that action instead of waiting for it.
+    closeScope(id) {
+      const entry = scopes.get(id);
+      if (!entry) return Promise.reject(new Error('This browser is already closed'));
+      return removeScope(entry);
     },
     // A viewer opens the browser of the chat it is looking at, before any agent
     // action. The dock reports that chat; the host does not attest it per request.

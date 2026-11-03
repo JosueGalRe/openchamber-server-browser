@@ -27,6 +27,14 @@
         "entry": "panel/inspector.html",
         "title": "Browser inspector"
       },
+      "statusSection": {
+        "entry": "panel/status.html",
+        "source": {
+          "path": "/status",
+          "interval": 5000
+        },
+        "height": 28
+      },
       "service": {
         "entry": "service/main.js",
         "runtime": "host",
@@ -39,7 +47,8 @@
             "chromium",
             "google-chrome",
             "lsof",
-            "ps"
+            "ps",
+            "top"
           ]
         }
       }

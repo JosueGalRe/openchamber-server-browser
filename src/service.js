@@ -27,6 +27,7 @@ import {
 } from '@openchamber/sdk';
 import { readMenuTheme } from './context-menu.js';
 import { InspectorError } from './inspector.js';
+import { createStatusSection } from './status-section.js';
 import { MAX_VIEWPORT_DIMENSION } from './viewports.js';
 
 const BODY_MAX_BYTES = 17 * 1024 * 1024;
@@ -201,6 +202,7 @@ export const createService = ({ runtime, token, port = 0 }) => {
   if (typeof token !== 'string' || token.length === 0) throw new Error('createService requires a bearer token');
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new Error('Service port must be from 0 to 65535');
   const activeRequests = new Set();
+  const status = createStatusSection({ runtime });
   let listening = false;
   let closePromise = null;
 
@@ -223,6 +225,21 @@ export const createService = ({ runtime, token, port = 0 }) => {
         return json(response, 200, { ok: false, error: errorMessage(error) });
       }
     }
+    // The Work Status section. The host shows `message` when an action fails.
+    if (url.pathname === '/status' && request.method === 'GET') {
+      return json(response, 200, await status.view(url.searchParams.get('directory') || null));
+    }
+    if (url.pathname === '/status' && request.method === 'POST') {
+      const id = stringProperty(await readObjectBody(request), 'id');
+      if (!id) return json(response, 400, { message: 'The section sent no control id' });
+      try {
+        await status.act(id);
+        return json(response, 200, { ok: true });
+      } catch (error) {
+        return json(response, 404, { message: errorMessage(error).slice(0, 300) });
+      }
+    }
+
     const access = dockAccess(request);
 
     if (request.method === 'GET' && url.pathname === '/browser/state') {

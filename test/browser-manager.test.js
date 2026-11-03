@@ -622,6 +622,35 @@ test('opens the viewed chat\'s browser from the dock without waiting for an agen
   await assert.rejects(manager.openScope(context('/repo', 'ses_three'), manager.state().generation), /idle/i);
 });
 
+test('closes one chat\'s browser from Work Status without waiting behind its action', { timeout: 2_000 }, async () => {
+  // Given two scopes, the visible one with an action waiting on Chrome.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one'));
+  await manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_two'));
+  const runtime = runtimes.get('ses_one');
+  let failStuck;
+  runtime.perform = () => new Promise((_resolve, reject) => { failStuck = reject; });
+  runtime.close = async () => {
+    runtime.calls.push(['close']);
+    failStuck(new Error('CDP connection is closed'));
+  };
+  const stuck = assert.rejects(manager.perform('browser.snapshot', {}, undefined, context('/repo', 'ses_one')), /connection is closed/);
+  await new Promise((resolve) => setImmediate(resolve));
+  const generation = manager.state().generation;
+
+  // When the user closes it, then its Chrome stops, the action ends, and only the other scope is left, with nothing visible.
+  await manager.closeScope(manager.state().scopes[0].id);
+  await stuck;
+  assert.deepEqual(manager.state().scopes.map((scope) => scope.sessionId), ['ses_two']);
+  assert.equal(manager.state().selectedScopeId, null);
+  assert.equal(manager.state().generation, generation + 1);
+  assert.equal(runtimes.get('ses_two').calls.some(([kind]) => kind === 'close'), false);
+
+  // When the same button is pressed again, then it says the browser is gone.
+  await assert.rejects(manager.closeScope(JSON.stringify(['/repo', 'ses_one'])), /already closed/);
+});
+
 test('closes browsers at once on shutdown instead of waiting behind a stuck action', { timeout: 2_000 }, async () => {
   // Given an action waiting on Chrome, like a command a hung page never answers, that fails once its browser closes.
   const { factory, runtimes } = createRuntimeFactory();
