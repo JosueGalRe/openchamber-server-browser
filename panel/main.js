@@ -1775,144 +1775,13 @@ ${GUEST_SCROLLBAR_CSS}
 ${UI_SIZE_CSS}
 ${GUEST_UI_LOOK_CSS}`;
 
-  // node_modules/@openchamber/sdk/dist/ui/dom.js
-  var STYLE_ID = "oc-sdk-ui-style";
-  var clearNode = (node) => {
-    while (node.firstChild) {
-      node.removeChild(node.firstChild);
-    }
-  };
-  var ensureStyle = (css) => {
-    const existing = document.getElementById(STYLE_ID);
-    if (existing instanceof HTMLStyleElement) {
-      if (existing.textContent !== css) {
-        existing.textContent = css;
-      }
-      return;
-    }
-    installGuestScrollbarActivity(document);
-    const style = document.createElement("style");
-    style.id = STYLE_ID;
-    style.textContent = css;
-    document.head.appendChild(style);
-  };
-  var el = (tag, className) => {
-    const node = document.createElement(tag);
-    if (className) {
-      node.className = className;
-    }
-    return node;
-  };
-  var button = (className) => {
-    const node = el("button", className);
-    node.type = "button";
-    return node;
-  };
-
-  // node_modules/@openchamber/sdk/dist/ui/navigation.js
-  var navigationKey = (event, axis = "vertical") => {
-    const [next, previous] = axis === "vertical" ? ["ArrowDown", "ArrowUp"] : ["ArrowRight", "ArrowLeft"];
-    if (event.key === next || event.ctrlKey && event.key.toLowerCase() === "n")
-      return "next";
-    if (event.key === previous || event.ctrlKey && event.key.toLowerCase() === "p")
-      return "previous";
-    if (event.key === "Home")
-      return "first";
-    if (event.key === "End")
-      return "last";
-    return null;
-  };
-  var moveListSelection = (items, currentId, key) => {
-    const enabled = items.filter((item) => !item.disabled);
-    if (enabled.length === 0) {
-      return null;
-    }
-    const first = enabled[0];
-    const last = enabled[enabled.length - 1];
-    if (key === "first" || !first || !last) {
-      return first?.id ?? null;
-    }
-    if (key === "last") {
-      return last.id;
-    }
-    const index = enabled.findIndex((item) => item.id === currentId);
-    if (index === -1) {
-      return key === "next" ? first.id : last.id;
-    }
-    const target = enabled[Math.min(enabled.length - 1, Math.max(0, index + (key === "next" ? 1 : -1)))];
-    return target?.id ?? null;
-  };
-
-  // node_modules/@openchamber/sdk/dist/ui/tabs.js
-  var mountTabs = (root2, initial) => {
-    ensureStyle(UI_CSS);
-    let props = initial;
-    const track = el("div", "oc-sdk oc-sdk-tabs");
-    track.setAttribute("role", "tablist");
-    root2.append(track);
-    const paint = () => {
-      clearNode(track);
-      track.dataset.track = props.trackBackground ? "true" : "false";
-      for (const item of props.items) {
-        const tab = button("oc-sdk-tab");
-        tab.setAttribute("role", "tab");
-        const active2 = item.id === props.activeId;
-        tab.setAttribute("aria-selected", active2 ? "true" : "false");
-        tab.tabIndex = active2 ? 0 : -1;
-        tab.dataset.id = item.id;
-        const label = el("span");
-        label.textContent = item.label;
-        tab.append(label);
-        if (item.count !== void 0) {
-          const count = el("span", "oc-sdk-tab-count");
-          count.textContent = String(item.count);
-          tab.append(count);
-        }
-        tab.addEventListener("click", () => {
-          if (item.id !== props.activeId)
-            props.onChange(item.id);
-        });
-        track.append(tab);
-      }
-    };
-    const onKeyDown = (event) => {
-      const step = navigationKey(event, "horizontal");
-      if (!step) {
-        return;
-      }
-      const next = moveListSelection(props.items, props.activeId, step);
-      if (next && next !== props.activeId) {
-        event.preventDefault();
-        props.onChange(next);
-        const tab = track.querySelector(`[data-id="${CSS.escape(next)}"]`);
-        if (tab instanceof HTMLElement)
-          tab.focus();
-      }
-    };
-    track.addEventListener("keydown", onKeyDown);
-    paint();
-    return {
-      update: (next) => {
-        props = { ...props, ...next };
-        paint();
-      },
-      dispose: () => {
-        track.removeEventListener("keydown", onKeyDown);
-        track.remove();
-      }
-    };
-  };
-
   // src/panel.js
   var host = connectHost();
   var root = document.querySelector("#root");
   if (!root) throw new Error("Missing panel root");
-  var scopeSelect = document.createElement("fieldset");
-  scopeSelect.className = "session-tabs";
-  scopeSelect.setAttribute("aria-label", "Browser sessions");
-  scopeSelect.addEventListener("keydown", (event) => {
-    if (scopeSelect.disabled) event.stopPropagation();
-  }, true);
+  var scopeSelect = document.createElement("select");
+  scopeSelect.className = "scope-select";
+  scopeSelect.setAttribute("aria-label", "Browser session");
   var status = document.createElement("span");
   status.className = "status";
   status.setAttribute("role", "status");
@@ -1982,8 +1851,8 @@ ${GUEST_UI_LOOK_CSS}`;
   selectCompatibility.className = "toolbar-button select-compatibility";
   selectCompatibility.setAttribute("aria-pressed", "false");
   setIcon(selectCompatibility, (svg) => {
-    addPath(svg, "M5 6.5h14v11H5z");
-    addPath(svg, "m9 10 3 3 3-3");
+    addPath(svg, "m7 15 5 5 5-5");
+    addPath(svg, "m7 9 5-5 5 5");
   });
   var devtoolsToggle = document.createElement("button");
   devtoolsToggle.type = "button";
@@ -2000,6 +1869,8 @@ ${GUEST_UI_LOOK_CSS}`;
   address.autocomplete = "off";
   address.spellcheck = false;
   address.setAttribute("aria-label", "Address");
+  var omnibox = document.createElement("div");
+  omnibox.className = "omnibox";
   var VIEWPORT_PRESETS = Object.freeze({
     mobile: Object.freeze({ label: "Mobile", width: 390, height: 844, mobile: true }),
     tablet: Object.freeze({ label: "Tablet", width: 768, height: 1024, mobile: false }),
@@ -2069,7 +1940,7 @@ ${GUEST_UI_LOOK_CSS}`;
     addLine(svg, { x1: "6", y1: "6", x2: "18", y2: "18" });
     addLine(svg, { x1: "18", y1: "6", x2: "6", y2: "18" });
   });
-  var DOCK_HEIGHT = 104;
+  var DOCK_HEIGHT = 76;
   var CONSOLE_HEIGHT = 132;
   var consoleOpen = false;
   var consoleEntries = null;
@@ -2084,6 +1955,7 @@ ${GUEST_UI_LOOK_CSS}`;
   var warningCount = document.createElement("span");
   warningCount.className = "problem-warnings";
   problems.append(errorCount, warningCount);
+  omnibox.append(address, problems);
   var consolePanel = document.createElement("section");
   consolePanel.id = "console";
   consolePanel.className = "console";
@@ -2165,6 +2037,7 @@ ${GUEST_UI_LOOK_CSS}`;
   };
   var pageTabsSignature = "";
   var renderPageTabs = (selected, disabled) => {
+    newTab.hidden = !selected;
     newTab.disabled = disabled;
     const items = selected?.tabs ?? [];
     const signature = JSON.stringify([items.map((tab) => [tab.id, pageLabel(tab), tab.url, tab.active]), disabled]);
@@ -2217,39 +2090,31 @@ ${tab.url}`;
   chatButton.className = "chat-button";
   chatButton.textContent = "Open for this chat";
   chatButton.hidden = true;
-  var scopeRow = document.createElement("div");
-  scopeRow.className = "row scope-row";
-  scopeRow.append(scopeSelect, chatButton, status);
-  var pageTabsRow = document.createElement("div");
-  pageTabsRow.className = "row page-tabs-row";
-  pageTabsRow.append(pageTabs, newTab);
+  var divider = () => {
+    const element = document.createElement("span");
+    element.className = "divider";
+    element.setAttribute("aria-hidden", "true");
+    return element;
+  };
+  var viewportGroup = document.createElement("div");
+  viewportGroup.className = "viewport-group";
+  viewportGroup.setAttribute("role", "group");
+  viewportGroup.setAttribute("aria-label", "Viewport");
+  viewportGroup.append(mobileToggle, viewportSelect, rotate);
+  var tabStrip = document.createElement("div");
+  tabStrip.className = "row tab-strip";
+  tabStrip.append(scopeSelect, divider(), pageTabs, newTab, status, chatButton);
   var navigationRow = document.createElement("div");
   navigationRow.className = "row navigation-row";
-  navigationRow.append(back, forward, reload, address, customSize, problems, devtoolsToggle, viewportSelect, rotate, mobileToggle, selectCompatibility);
-  root.append(scopeRow, pageTabsRow, navigationRow, consolePanel);
+  navigationRow.append(back, forward, reload, omnibox, customSize, divider(), viewportGroup, divider(), devtoolsToggle, selectCompatibility);
+  root.append(tabStrip, navigationRow, consolePanel);
   var state = null;
   var requestPending = false;
   var refreshPending = false;
   var commandError = null;
   var serviceError = null;
   var addressDirty = false;
-  var tabsSignature = "";
-  var pendingTabFocusId = null;
-  var tabs = mountTabs(scopeSelect, {
-    items: [],
-    activeId: "",
-    trackBackground: true,
-    onChange: (scopeId) => {
-      if (!state || requestPending || !dockUsable()) return;
-      pendingTabFocusId = scopeId;
-      void request("/browser/select", { scopeId, generation: state.generation }).then((succeeded) => {
-        if (succeeded) addressDirty = false;
-        else pendingTabFocusId = null;
-        render();
-      });
-    }
-  });
-  scopeSelect.querySelector('[role="tablist"]').setAttribute("aria-label", "Browser sessions");
+  var scopeOptionsSignature = "";
   var parseState = (body) => {
     const value = JSON.parse(body);
     if (!value || typeof value !== "object" || !Array.isArray(value.scopes)) throw new Error("Invalid browser state");
@@ -2276,30 +2141,21 @@ ${tab.url}`;
     const scopes = state?.scopes ?? [];
     const selected = scopes.find((scope) => scope.id === state?.selectedScopeId) ?? null;
     const usable = dockUsable();
-    scopeSelect.disabled = requestPending || scopes.length < 2 || !usable;
+    scopeSelect.hidden = scopes.length < 2;
+    scopeSelect.disabled = requestPending || !usable;
     const chat = currentChat();
     chatButton.hidden = !chat || Boolean(scopeForChat(chat));
     chatButton.disabled = requestPending || !usable;
     if (chat) chatButton.title = `Open a browser for ${chat.title}`;
-    const items = scopes.map((scope) => ({ id: String(scope.id), label: scopeLabel(scope) }));
-    const activeId = selected ? String(selected.id) : "";
-    const signature = JSON.stringify([items, activeId]);
-    if (signature !== tabsSignature) {
-      const focusedId = pendingTabFocusId ?? document.activeElement?.dataset.id;
-      tabs.update({ items, activeId });
-      tabsSignature = signature;
-      for (const button2 of scopeSelect.querySelectorAll('[role="tab"]')) {
-        if (button2.dataset.id === focusedId) {
-          button2.focus();
-          pendingTabFocusId = null;
-        }
-      }
+    const options = scopes.map((scope) => [String(scope.id), scopeLabel(scope)]);
+    const signature = JSON.stringify(options);
+    if (signature !== scopeOptionsSignature) {
+      scopeOptionsSignature = signature;
+      scopeSelect.replaceChildren(...options.map(([id, label]) => new Option(label, id)));
     }
-    for (const button2 of scopeSelect.querySelectorAll('[role="tab"]')) {
-      const scope = scopes.find((item) => String(item.id) === button2.dataset.id);
-      const page = scope.title || (scope.url === "about:blank" ? "" : scope.url);
-      button2.title = `${page ? `${page} \u2014 ` : ""}${scope.directory} \xB7 ${scope.sessionId}`;
-    }
+    if (!requestPending) scopeSelect.value = selected ? String(selected.id) : "";
+    const page = selected?.title || (selected?.url === "about:blank" ? "" : selected?.url);
+    scopeSelect.title = selected ? `${page ? `${page} \u2014 ` : ""}${selected.directory} \xB7 ${selected.sessionId}` : "";
     if (!addressDirty) address.value = selected?.url === "about:blank" ? "" : String(selected?.url ?? "");
     const disabled = requestPending || !selected || !usable;
     renderPageTabs(selected, disabled);
@@ -2335,7 +2191,8 @@ ${tab.url}`;
     if (customSize.hidden) viewportSelect.value = choice === "custom" ? "current" : choice;
     viewportSelect.disabled = disabled || !viewport;
     viewportSelect.title = viewport?.mode === "fixed" && viewport.source === "agent" ? "The agent chose this viewport. Pick another size to take it over." : "Viewport size";
-    rotate.disabled = disabled || viewport?.mode !== "fixed";
+    rotate.hidden = viewport?.mode !== "fixed";
+    rotate.disabled = disabled;
     mobileToggle.disabled = disabled || !viewport;
     mobileToggle.setAttribute("aria-pressed", String(viewport?.mobile === true));
     let statusState = "ready";
@@ -2362,7 +2219,7 @@ ${tab.url}`;
     status.textContent = statusMessage;
     status.title = statusTitle;
     status.setAttribute("aria-label", statusTitle);
-    scopeSelect.title = scopeSelect.disabled ? statusTitle : "";
+    status.dataset.quiet = String(statusState === "ready" || statusState === "user" && usable);
   };
   var request = async (path, payload) => {
     requestPending = true;
@@ -2533,6 +2390,13 @@ ${tab.url}`;
     buttons[(buttons.indexOf(event.target) + step + buttons.length) % buttons.length]?.focus();
   });
   newTab.addEventListener("click", () => tabCommand("/browser/tabs/new", {}));
+  scopeSelect.addEventListener("change", () => {
+    if (!state || requestPending || !dockUsable()) return;
+    void request("/browser/select", { scopeId: scopeSelect.value, generation: state.generation }).then((succeeded) => {
+      if (succeeded) addressDirty = false;
+      render();
+    });
+  });
   devtoolsToggle.addEventListener("click", () => {
     if (!state) return;
     const selected = state.scopes.find((scope) => scope.id === state.selectedScopeId);
@@ -2577,7 +2441,7 @@ ${tab.url}`;
   };
   var closeCustomSize = () => {
     customSize.hidden = true;
-    address.hidden = false;
+    omnibox.hidden = false;
     render();
   };
   viewportSelect.addEventListener("change", () => {
@@ -2586,7 +2450,7 @@ ${tab.url}`;
     if (viewportSelect.value === "custom") {
       widthInput.value = String(current.width);
       heightInput.value = String(current.height);
-      address.hidden = true;
+      omnibox.hidden = true;
       customSize.hidden = false;
       widthInput.focus();
       widthInput.select();
@@ -2609,7 +2473,7 @@ ${tab.url}`;
     const current = selectedViewport();
     if (!current || !customSize.reportValidity()) return;
     customSize.hidden = true;
-    address.hidden = false;
+    omnibox.hidden = false;
     setViewport({ mode: "fixed", width: Number(widthInput.value), height: Number(heightInput.value), mobile: current.mobile });
   };
   applySize.addEventListener("click", applyCustomSize);

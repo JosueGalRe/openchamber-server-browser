@@ -44,7 +44,7 @@ Ask in a chat, for example "Open https://example.com and tell me what it says." 
 
 Click the `</>` button in the toolbar. You get the page on the left and DevTools on the right. Clicking and highlighting work on both sides. Click `</>` again to go back to the page. When the panel is narrow, maximize it, or hide the page pane from DevTools' own toolbar.
 
-For a quick look instead, the error count next to the address bar lists the page's errors and warnings. **Browser inspector**, under **Extension pages** in the sidebar, shows the console and network requests.
+For a quick look instead, the error count inside the address bar lists the page's errors and warnings. **Browser inspector**, under **Extension pages** in the sidebar, shows the console and network requests.
 
 ### Open a local development server
 

@@ -38,12 +38,12 @@ Each authoritative `{ directory, sessionId }` pair gets its own Chrome process a
 - **Stopping.** Stopping or restarting the service stops every Chrome first and then removes its profiles, within the five seconds OpenChamber waits before killing the service. OpenChamber stops an unattended browser provider after ten minutes without actions; an open panel keeps it running.
 - **Nothing persists.** There is no session restore or persistent profile. State survives a live handoff, not idle expiry or a restart.
 
-The first scope becomes visible automatically. After that, the dock follows the chat you open in OpenChamber when that chat has a browser, and its session tabs pick any live scope. Agent work in another chat continues in that chat's browser without moving the viewer.
+The first scope becomes visible automatically. After that, the dock follows the chat you open in OpenChamber when that chat has a browser, and its session picker, shown once there are two or more, picks any live scope. Agent work in another chat continues in that chat's browser without moving the viewer.
 
 ## The panel
 
 The dock above the picture holds:
-- session tabs and **Open for this chat**;
+- a session picker and **Open for this chat**;
 - page tabs;
 - the address field, back, forward, and reload or stop;
 - the console problem count;
