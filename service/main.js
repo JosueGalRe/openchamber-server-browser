@@ -4305,6 +4305,14 @@ var createBrowserManager = ({
     }
     return entry.runtime.close();
   };
+  const selectLatest = () => {
+    if (selectedScopeId) return null;
+    const latest = [...scopes.values()].reduce((best, candidate) => !best || candidate.lastActivityAt > best.lastActivityAt ? candidate : best, null);
+    if (!latest) return null;
+    select(latest);
+    return surfaceSize ? latest.runtime.surfaceResize(surfaceSize).catch(() => {
+    }) : null;
+  };
   const ensureScope = async (context) => {
     if (!knownScope(context)) {
       throw new Error("Browser actions require both project and chat context; this host did not provide them");
@@ -4339,6 +4347,7 @@ var createBrowserManager = ({
         message: "Chrome stopped unexpectedly. The next browser action in this chat starts a new browser."
       };
       await removeScope(entry);
+      await selectLatest();
     }).catch(() => {
     }));
     entry.runtime.onTabsChanged(() => {
@@ -4383,6 +4392,7 @@ var createBrowserManager = ({
   const sweepIdleScopes = () => enqueue(async () => {
     const cutoff = now() - idleMs;
     await Promise.all([...scopes.values()].filter((entry) => entry.lastActivityAt <= cutoff).map(removeScope));
+    await selectLatest();
   });
   const scheduleSweep = () => {
     if (closed) return;
@@ -4450,7 +4460,7 @@ var createBrowserManager = ({
     closeScope(id) {
       const entry = scopes.get(id);
       if (!entry) return Promise.reject(new Error("This browser is already closed"));
-      return removeScope(entry);
+      return Promise.all([removeScope(entry), selectLatest()]);
     },
     // A viewer opens the browser of the chat it is looking at, before any agent
     // action. The dock reports that chat; the host does not attest it per request.

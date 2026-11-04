@@ -639,16 +639,49 @@ test('closes one chat\'s browser from Work Status without waiting behind its act
   await new Promise((resolve) => setImmediate(resolve));
   const generation = manager.state().generation;
 
-  // When the user closes it, then its Chrome stops, the action ends, and only the other scope is left, with nothing visible.
+  // When the user closes it, then its Chrome stops, the action ends, and the other scope comes forward.
   await manager.closeScope(manager.state().scopes[0].id);
   await stuck;
   assert.deepEqual(manager.state().scopes.map((scope) => scope.sessionId), ['ses_two']);
-  assert.equal(manager.state().selectedScopeId, null);
-  assert.equal(manager.state().generation, generation + 1);
+  assert.equal(manager.state().selectedScopeId, manager.state().scopes[0].id);
+  assert.ok(manager.state().generation > generation, 'docks acting on the closed browser are refused');
   assert.equal(runtimes.get('ses_two').calls.some(([kind]) => kind === 'close'), false);
 
   // When the same button is pressed again, then it says the browser is gone.
   await assert.rejects(manager.closeScope(JSON.stringify(['/repo', 'ses_one'])), /already closed/);
+});
+
+test('brings the browser used last forward when the visible one closes, crashes, or expires', async () => {
+  // Given three scopes used in turn, the first one visible at the panel's size.
+  let clock = 0;
+  const timers = [];
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory, now: () => clock, setTimer: (callback) => timers.push(callback), clearTimer: () => {} });
+  for (const sessionId of ['ses_one', 'ses_three', 'ses_two']) {
+    clock += 1_000;
+    await manager.perform('browser.snapshot', {}, undefined, context('/repo', sessionId));
+  }
+  await manager.surfaceResize({ width: 800, height: 600 });
+  const visible = () => manager.state().scopes.find((scope) => scope.selected)?.sessionId ?? null;
+  assert.equal(visible(), 'ses_one');
+
+  // When it is closed, then the one used last comes forward at the panel's size.
+  await manager.closeScope(JSON.stringify(['/repo', 'ses_one']));
+  assert.equal(visible(), 'ses_two');
+  assert.deepEqual(runtimes.get('ses_two').calls.at(-1), ['resize', { width: 800, height: 600, scale: 1 }]);
+
+  // When that Chrome crashes, then the next one comes forward and the crash is still reported.
+  runtimes.get('ses_two').die();
+  await manager.surfaceControl('none');
+  assert.equal(visible(), 'ses_three');
+  assert.match(manager.state().notice.message, /stopped unexpectedly/);
+
+  // When the last one expires, then nothing is visible.
+  clock += 10 * 60_000;
+  timers.shift()();
+  await manager.surfaceControl('none');
+  assert.deepEqual(manager.state().scopes, []);
+  assert.equal(manager.state().selectedScopeId, null);
 });
 
 test('closes browsers at once on shutdown instead of waiting behind a stuck action', { timeout: 2_000 }, async () => {
