@@ -1,5 +1,6 @@
 import { buildClickScript, buildSelectScript, buildSnapshotScript, buildTypeScript } from './page-scripts.js';
 import { buildInspectScript, buildQuietScript, buildScrollScript } from './page-scripts-more.js';
+import { evaluateInFrame, findFrame, frameSelector, listFrames, MAX_FRAMES, parseFrameSelector } from './frames.js';
 import { viewportSummary } from './viewports.js';
 
 const OPEN_SETTLE_MS = 30_000;
@@ -39,6 +40,74 @@ const runPageScript = async (page, expression, signal) => {
   if (result.ok !== true) throw new Error(typeof result.error === 'string' ? result.error : 'Browser action failed');
   const { ok: _ok, ...data } = result;
   return data;
+};
+
+const runFrameScript = async (page, frame, expression, signal) => {
+  const result = await withAbort(signal, evaluateInFrame(page, frame, expression));
+  if (!result || typeof result !== 'object') throw new Error('The frame returned no result');
+  if (result.ok !== true) throw new Error(typeof result.error === 'string' ? result.error : 'Browser action failed');
+  const { ok: _ok, ...data } = result;
+  return data;
+};
+
+const FRAME_TEXT_CHARS = 2_000;
+const FRAME_ELEMENTS = 40;
+// Result fields that name an element by selector, for the frame prefix.
+const SELECTOR_FIELDS = ['selector', 'clicked'];
+
+const inFrame = (frame, data) => {
+  const result = { ...data, frame: frame.key };
+  for (const field of SELECTOR_FIELDS) {
+    if (typeof result[field] === 'string') result[field] = frameSelector(frame.key, result[field]);
+  }
+  if (Array.isArray(result.elements)) {
+    result.elements = result.elements.map((element) => ({ ...element, selector: frameSelector(frame.key, element.selector) }));
+  }
+  return result;
+};
+
+// The frames' part of a snapshot: each frame with something to read or use.
+const snapshotFrames = async (page, signal) => {
+  const frames = await withAbort(signal, listFrames(page));
+  const results = [];
+  for (const frame of frames.slice(0, MAX_FRAMES)) {
+    signal?.throwIfAborted();
+    try {
+      const data = await runFrameScript(page, frame, buildSnapshotScript({ maxText: FRAME_TEXT_CHARS, maxElements: FRAME_ELEMENTS }), signal);
+      if (!data.text && (data.elements?.length ?? 0) === 0) continue;
+      const { scope: _scope, scrollY: _scrollY, maxScrollY: _maxScrollY, ...rest } = inFrame(frame, data);
+      results.push(rest);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
+  }
+  return { frames: results, ...(frames.length > MAX_FRAMES ? { framesTruncated: true, framesOnPage: frames.length } : {}) };
+};
+
+// A selector from a frame's part of a snapshot runs in that frame.
+const runAddressed = async (page, parameters, build, signal) => {
+  const addressed = parseFrameSelector(parameters.selector);
+  if (!addressed) return runPageScript(page, build(parameters), signal);
+  const frame = await withAbort(signal, findFrame(page, addressed.key));
+  return inFrame(frame, await runFrameScript(page, frame, build({ ...parameters, selector: addressed.selector }), signal));
+};
+
+// A label the page does not have may be on a button inside a frame.
+const clickByText = async (page, parameters, signal) => {
+  try {
+    return await runPageScript(page, buildClickScript(parameters), signal);
+  } catch (error) {
+    if (signal?.aborted || !/No clickable element has the label/.test(error.message)) throw error;
+    const frames = await withAbort(signal, listFrames(page));
+    for (const frame of frames.slice(0, MAX_FRAMES)) {
+      try {
+        return inFrame(frame, await runFrameScript(page, frame, buildClickScript(parameters), signal));
+      } catch (frameError) {
+        if (signal?.aborted) throw frameError;
+      }
+    }
+    throw error;
+  }
 };
 
 const readPageInfo = async (page, signal) => {
@@ -140,20 +209,25 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
 
   const page = await runtime.agentPage(parameters.tabId);
   if (action === 'browser.snapshot') {
-    const data = await runPageScript(page, buildSnapshotScript(parameters), signal);
+    const scoped = Boolean(parameters.selector);
+    const data = await runAddressed(page, parameters, buildSnapshotScript, signal);
+    const frames = scoped ? {} : await snapshotFrames(page, signal);
     const problems = runtime.consoleProblems(page.targetId);
     return {
       ...data,
+      ...(frames.frames?.length > 0 ? frames : {}),
       viewport: viewportSummary(runtime.viewport),
       ...(problems.length > 0 ? { consoleProblems: problems } : {}),
       tabs: runtime.tabs.map(({ id, title, url, active }) => ({ id, title, url, active })),
     };
   }
-  if (action === 'browser.click') return runPageScript(page, buildClickScript(parameters), signal);
-  if (action === 'browser.type') return runPageScript(page, buildTypeScript(parameters), signal);
-  if (action === 'browser.select') return runPageScript(page, buildSelectScript(parameters), signal);
-  if (action === 'browser.scroll') return runPageScript(page, buildScrollScript(parameters), signal);
-  if (action === 'browser.inspect') return runPageScript(page, buildInspectScript(parameters), signal);
+  if (action === 'browser.click') {
+    return parameters.selector ? runAddressed(page, parameters, buildClickScript, signal) : clickByText(page, parameters, signal);
+  }
+  if (action === 'browser.type') return runAddressed(page, parameters, buildTypeScript, signal);
+  if (action === 'browser.select') return runAddressed(page, parameters, buildSelectScript, signal);
+  if (action === 'browser.scroll') return runAddressed(page, parameters, buildScrollScript, signal);
+  if (action === 'browser.inspect') return runAddressed(page, parameters, buildInspectScript, signal);
   if (action === 'browser.back') return navigateHistory(page, true, signal);
   if (action === 'browser.forward') return navigateHistory(page, false, signal);
 
