@@ -78,14 +78,34 @@ export const parsePs = (output) => {
   return processes;
 };
 
+// `pid ppid bytes` lines from Win32_Process, with PrivatePageCount as the
+// bytes: the private memory Task Manager shows as a process's commit size.
+export const parseWin32 = (output) => {
+  const processes = new Map();
+  for (const line of String(output ?? '').split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(line);
+    if (match) processes.set(Number(match[1]), { parent: Number(match[2]), bytes: Number(match[3]) });
+  }
+  return processes;
+};
+
+// One CIM query lists every process with its parent in about half a second;
+// the per-process private working set (a performance counter) takes three.
+const WIN32_PROCESS_QUERY = 'Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,PrivatePageCount'
+  + " | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId,$_.ParentProcessId,$_.PrivatePageCount }";
+
 // Resident sizes would count the Chromium code every helper process shares
 // once per process, about three times the real figure. macOS gets the
-// footprint from `top`, Linux the proportional size from /proc, and other
-// systems no figure.
+// footprint from `top`, Linux the proportional size from /proc, Windows the
+// private bytes from Win32_Process, and other systems no figure.
 export const createMemoryReader = ({ platform = process.platform, spawn = spawnProcess, files = fs } = {}) => async (roots) => {
   if (platform === 'darwin') {
     const output = await runCommand(spawn, 'top', ['-l', '1', '-stats', 'pid,ppid,mem']);
     return output === null ? null : treeBytes(parseTop(output), roots);
+  }
+  if (platform === 'win32') {
+    const output = await runCommand(spawn, 'powershell', ['-NoProfile', '-NonInteractive', '-Command', WIN32_PROCESS_QUERY]);
+    return output === null ? null : treeBytes(parseWin32(output), roots);
   }
   if (platform !== 'linux') return null;
   const output = await runCommand(spawn, 'ps', ['-A', '-o', 'pid=,ppid=']);

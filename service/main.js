@@ -3640,6 +3640,7 @@ var require_websocket_server = __commonJS({
 });
 
 // src/main.js
+import fs5 from "node:fs";
 import path3 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -6890,6 +6891,15 @@ var parseAllowedNetwork = (value, index) => {
   }
   return Object.freeze({ cidr: value.cidr, address: cidr[1], prefix, ports: parsePorts(value.ports, label) });
 };
+var MAX_IDLE_MINUTES = 24 * 60;
+var MAX_SCOPES = 16;
+var parseBound = (value, label, max) => {
+  if (value === void 0) return null;
+  if (!Number.isInteger(value) || value < 1 || value > max) {
+    throw new Error(`${label} must be a whole number from 1 to ${max}`);
+  }
+  return value;
+};
 var extensionRootFrom = (entryUrl) => path2.resolve(path2.dirname(fileURLToPath(entryUrl)), "..");
 var parseConfig = (value) => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -6908,12 +6918,16 @@ var parseConfig = (value) => {
   if (value.discoverDevServers !== void 0 && typeof value.discoverDevServers !== "boolean") {
     throw new Error("config.discoverDevServers must be true or false");
   }
+  const idleMinutes = parseBound(value.idleMinutes, "config.idleMinutes", MAX_IDLE_MINUTES);
+  const maxScopes = parseBound(value.maxScopes, "config.maxScopes", MAX_SCOPES);
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
   return Object.freeze({
     chromePath: chromePath?.trim() ?? null,
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
     allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),
-    discoverDevServers: value.discoverDevServers === true
+    discoverDevServers: value.discoverDevServers === true,
+    idleMinutes,
+    maxScopes
   });
 };
 var loadConfig = ({ entryUrl = import.meta.url, configPath } = {}) => {
@@ -8249,10 +8263,23 @@ var parsePs = (output) => {
   }
   return processes;
 };
+var parseWin32 = (output) => {
+  const processes = /* @__PURE__ */ new Map();
+  for (const line of String(output ?? "").split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(line);
+    if (match) processes.set(Number(match[1]), { parent: Number(match[2]), bytes: Number(match[3]) });
+  }
+  return processes;
+};
+var WIN32_PROCESS_QUERY = "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,PrivatePageCount | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId,$_.ParentProcessId,$_.PrivatePageCount }";
 var createMemoryReader = ({ platform = process.platform, spawn: spawn2 = spawnProcess2, files = fs4 } = {}) => async (roots) => {
   if (platform === "darwin") {
     const output2 = await runCommand(spawn2, "top", ["-l", "1", "-stats", "pid,ppid,mem"]);
     return output2 === null ? null : treeBytes(parseTop(output2), roots);
+  }
+  if (platform === "win32") {
+    const output2 = await runCommand(spawn2, "powershell", ["-NoProfile", "-NonInteractive", "-Command", WIN32_PROCESS_QUERY]);
+    return output2 === null ? null : treeBytes(parseWin32(output2), roots);
   }
   if (platform !== "linux") return null;
   const output = await runCommand(spawn2, "ps", ["-A", "-o", "pid=,ppid="]);
@@ -8797,7 +8824,9 @@ var startService = async ({
   const config = loadConfig({ entryUrl: import.meta.url, configPath });
   const devServers = config.discoverDevServers ? createDevServerScanner() : null;
   const browserRuntime = runtime ?? createBrowserManager({
-    createRuntime: () => createBrowserRuntime({ ...config, devServers })
+    createRuntime: () => createBrowserRuntime({ ...config, devServers }),
+    ...config.idleMinutes ? { idleMs: config.idleMinutes * 6e4 } : {},
+    ...config.maxScopes ? { maxScopes: config.maxScopes } : {}
   });
   const service = createService({
     runtime: browserRuntime,
@@ -8807,7 +8836,18 @@ var startService = async ({
   await service.listen();
   return service;
 };
-var isMain = process.argv[1] && path3.resolve(process.argv[1]) === fileURLToPath2(import.meta.url);
+var samePath = (left, right) => {
+  const real = (value) => {
+    try {
+      return fs5.realpathSync.native(value);
+    } catch {
+      return path3.resolve(value);
+    }
+  };
+  const [a, b] = [real(left), real(right)];
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+};
+var isMain = Boolean(process.argv[1]) && samePath(process.argv[1], fileURLToPath2(import.meta.url));
 if (isMain) {
   startService().then((service) => {
     let stopping = false;

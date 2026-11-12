@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import http from 'node:http';
 import net from 'node:net';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { classifyProxyTarget, createPolicyProxy } from '../src/policy-proxy.js';
 
 const listen = (server) => new Promise((resolve, reject) => {
@@ -183,7 +184,7 @@ test('closes a CONNECT upstream when its browser socket closes', async (context)
 
 test('survives repeated CONNECT aborts while the upstream is writing', { timeout: 10_000 }, async (context) => {
   const fixture = new URL('./fixtures/policy-proxy-epipe.js', import.meta.url);
-  const child = spawn(process.execPath, [fixture.pathname], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [fileURLToPath(fixture)], { stdio: ['ignore', 'pipe', 'pipe'] });
   context.after(() => {
     if (child.exitCode === null) child.kill();
   });

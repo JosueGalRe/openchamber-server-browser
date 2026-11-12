@@ -44,9 +44,11 @@
         "surface": true,
         "permissions": {
           "exec": [
+            "chrome",
             "chromium",
             "google-chrome",
             "lsof",
+            "powershell",
             "ps",
             "top"
           ]

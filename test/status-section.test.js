@@ -78,6 +78,16 @@ test('counts each Chrome with everything under it as the system does, not by res
   const linux = createMemoryReader({ platform: 'linux', spawn: linuxPs, files: procFiles({ 10: 102_400, 12: 10_240, 13: 204_800, 20: 20_480, 21: 10_240 }) });
   assert.deepEqual([...await linux([10, 20])], [[10, 310 * MIB], [20, 30 * MIB]]);
 
+  // Windows: one Win32_Process query through PowerShell gives parents and private bytes.
+  const WIN32 = ['0 0 0', '1 0 26214400', '10 1 104857600', '11 10 52428800', '12 10 10485760', '13 12 1610612736', '20 1 20971520', '21 20 10485760', '30 1 1047527424', ''].join('\r\n');
+  const windowsSpawn = (command, args) => spawnWith({ [`${command} ${args.join(' ')}`]: WIN32 })(command, args);
+  const windows = createMemoryReader({ platform: 'win32', spawn: (command, args) => {
+    assert.equal(command, 'powershell');
+    assert.match(args.at(-1), /Win32_Process/);
+    return windowsSpawn(command, args);
+  } });
+  assert.deepEqual([...await windows([10, 20, 40])], [[10, 1696 * MIB], [20, 30 * MIB]]);
+
   // A process we may not read, or a Chrome without the file, leaves the figure out.
   assert.equal(await createMemoryReader({ platform: 'linux', spawn: linuxPs, files: procFiles({ 10: 1, 13: 1 }, new Set([13])) })([10]), null);
   assert.equal(await createMemoryReader({ platform: 'linux', spawn: linuxPs, files: procFiles({ 11: 1 }) })([10]), null);
