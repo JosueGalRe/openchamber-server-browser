@@ -106,7 +106,8 @@ const HELPERS = `
 
 export const wrapPageScript = (body) => `(() => {\n${HELPERS}\n${body}\n})()`;
 
-export const buildSnapshotScript = ({ selector } = {}) => wrapPageScript(`
+export const buildSnapshotScript = ({ selector, maxText = MAX_TEXT_CHARS, maxElements = MAX_ELEMENTS } = {}) => wrapPageScript(`
+  MAX_ELEMENTS = ${Number(maxElements)};
   var scopeSelector = ${JSON.stringify(selector ?? '')};
   var root = document;
   if (scopeSelector) {
@@ -157,9 +158,9 @@ export const buildSnapshotScript = ({ selector } = {}) => wrapPageScript(`
     ok: true, url: String(location.href), title: String(document.title || ''),
     scope: scopeSelector || 'document', scrollY: Math.round(window.scrollY),
     maxScrollY: Math.max(0, Math.round(document.documentElement.scrollHeight - window.innerHeight)),
-    text: text.slice(0, ${MAX_TEXT_CHARS}), elements: elements
+    text: text.slice(0, ${Number(maxText)}), elements: elements
   };
-  if (text.length > ${MAX_TEXT_CHARS}) { result.textTruncated = true; result.textTotalChars = text.length; }
+  if (text.length > ${Number(maxText)}) { result.textTruncated = true; result.textTotalChars = text.length; }
   if (visibleTotal > elements.length) { result.elementsTruncated = true; result.interactiveElementsOnPage = visibleTotal; }
   return result;
 `);

@@ -23,6 +23,11 @@ The provider implements `browser.open`, `snapshot`, `click`, `type`, `select`, `
 - **Opening a tab.** `browser.open` without a `tabId` opens a background tab, unless the visible tab is still blank, and returns that tab's id.
 - **Closing a tab.** `browser.close` closes a tab the agent opened, its most recent one without a `tabId`, and refuses tabs the viewer or a page opened.
 - **Settling.** `browser.open` reports `settled: true` only once the page has loaded and then gone quiet: no new resource and no DOM tree or text change for 500 ms, waiting at most 5 seconds. `browser.capture` waits the same way for at most 3 seconds.
+- **Frames.** `browser.snapshot` also reads the page's iframes, cross-site ones too, which Chrome runs in processes of their own. It lists each frame with something to read or use under `frames`, at most 12, with up to 2,000 characters of text and 40 elements each, and leaves empty frames out.
+  - **Selectors.** An element in a frame has a selector like `frame:EA135613 >> #user`. Click, type, select, scroll, and inspect run it in that frame. A frame selector in `browser.snapshot` reads that frame alone.
+  - **Labels.** `browser.click` with a `text` the page lacks tries each frame in turn.
+  - **Bounds.** An element's bounds are relative to its frame.
+  - **Isolation.** Scripts run in an isolated world of each frame, so the frame's own scripts cannot see or change them.
 - **Native selects.** `browser.snapshot` lists each native select's options, up to 32, and a `selector` scopes its text as well as its elements. `browser.select` picks one option of a native single-value select by exact label or value. It refuses ambiguous, disabled, multiple, and custom controls without changing the page.
 - **Captures** are one pixel per CSS pixel of the viewport, whatever pixel ratio the panel draws at.
 - **Background tabs.** Acting on a background tab does not change what the viewer sees.

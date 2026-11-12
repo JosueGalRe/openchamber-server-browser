@@ -5071,7 +5071,8 @@ var wrapPageScript = (body) => `(() => {
 ${HELPERS}
 ${body}
 })()`;
-var buildSnapshotScript = ({ selector } = {}) => wrapPageScript(`
+var buildSnapshotScript = ({ selector, maxText = MAX_TEXT_CHARS, maxElements = MAX_ELEMENTS } = {}) => wrapPageScript(`
+  MAX_ELEMENTS = ${Number(maxElements)};
   var scopeSelector = ${JSON.stringify(selector ?? "")};
   var root = document;
   if (scopeSelector) {
@@ -5122,9 +5123,9 @@ var buildSnapshotScript = ({ selector } = {}) => wrapPageScript(`
     ok: true, url: String(location.href), title: String(document.title || ''),
     scope: scopeSelector || 'document', scrollY: Math.round(window.scrollY),
     maxScrollY: Math.max(0, Math.round(document.documentElement.scrollHeight - window.innerHeight)),
-    text: text.slice(0, ${MAX_TEXT_CHARS}), elements: elements
+    text: text.slice(0, ${Number(maxText)}), elements: elements
   };
-  if (text.length > ${MAX_TEXT_CHARS}) { result.textTruncated = true; result.textTotalChars = text.length; }
+  if (text.length > ${Number(maxText)}) { result.textTruncated = true; result.textTotalChars = text.length; }
   if (visibleTotal > elements.length) { result.elementsTruncated = true; result.interactiveElementsOnPage = visibleTotal; }
   return result;
 `);
@@ -5335,6 +5336,103 @@ var buildInspectScript = ({ selector }) => wrapPageScript(`
   };
 `);
 
+// src/frames.js
+var WORLD_NAME = "openchamber-agent-frames";
+var FRAME_KEY_LENGTH = 8;
+var MAX_FRAMES = 12;
+var MAX_FRAME_DEPTH = 6;
+var FRAME_SELECTOR = /^frame:([0-9A-F]{4,32})\s*>>\s*([\s\S]+)$/i;
+var frameKey = (frameId) => String(frameId).slice(0, FRAME_KEY_LENGTH).toUpperCase();
+var frameSelector = (key, selector) => `frame:${key} >> ${selector}`;
+var parseFrameSelector = (selector) => {
+  const match = typeof selector === "string" ? FRAME_SELECTOR.exec(selector.trim()) : null;
+  return match ? { key: match[1].toUpperCase(), selector: match[2].trim() } : null;
+};
+var attachedSessions = /* @__PURE__ */ new WeakMap();
+var sessionsOf = (cdp) => {
+  let sessions = attachedSessions.get(cdp);
+  if (!sessions) {
+    sessions = /* @__PURE__ */ new Map();
+    attachedSessions.set(cdp, sessions);
+  }
+  return sessions;
+};
+var attachFrameTarget = async (cdp, targetId) => {
+  const sessions = sessionsOf(cdp);
+  const known = sessions.get(targetId);
+  if (known) {
+    try {
+      await cdp.sendSession(known, "Runtime.evaluate", { expression: "0", returnByValue: true });
+      return known;
+    } catch {
+      sessions.delete(targetId);
+    }
+  }
+  const sessionId = await cdp.attach(targetId);
+  sessions.set(targetId, sessionId);
+  return sessionId;
+};
+var walkTree = (node, visit, depth = 0) => {
+  if (!node?.frame || depth > MAX_FRAME_DEPTH) return;
+  visit(node.frame, depth);
+  for (const child of node.childFrames ?? []) walkTree(child, visit, depth + 1);
+};
+var listFrames = async (page) => {
+  const frames = [];
+  const seen = /* @__PURE__ */ new Set();
+  const addTree = async (sessionId, ownerTargetId, includeRoot) => {
+    const { frameTree } = await page.cdp.sendSession(sessionId, "Page.getFrameTree");
+    walkTree(frameTree, (frame, depth) => {
+      if (depth === 0 && !includeRoot || seen.has(frame.id)) return;
+      seen.add(frame.id);
+      frames.push({ id: frame.id, key: frameKey(frame.id), url: String(frame.url ?? ""), sessionId, ownerTargetId });
+    });
+  };
+  await addTree(page.sessionId, page.targetId, false);
+  let targets = [];
+  try {
+    targets = (await page.cdp.send("Target.getTargets")).targetInfos ?? [];
+  } catch {
+  }
+  const iframes = targets.filter((info) => info.type === "iframe");
+  const owners = [page.targetId];
+  for (let index = 0; index < owners.length && frames.length < MAX_FRAMES * 2; index += 1) {
+    for (const info of iframes.filter((candidate) => candidate.parentId === owners[index])) {
+      if (owners.includes(info.targetId)) continue;
+      try {
+        const sessionId = await attachFrameTarget(page.cdp, info.targetId);
+        await addTree(sessionId, info.targetId, true);
+        owners.push(info.targetId);
+      } catch {
+      }
+    }
+  }
+  return frames;
+};
+var findFrame = async (page, key) => {
+  const frames = await listFrames(page);
+  const matches = frames.filter((frame) => frame.key.startsWith(key) || frame.id.toUpperCase().startsWith(key));
+  if (matches.length === 0) throw new Error(`No frame ${key} on this page any more; take a new browser.snapshot`);
+  if (matches.length > 1) throw new Error(`More than one frame starts with ${key}; use more of its id`);
+  return matches[0];
+};
+var evaluateInFrame = async (page, frame, expression) => {
+  const world = await page.cdp.sendSession(frame.sessionId, "Page.createIsolatedWorld", {
+    frameId: frame.id,
+    worldName: WORLD_NAME
+  });
+  const response = await page.cdp.sendSession(frame.sessionId, "Runtime.evaluate", {
+    expression,
+    contextId: world.executionContextId,
+    returnByValue: true,
+    awaitPromise: true
+  });
+  if (response.exceptionDetails) {
+    throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text || "Frame script failed");
+  }
+  return response.result?.value ?? null;
+};
+
 // src/browser-actions.js
 var OPEN_SETTLE_MS = 3e4;
 var QUIET_MS = 500;
@@ -5372,6 +5470,64 @@ var runPageScript = async (page, expression, signal) => {
   if (result.ok !== true) throw new Error(typeof result.error === "string" ? result.error : "Browser action failed");
   const { ok: _ok, ...data } = result;
   return data;
+};
+var runFrameScript = async (page, frame, expression, signal) => {
+  const result = await withAbort(signal, evaluateInFrame(page, frame, expression));
+  if (!result || typeof result !== "object") throw new Error("The frame returned no result");
+  if (result.ok !== true) throw new Error(typeof result.error === "string" ? result.error : "Browser action failed");
+  const { ok: _ok, ...data } = result;
+  return data;
+};
+var FRAME_TEXT_CHARS = 2e3;
+var FRAME_ELEMENTS = 40;
+var SELECTOR_FIELDS = ["selector", "clicked"];
+var inFrame = (frame, data) => {
+  const result = { ...data, frame: frame.key };
+  for (const field of SELECTOR_FIELDS) {
+    if (typeof result[field] === "string") result[field] = frameSelector(frame.key, result[field]);
+  }
+  if (Array.isArray(result.elements)) {
+    result.elements = result.elements.map((element) => ({ ...element, selector: frameSelector(frame.key, element.selector) }));
+  }
+  return result;
+};
+var snapshotFrames = async (page, signal) => {
+  const frames = await withAbort(signal, listFrames(page));
+  const results = [];
+  for (const frame of frames.slice(0, MAX_FRAMES)) {
+    signal?.throwIfAborted();
+    try {
+      const data = await runFrameScript(page, frame, buildSnapshotScript({ maxText: FRAME_TEXT_CHARS, maxElements: FRAME_ELEMENTS }), signal);
+      if (!data.text && (data.elements?.length ?? 0) === 0) continue;
+      const { scope: _scope, scrollY: _scrollY, maxScrollY: _maxScrollY, ...rest } = inFrame(frame, data);
+      results.push(rest);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
+  }
+  return { frames: results, ...frames.length > MAX_FRAMES ? { framesTruncated: true, framesOnPage: frames.length } : {} };
+};
+var runAddressed = async (page, parameters, build, signal) => {
+  const addressed = parseFrameSelector(parameters.selector);
+  if (!addressed) return runPageScript(page, build(parameters), signal);
+  const frame = await withAbort(signal, findFrame(page, addressed.key));
+  return inFrame(frame, await runFrameScript(page, frame, build({ ...parameters, selector: addressed.selector }), signal));
+};
+var clickByText = async (page, parameters, signal) => {
+  try {
+    return await runPageScript(page, buildClickScript(parameters), signal);
+  } catch (error) {
+    if (signal?.aborted || !/No clickable element has the label/.test(error.message)) throw error;
+    const frames = await withAbort(signal, listFrames(page));
+    for (const frame of frames.slice(0, MAX_FRAMES)) {
+      try {
+        return inFrame(frame, await runFrameScript(page, frame, buildClickScript(parameters), signal));
+      } catch (frameError) {
+        if (signal?.aborted) throw frameError;
+      }
+    }
+    throw error;
+  }
 };
 var readPageInfo = async (page, signal) => {
   const value = await evaluate(page, '({ url: String(location.href), title: String(document.title || "") })', signal);
@@ -5465,20 +5621,25 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
   if (action === "browser.close") return { closed: true, tabId: await runtime.agentCloseTab(parameters.tabId) };
   const page = await runtime.agentPage(parameters.tabId);
   if (action === "browser.snapshot") {
-    const data = await runPageScript(page, buildSnapshotScript(parameters), signal);
+    const scoped = Boolean(parameters.selector);
+    const data = await runAddressed(page, parameters, buildSnapshotScript, signal);
+    const frames = scoped ? {} : await snapshotFrames(page, signal);
     const problems = runtime.consoleProblems(page.targetId);
     return {
       ...data,
+      ...frames.frames?.length > 0 ? frames : {},
       viewport: viewportSummary(runtime.viewport),
       ...problems.length > 0 ? { consoleProblems: problems } : {},
       tabs: runtime.tabs.map(({ id, title, url, active }) => ({ id, title, url, active }))
     };
   }
-  if (action === "browser.click") return runPageScript(page, buildClickScript(parameters), signal);
-  if (action === "browser.type") return runPageScript(page, buildTypeScript(parameters), signal);
-  if (action === "browser.select") return runPageScript(page, buildSelectScript(parameters), signal);
-  if (action === "browser.scroll") return runPageScript(page, buildScrollScript(parameters), signal);
-  if (action === "browser.inspect") return runPageScript(page, buildInspectScript(parameters), signal);
+  if (action === "browser.click") {
+    return parameters.selector ? runAddressed(page, parameters, buildClickScript, signal) : clickByText(page, parameters, signal);
+  }
+  if (action === "browser.type") return runAddressed(page, parameters, buildTypeScript, signal);
+  if (action === "browser.select") return runAddressed(page, parameters, buildSelectScript, signal);
+  if (action === "browser.scroll") return runAddressed(page, parameters, buildScrollScript, signal);
+  if (action === "browser.inspect") return runAddressed(page, parameters, buildInspectScript, signal);
   if (action === "browser.back") return navigateHistory(page, true, signal);
   if (action === "browser.forward") return navigateHistory(page, false, signal);
   if (action === "browser.resize") {

@@ -9,6 +9,8 @@ A real Chrome that runs on your OpenChamber server, shared by you and your agent
 ## What you can do
 
 - **Watch the agent work**, live, in the Server Browser panel.
+- **Let the agent work inside embedded pages**, such as a sign-in form from another site, with selectors that name the frame.
+
 - **Take over at any moment** by clicking or typing in the page. The agent waits until you hand control back.
 - **Browse yourself** with tabs, an address bar, back, forward, reload, and phone, tablet, or desktop sizes.
 - **Debug with Chrome DevTools**: Elements, Console, Network, and the rest, for the page you are looking at.
