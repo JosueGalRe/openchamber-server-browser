@@ -21,7 +21,8 @@
       .hint { margin: 0; color: var(--oc-muted, currentColor); font-size: 12px; }
       .banner:empty { display: none; }
       .banner { padding: 8px 16px 0; }
-      .body { min-height: 0; overflow: hidden; }
+      /* Its own row: an empty banner leaves the grid, and the body would take its auto row. */
+      .body { grid-row: 3; min-height: 0; overflow: hidden; }
       .view { display: grid; height: 100%; min-height: 0; }
       .view[hidden], .empty[hidden], .details[hidden] { display: none; }
       .empty { padding: 48px 16px; }
