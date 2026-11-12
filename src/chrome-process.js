@@ -110,6 +110,33 @@ const probeVersion = async (endpoint) => {
   }
 };
 
+const PROFILE_PREFIX = 'openchamber-server-browser-';
+
+// On Windows the host's SIGTERM ends the service at once, so close() never
+// removes the profiles, with their cookies. At the next start, a profile whose
+// Chrome is gone is removed. A running Chrome keeps `lockfile` open without
+// sharing, so a profile whose lockfile cannot be deleted is in use and stays.
+export const removeAbandonedProfiles = async ({ platform = process.platform, root = os.tmpdir(), files = fs.promises } = {}) => {
+  if (platform !== 'win32') return [];
+  const removed = [];
+  let entries;
+  try {
+    entries = await files.readdir(root, { withFileTypes: true });
+  } catch {
+    return removed;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(PROFILE_PREFIX)) continue;
+    const directory = path.join(root, entry.name);
+    try {
+      await files.rm(path.join(directory, 'lockfile'), { force: true });
+      await files.rm(directory, { recursive: true, force: true });
+      removed.push(directory);
+    } catch {}
+  }
+  return removed;
+};
+
 export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_000 } = {}) => {
   let launchPromise = null;
   let child = null;
@@ -140,7 +167,7 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
 
   const launch = async () => {
     const binary = resolveChromePath(chromePath);
-    profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'openchamber-server-browser-'));
+    profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), PROFILE_PREFIX));
     await fs.promises.chmod(profileDir, 0o700);
     const userAgent = await userAgentArgs(binary);
     if (closed) throw new Error('Chrome launch was cancelled');

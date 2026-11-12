@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBrowserManager } from './browser-manager.js';
 import { createBrowserRuntime } from './browser-runtime.js';
+import { removeAbandonedProfiles } from './chrome-process.js';
 import { loadConfig } from './config.js';
 import { createDevServerScanner } from './dev-servers.js';
 import { createService } from './service.js';
@@ -27,6 +28,7 @@ export const startService = async ({
     throw new Error('OPENCHAMBER_SERVICE_TOKEN is required');
   }
   const config = loadConfig({ entryUrl: import.meta.url, configPath });
+  if (!runtime) await removeAbandonedProfiles();
   // One scanner serves every scope; it caches the listener table briefly.
   const devServers = config.discoverDevServers ? createDevServerScanner() : null;
   const browserRuntime = runtime ?? createBrowserManager({

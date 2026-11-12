@@ -5750,6 +5750,28 @@ var probeVersion = async (endpoint) => {
     cdp.close();
   }
 };
+var PROFILE_PREFIX = "openchamber-server-browser-";
+var removeAbandonedProfiles = async ({ platform = process.platform, root = os.tmpdir(), files = fs.promises } = {}) => {
+  if (platform !== "win32") return [];
+  const removed = [];
+  let entries;
+  try {
+    entries = await files.readdir(root, { withFileTypes: true });
+  } catch {
+    return removed;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(PROFILE_PREFIX)) continue;
+    const directory = path.join(root, entry.name);
+    try {
+      await files.rm(path.join(directory, "lockfile"), { force: true });
+      await files.rm(directory, { recursive: true, force: true });
+      removed.push(directory);
+    } catch {
+    }
+  }
+  return removed;
+};
 var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) => {
   let launchPromise = null;
   let child = null;
@@ -5782,7 +5804,7 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
   };
   const launch = async () => {
     const binary = resolveChromePath(chromePath);
-    profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "openchamber-server-browser-"));
+    profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), PROFILE_PREFIX));
     await fs.promises.chmod(profileDir, 448);
     const userAgent = await userAgentArgs(binary);
     if (closed) throw new Error("Chrome launch was cancelled");
@@ -8822,6 +8844,7 @@ var startService = async ({
     throw new Error("OPENCHAMBER_SERVICE_TOKEN is required");
   }
   const config = loadConfig({ entryUrl: import.meta.url, configPath });
+  if (!runtime) await removeAbandonedProfiles();
   const devServers = config.discoverDevServers ? createDevServerScanner() : null;
   const browserRuntime = runtime ?? createBrowserManager({
     createRuntime: () => createBrowserRuntime({ ...config, devServers }),
