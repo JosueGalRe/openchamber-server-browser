@@ -21,11 +21,13 @@
         "icon": "computer",
         "entry": "panel/index.html",
         "dock": "top",
-        "size": 76
+        "size": 76,
+        "mobile": true
       },
       "page": {
         "entry": "panel/inspector.html",
-        "title": "Browser inspector"
+        "title": "Browser inspector",
+        "mobile": true
       },
       "statusSection": {
         "entry": "panel/status.html",

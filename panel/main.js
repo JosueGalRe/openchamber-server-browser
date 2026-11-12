@@ -1940,7 +1940,6 @@ ${GUEST_UI_LOOK_CSS}`;
     addLine(svg, { x1: "6", y1: "6", x2: "18", y2: "18" });
     addLine(svg, { x1: "18", y1: "6", x2: "6", y2: "18" });
   });
-  var DOCK_HEIGHT = 76;
   var CONSOLE_HEIGHT = 132;
   var consoleOpen = false;
   var consoleEntries = null;
@@ -2108,6 +2107,16 @@ ${tab.url}`;
   navigationRow.className = "row navigation-row";
   navigationRow.append(back, forward, reload, omnibox, customSize, divider(), viewportGroup, divider(), devtoolsToggle, selectCompatibility);
   root.append(tabStrip, navigationRow, consolePanel);
+  var requestedHeight = null;
+  var syncHeight = () => {
+    if (!root.clientWidth) return;
+    const height = Math.ceil(navigationRow.getBoundingClientRect().bottom) + (consoleOpen ? CONSOLE_HEIGHT : 0);
+    if (height === requestedHeight) return;
+    requestedHeight = height;
+    void host.setHeight(height).catch(() => {
+      requestedHeight = null;
+    });
+  };
   var state = null;
   var requestPending = false;
   var refreshPending = false;
@@ -2304,9 +2313,8 @@ ${tab.url}`;
   problems.addEventListener("click", () => {
     consoleOpen = !consoleOpen;
     consoleEntries = null;
-    void host.setHeight(consoleOpen ? DOCK_HEIGHT + CONSOLE_HEIGHT : DOCK_HEIGHT).catch(() => {
-    });
     render();
+    syncHeight();
     void refresh();
   });
   back.addEventListener("click", () => {
@@ -2503,9 +2511,10 @@ ${tab.url}`;
     };
     if (mounted) return;
     mounted = true;
-    void host.setHeight(DOCK_HEIGHT).catch(() => {
-    });
     render();
+    const rows = new ResizeObserver(syncHeight);
+    rows.observe(tabStrip);
+    rows.observe(navigationRow);
     void refresh();
     window.setInterval(() => {
       void refresh();

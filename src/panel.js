@@ -191,7 +191,6 @@ setIcon(cancelSize, (svg) => {
 // Console problems on the visible page. The badge opens a compact list under
 // the address bar and grows the dock; the Browser inspector page keeps the
 // full console and network.
-const DOCK_HEIGHT = 76;
 const CONSOLE_HEIGHT = 132;
 let consoleOpen = false;
 let consoleEntries = null;
@@ -380,6 +379,18 @@ const navigationRow = document.createElement('div');
 navigationRow.className = 'row navigation-row';
 navigationRow.append(back, forward, reload, omnibox, customSize, divider(), viewportGroup, divider(), devtoolsToggle, selectCompatibility);
 root.append(tabStrip, navigationRow, consolePanel);
+
+// The dock asks for the height its rows take, which grows when a narrow panel
+// wraps them or a touch screen makes them taller, plus the open console.
+let requestedHeight = null;
+const syncHeight = () => {
+  // A hidden frame has no layout to measure.
+  if (!root.clientWidth) return;
+  const height = Math.ceil(navigationRow.getBoundingClientRect().bottom) + (consoleOpen ? CONSOLE_HEIGHT : 0);
+  if (height === requestedHeight) return;
+  requestedHeight = height;
+  void host.setHeight(height).catch(() => { requestedHeight = null; });
+};
 
 let state = null;
 let requestPending = false;
@@ -603,8 +614,8 @@ const refresh = async () => {
 problems.addEventListener('click', () => {
   consoleOpen = !consoleOpen;
   consoleEntries = null;
-  void host.setHeight(consoleOpen ? DOCK_HEIGHT + CONSOLE_HEIGHT : DOCK_HEIGHT).catch(() => {});
   render();
+  syncHeight();
   void refresh();
 });
 
@@ -836,9 +847,12 @@ host.onReady((context) => {
   };
   if (mounted) return;
   mounted = true;
-  // A reloaded dock starts closed, whatever height the host kept for it.
-  void host.setHeight(DOCK_HEIGHT).catch(() => {});
   render();
+  // Its first call also sizes a reloaded dock, which starts closed whatever
+  // height the host kept for it.
+  const rows = new ResizeObserver(syncHeight);
+  rows.observe(tabStrip);
+  rows.observe(navigationRow);
   void refresh();
   window.setInterval(() => { void refresh(); }, 1_000);
 });

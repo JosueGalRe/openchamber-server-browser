@@ -10,10 +10,10 @@
       [hidden] { display: none !important; }
       html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
       button, input, select { font: inherit; }
-      #root { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 32px 40px; padding: 4px 8px 0; background: var(--oc-bg, transparent); color: var(--oc-fg, inherit); }
-      #root.console-open { grid-template-rows: 32px 40px minmax(0, 1fr); }
+      #root { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; align-content: start; padding: 4px 8px 0; background: var(--oc-bg, transparent); color: var(--oc-fg, inherit); }
+      #root.console-open { grid-template-rows: auto auto minmax(0, 1fr); }
       .row { display: flex; align-items: center; min-width: 0; }
-      .tab-strip { gap: 4px; }
+      .tab-strip { height: 32px; gap: 4px; }
       .divider { flex: 0 0 1px; width: 1px; height: 16px; margin: 0 4px; background: var(--oc-subtle, var(--oc-border, currentColor)); }
       .scope-select { min-width: 72px; max-width: 220px; field-sizing: content; height: 26px; padding: 0 4px 0 8px; border: 1px solid var(--oc-border, currentColor); border-radius: var(--oc-radius, 6px); background: var(--oc-elevated, transparent); color: var(--oc-elevated-fg, var(--oc-fg, inherit)); font-size: 12px; cursor: pointer; }
       .scope-select[hidden] + .divider { display: none; }
@@ -38,7 +38,7 @@
       .page-tab-close:hover:not(:disabled), .new-tab:hover:not(:disabled) { background: var(--oc-active, var(--oc-hover, transparent)); color: var(--oc-fg, inherit); opacity: 1; }
       .page-tab-close svg { width: 12px; height: 12px; pointer-events: none; }
       .new-tab svg { width: 14px; height: 14px; pointer-events: none; }
-      .navigation-row { gap: 2px; }
+      .navigation-row { gap: 2px; padding: 6px 0; }
       .navigation-row button, input { color: inherit; }
       .navigation-row button { display: inline-flex; width: 28px; height: 28px; flex: 0 0 28px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: var(--oc-radius, 6px); background: transparent; color: var(--oc-muted, currentColor); cursor: pointer; }
       .navigation-row button:hover:not(:disabled) { background: var(--oc-hover, transparent); color: var(--oc-fg, inherit); }
@@ -77,6 +77,28 @@
       .console-source { flex: 0 1 auto; max-width: 30%; overflow: hidden; color: var(--oc-muted, currentColor); text-overflow: ellipsis; white-space: nowrap; }
       input:focus, button:focus-visible, select:focus-visible { outline: 2px solid var(--oc-focus, currentColor); outline-offset: 1px; }
       .console-list:focus-visible { outline: 2px solid var(--oc-focus, currentColor); outline-offset: -2px; }
+      /* A narrow panel, like a phone's workspace tab, gives the address a line of its own and puts the viewport and page tools under it. */
+      @media (max-width: 559px) {
+        .navigation-row { flex-wrap: wrap; row-gap: 6px; }
+        .omnibox, .custom-size { flex-basis: calc(100% - 140px); }
+        .custom-size + .divider { display: none; }
+      }
+      /* Under a finger the controls reach the app's touch sizes, and text fields keep 16px text, below which iOS zooms in on focus. */
+      @media (pointer: coarse) {
+        .tab-strip, .page-tabs { height: 40px; }
+        .page-tab, .page-tab-select, .scope-select { height: 34px; }
+        .page-tab-close { width: 28px; height: 28px; flex-basis: 28px; }
+        .new-tab { width: 34px; height: 34px; flex-basis: 34px; }
+        .chat-button { height: 30px; }
+        .navigation-row button { width: 36px; height: 36px; flex-basis: 36px; }
+        .navigation-row .problems { height: 28px; }
+        .omnibox, .viewport-group, input { height: 36px; }
+        .omnibox input { height: 34px; }
+        .navigation-row .viewport-group button { width: 32px; height: 30px; flex-basis: 32px; }
+        .viewport-select { height: 30px; }
+        input { font-size: 16px; }
+        .page-tab-select, .scope-select, .viewport-select { font-size: 13px; }
+      }
       @media (forced-colors: active) {
         .status::before, .select-compatibility[aria-pressed="true"], .mobile-toggle[aria-pressed="true"], .devtools-toggle[aria-pressed="true"], .problems[aria-expanded="true"], .page-tab[data-active="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
       }

@@ -14,6 +14,7 @@ A real Chrome that runs on your OpenChamber server, shared by you and your agent
 - **Debug with Chrome DevTools**: Elements, Console, Network, and the rest, for the page you are looking at.
 - **Keep chats apart**: every chat gets its own browser, with its own cookies and sign-ins.
 - **Check on the browsers from Work Status**: what each one is doing, its errors, how much memory Chrome takes, and a button to close one. This needs OpenChamber 2.5.2 or newer.
+- **Use it from your phone** in OpenChamber's mobile app or a phone's browser. This needs OpenChamber 2.7.1 or newer.
 
 ## Requirements
 
@@ -46,6 +47,10 @@ Ask in a chat, for example "Open https://example.com and tell me what it says." 
 Click the `</>` button in the toolbar. You get the page on the left and DevTools on the right. Clicking and highlighting work on both sides. Click `</>` again to go back to the page. When the panel is narrow, maximize it, or hide the page pane from DevTools' own toolbar.
 
 For a quick look instead, the error count inside the address bar lists the page's errors and warnings. **Browser inspector**, under **Extension pages** in the sidebar, shows the console and network requests.
+
+### On your phone
+
+Server Browser is a tab of the workspace panel, next to Work status, Git, and Files. **Settings → General → Workspace panel tabs** orders or hides it. Tap the page to take control. **Browser inspector** is under **More** in the sessions list.
 
 ### Open a local development server
 
