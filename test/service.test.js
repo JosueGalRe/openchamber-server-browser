@@ -50,6 +50,7 @@ const createRuntime = () => {
     async forward(generation) { calls.push(['forward', generation]); },
     async setNativeSelectCompatibility(enabled, generation) { calls.push(['select-compatibility', enabled, generation]); },
     async setDevTools(open, generation) { calls.push(['devtools', open, generation]); },
+    async typeText(events, generation) { calls.push(['type', events, generation]); },
     async surfaceFrame(request) {
       calls.push(['frame', request.after, request.wait]);
       return { sequence: 4, bytes: Buffer.from('jpeg'), mime: 'image/jpeg', width: 800, height: 600, title: 'Frame 😀\nTitle' };
@@ -366,6 +367,22 @@ test('dock tab routes validate their fields and reach the manager', async (conte
   assert.equal(unknown.status, 404);
   assert.deepEqual([created.status, selected.status, closed.status], [200, 200, 200]);
   assert.deepEqual(fixture.runtime.calls, [['tab-new', 1], ['tab-select', 'tab-2', 1], ['tab-close', 'tab-2', 1]]);
+});
+
+test('types the dock\'s text and keys into the page and refuses events with a position', async (context) => {
+  const fixture = await startFixture();
+  context.after(() => fixture.service.close());
+  const post = (body) => fetch(`${fixture.origin}/browser/type`, { method: 'POST', headers: authorization, body: JSON.stringify(body) });
+  const modifiers = { alt: false, ctrl: false, meta: false, shift: false };
+  const enter = { type: 'key', action: 'down', key: 'Enter', code: 'Enter', modifiers };
+
+  const typed = await post({ generation: 1, events: [{ type: 'text', text: 'hola' }, enter] });
+  const pointer = await post({ generation: 1, events: [{ type: 'pointer', action: 'down', x: 1, y: 1, button: 0, buttons: 1, modifiers }] });
+  const empty = await post({ generation: 1, events: [] });
+  const noGeneration = await post({ events: [{ type: 'text', text: 'x' }] });
+
+  assert.deepEqual([typed.status, pointer.status, empty.status, noGeneration.status], [204, 400, 400, 400]);
+  assert.deepEqual(fixture.runtime.calls, [['type', [{ type: 'text', text: 'hola' }, enter], 1]]);
 });
 
 test('validates viewer ratio and viewport requests at the service boundary', async (context) => {

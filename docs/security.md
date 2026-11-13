@@ -14,7 +14,7 @@ The service uses OpenChamber's authenticated loopback protocol.
 
 Each project/chat pair gets its own Chrome process and temporary profile. Agent calls without both fields fail closed instead of reusing another chat's browser.
 
-The visible scope is one selection shared by every viewer. It is a convenience view, not an authorization boundary between mutually untrusted viewers. Only the viewer holding control can use the dock, and input or a dock command made on a picture of an earlier view is refused. Work Status's **Close** is different: anyone who can see the section can stop a project's browser after a confirming second click, even while another viewer holds control.
+The visible scope is one selection shared by every viewer. It is a convenience view, not an authorization boundary between mutually untrusted viewers. Only the viewer holding control can use the dock, and input or a dock command made on a picture of an earlier view is refused. Typing from the dock's keyboard button is narrower still: it needs that viewer to hold control, since the text lands wherever the page's focus is. Work Status's **Close** is different: anyone who can see the section can stop a project's browser after a confirming second click, even while another viewer holds control.
 
 ## Chrome DevTools
 

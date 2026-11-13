@@ -4625,6 +4625,21 @@ var createBrowserManager = ({
         return runtime.surfaceInput(events, viewerTheme);
       });
     },
+    // What the user types in the dock's own field, for a phone whose keyboard
+    // the picture cannot open. It lands where the page's focus is, so only the
+    // viewer holding control types; the tap that focused a field took it.
+    typeText(events, expectedGeneration, access = {}) {
+      return enqueue(async () => {
+        if (controller !== "user" || !access.viewer || access.viewer !== controllingViewer) {
+          throw new Error("Tap the page to take control, then type");
+        }
+        requireDockAccess(access);
+        requireGeneration(expectedGeneration);
+        const entry = requireSelected();
+        touch(entry);
+        await entry.runtime.surfaceInput(events, viewerTheme);
+      });
+    },
     surfaceControl(nextController, viewer = null) {
       return enqueue(() => {
         controller = nextController;
@@ -8633,6 +8648,21 @@ var createService = ({ runtime, token, port = 0 }) => {
       try {
         await runtime.setViewport(viewport, generation, access);
         return json(response, 200, runtime.state(access));
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/browser/type") {
+      const body = await readBody(request);
+      const parsed = readSurfaceInputBatch(body);
+      const generation = parsed ? generationProperty(JSON.parse(body)) : null;
+      if (!parsed?.events.length || generation === null || parsed.events.some((event) => event.type !== "text" && event.type !== "key")) {
+        return text(response, 400, "generation and a batch of text and key events are required\n");
+      }
+      try {
+        await runtime.typeText(parsed.events, generation, access);
+        response.writeHead(204);
+        return response.end();
       } catch (error) {
         return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
       }

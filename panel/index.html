@@ -43,7 +43,10 @@
       .navigation-row button { display: inline-flex; width: 28px; height: 28px; flex: 0 0 28px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: var(--oc-radius, 6px); background: transparent; color: var(--oc-muted, currentColor); cursor: pointer; }
       .navigation-row button:hover:not(:disabled) { background: var(--oc-hover, transparent); color: var(--oc-fg, inherit); }
       .navigation-row button:active:not(:disabled) { background: var(--oc-active, var(--oc-hover, transparent)); }
-      .navigation-row .select-compatibility[aria-pressed="true"], .navigation-row .mobile-toggle[aria-pressed="true"], .navigation-row .devtools-toggle[aria-pressed="true"] { background: var(--oc-selection, var(--oc-hover, transparent)); color: var(--oc-selection-fg, var(--oc-fg, inherit)); }
+      .navigation-row .keyboard-toggle { display: none; }
+      /* Focusable for the keyboard, but never seen: what it gets goes to the page. */
+      .typing-field { position: fixed; bottom: 0; left: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; font-size: 16px; }
+      .navigation-row .select-compatibility[aria-pressed="true"], .navigation-row .mobile-toggle[aria-pressed="true"], .navigation-row .devtools-toggle[aria-pressed="true"], .navigation-row .keyboard-toggle[aria-pressed="true"] { background: var(--oc-selection, var(--oc-hover, transparent)); color: var(--oc-selection-fg, var(--oc-fg, inherit)); }
       .navigation-row button svg { width: 16px; height: 16px; pointer-events: none; }
       button:disabled, input:disabled, select:disabled { cursor: default; opacity: .55; }
       input { height: 28px; min-width: 0; flex: 1; padding: 0 12px; border: 1px solid var(--oc-border, currentColor); border-radius: 999px; background: var(--oc-elevated, transparent); color: var(--oc-elevated-fg, var(--oc-fg, inherit)); font-size: 12px; }
@@ -91,6 +94,7 @@
         .new-tab { width: 34px; height: 34px; flex-basis: 34px; }
         .chat-button { height: 30px; }
         .navigation-row button { width: 36px; height: 36px; flex-basis: 36px; }
+        .navigation-row .keyboard-toggle { display: inline-flex; }
         .navigation-row .problems { height: 28px; }
         .omnibox, .viewport-group, input { height: 36px; }
         .omnibox input { height: 34px; }
@@ -100,7 +104,7 @@
         .page-tab-select, .scope-select, .viewport-select { font-size: 13px; }
       }
       @media (forced-colors: active) {
-        .status::before, .select-compatibility[aria-pressed="true"], .mobile-toggle[aria-pressed="true"], .devtools-toggle[aria-pressed="true"], .problems[aria-expanded="true"], .page-tab[data-active="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+        .status::before, .select-compatibility[aria-pressed="true"], .mobile-toggle[aria-pressed="true"], .devtools-toggle[aria-pressed="true"], .keyboard-toggle[aria-pressed="true"], .problems[aria-expanded="true"], .page-tab[data-active="true"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
       }
     </style>
   </head>

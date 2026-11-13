@@ -350,6 +350,23 @@ export const createService = ({ runtime, token, port = 0 }) => {
       }
     }
 
+    if (request.method === 'POST' && url.pathname === '/browser/type') {
+      const body = await readBody(request);
+      const parsed = readSurfaceInputBatch(body);
+      const generation = parsed ? generationProperty(JSON.parse(body)) : null;
+      // Text and keys only: the dock's field has no position on the picture.
+      if (!parsed?.events.length || generation === null || parsed.events.some((event) => event.type !== 'text' && event.type !== 'key')) {
+        return text(response, 400, 'generation and a batch of text and key events are required\n');
+      }
+      try {
+        await runtime.typeText(parsed.events, generation, access);
+        response.writeHead(204);
+        return response.end();
+      } catch (error) {
+        return json(response, dockErrorStatus(error), { ok: false, error: errorMessage(error) });
+      }
+    }
+
     if (request.method === 'POST' && url.pathname === '/browser/devtools') {
       const body = await readObjectBody(request);
       const generation = generationProperty(body);

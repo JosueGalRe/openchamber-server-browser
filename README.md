@@ -50,7 +50,7 @@ For a quick look instead, the error count inside the address bar lists the page'
 
 ### On your phone
 
-Server Browser is a tab of the workspace panel, next to Work status, Git, and Files. **Settings → General → Workspace panel tabs** orders or hides it. Tap the page to take control. **Browser inspector** is under **More** in the sessions list.
+Server Browser is a tab of the workspace panel, next to Work status, Git, and Files. **Settings → General → Workspace panel tabs** orders or hides it. Tap the page to take control. To type into the page, tap its field, then the keyboard button in the toolbar. **Browser inspector** is under **More** in the sessions list.
 
 ### Open a local development server
 

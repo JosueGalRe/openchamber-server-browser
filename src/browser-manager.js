@@ -449,6 +449,21 @@ export const createBrowserManager = ({
         return runtime.surfaceInput(events, viewerTheme);
       });
     },
+    // What the user types in the dock's own field, for a phone whose keyboard
+    // the picture cannot open. It lands where the page's focus is, so only the
+    // viewer holding control types; the tap that focused a field took it.
+    typeText(events, expectedGeneration, access = {}) {
+      return enqueue(async () => {
+        if (controller !== 'user' || !access.viewer || access.viewer !== controllingViewer) {
+          throw new Error('Tap the page to take control, then type');
+        }
+        requireDockAccess(access);
+        requireGeneration(expectedGeneration);
+        const entry = requireSelected();
+        touch(entry);
+        await entry.runtime.surfaceInput(events, viewerTheme);
+      });
+    },
     surfaceControl(nextController, viewer = null) {
       return enqueue(() => {
         controller = nextController;

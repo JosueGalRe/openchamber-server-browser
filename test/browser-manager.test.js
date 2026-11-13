@@ -163,6 +163,23 @@ test('lets the viewer in control use the dock while other viewers only watch', a
   assert.equal(manager.state({ viewer: 'viewer-c' }).viewerInControl, true);
 });
 
+test('types from the dock only for the viewer holding control', async () => {
+  // Given a selected scope that nobody controls yet.
+  const { factory, runtimes } = createRuntimeFactory();
+  const manager = createBrowserManager({ createRuntime: factory });
+  await manager.perform('browser.open', { url: 'https://one.test' }, undefined, context('/repo', 'ses_one'));
+  const events = [{ type: 'text', text: 'hola' }];
+
+  // When a dock types before any tap on the page, then nothing is typed.
+  await assert.rejects(manager.typeText(events, manager.state().generation, { viewer: 'viewer-a' }), /take control/);
+
+  // When viewer A holds control, then B's dock is refused and A's text reaches the page.
+  await manager.surfaceControl('user', 'viewer-a');
+  await assert.rejects(manager.typeText(events, manager.state().generation, { viewer: 'viewer-b' }), /take control/);
+  await manager.typeText(events, manager.state().generation, { viewer: 'viewer-a', frameSeq: 0 });
+  assert.deepEqual(runtimes.get('ses_one').calls.filter(([name]) => name === 'input').map(([, typed]) => typed), [events]);
+});
+
 test('refuses input and dock commands made on a picture of an earlier view', async () => {
   // Given a frame the viewer drew from the first chat's browser.
   const { factory, runtimes } = createRuntimeFactory();

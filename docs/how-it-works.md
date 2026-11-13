@@ -49,9 +49,12 @@ The dock above the picture holds:
 - the console problem count;
 - the DevTools button;
 - a viewport picker with rotation and mobile emulation;
-- the native-select mode.
+- the native-select mode;
+- on touch screens, a keyboard button for typing into the page.
 
 **Narrow panels and phones.** In a panel narrower than 560 px, the address gets a line of its own and the viewport, DevTools, and native-select controls move under it. Under a touch pointer the controls grow to touch size, and the address keeps 16 px text so iOS does not zoom in. The dock asks OpenChamber for the height its rows take, plus the error list while it is open.
+
+**Typing from a phone.** The picture cannot open a phone's keyboard, so under a touch pointer the dock has a keyboard button. Once you hold control (the tap on the page's field takes it), the button opens the keyboard on a hidden field of the dock and types into the page what you type there: text as text, the keyboard's deletions and autocorrections as Backspaces, and line breaks as Enter. It is refused for any other viewer, and handing control back closes it.
 
 **Fields on a phone.** The address and the custom size fields are text fields with the URL and number keyboards, because Chrome on Android ignores `enterkeyhint` on URL and number fields and offers Next instead of Go. The click or tap that focuses the address selects it, as in a browser.
 
