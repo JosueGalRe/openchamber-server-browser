@@ -163,18 +163,22 @@ setIcon(mobileToggle, (svg) => {
   addLine(svg, { x1: '11', y1: '18', x2: '13', y2: '18' });
 });
 
+const MAX_SIZE = 3840;
+// Text with the number keyboard, for the same reason as the address: Android's
+// Chrome ignores enterkeyhint on type="number". Width's Next moves to height.
 const sizeInput = (label) => {
   const input = document.createElement('input');
-  input.type = 'number';
-  input.min = '1';
-  input.max = '3840';
-  input.step = '1';
+  input.type = 'text';
+  input.inputMode = 'numeric';
+  input.pattern = '[1-9][0-9]*';
+  input.title = `A whole number of pixels up to ${MAX_SIZE}`;
   input.required = true;
   input.setAttribute('aria-label', label);
   return input;
 };
 const widthInput = sizeInput('Viewport width');
 const heightInput = sizeInput('Viewport height');
+heightInput.enterKeyHint = 'done';
 const times = document.createElement('span');
 times.textContent = '×';
 times.setAttribute('aria-hidden', 'true');
@@ -748,6 +752,15 @@ address.addEventListener('input', () => {
   addressDirty = true;
 });
 
+// As in a browser's address bar, the click or tap that focuses it selects the
+// whole address, so typing replaces it; a phone has no quick way to clear it.
+let selectAddressOnClick = false;
+address.addEventListener('pointerdown', () => { selectAddressOnClick = document.activeElement !== address; });
+address.addEventListener('click', () => {
+  if (selectAddressOnClick) address.select();
+  selectAddressOnClick = false;
+});
+
 const navigate = () => {
   if (!state || !address.value.trim()) return;
   const url = address.value.trim();
@@ -818,6 +831,7 @@ mobileToggle.addEventListener('click', () => {
 // submit; Enter in a size field and the apply button call this instead.
 const applyCustomSize = () => {
   const current = selectedViewport();
+  for (const input of [widthInput, heightInput]) input.setCustomValidity(Number(input.value) > MAX_SIZE ? input.title : '');
   if (!current || !customSize.reportValidity()) return;
   customSize.hidden = true;
   omnibox.hidden = false;

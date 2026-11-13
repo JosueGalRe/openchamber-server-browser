@@ -53,6 +53,8 @@ The dock above the picture holds:
 
 **Narrow panels and phones.** In a panel narrower than 560 px, the address gets a line of its own and the viewport, DevTools, and native-select controls move under it. Under a touch pointer the controls grow to touch size, and the address keeps 16 px text so iOS does not zoom in. The dock asks OpenChamber for the height its rows take, plus the error list while it is open.
 
+**Fields on a phone.** The address and the custom size fields are text fields with the URL and number keyboards, because Chrome on Android ignores `enterkeyhint` on URL and number fields and offers Next instead of Go. The click or tap that focuses the address selects it, as in a browser.
+
 From OpenChamber 2.7.1 the phone shows the panel, with the picture, as a workspace tab, and the Browser inspector under **More** in the sessions list. The manifest opts both in with `panel.mobile` and `page.mobile`; older hosts ignore the keys.
 
 **Who can use the dock.** The viewer holding control can use the dock while other viewers' docks wait.

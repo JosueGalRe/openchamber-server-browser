@@ -1913,18 +1913,20 @@ ${GUEST_UI_LOOK_CSS}`;
     addPath(svg, "M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z");
     addLine(svg, { x1: "11", y1: "18", x2: "13", y2: "18" });
   });
+  var MAX_SIZE = 3840;
   var sizeInput = (label) => {
     const input = document.createElement("input");
-    input.type = "number";
-    input.min = "1";
-    input.max = "3840";
-    input.step = "1";
+    input.type = "text";
+    input.inputMode = "numeric";
+    input.pattern = "[1-9][0-9]*";
+    input.title = `A whole number of pixels up to ${MAX_SIZE}`;
     input.required = true;
     input.setAttribute("aria-label", label);
     return input;
   };
   var widthInput = sizeInput("Viewport width");
   var heightInput = sizeInput("Viewport height");
+  heightInput.enterKeyHint = "done";
   var times = document.createElement("span");
   times.textContent = "\xD7";
   times.setAttribute("aria-hidden", "true");
@@ -2426,6 +2428,14 @@ ${tab.url}`;
   address.addEventListener("input", () => {
     addressDirty = true;
   });
+  var selectAddressOnClick = false;
+  address.addEventListener("pointerdown", () => {
+    selectAddressOnClick = document.activeElement !== address;
+  });
+  address.addEventListener("click", () => {
+    if (selectAddressOnClick) address.select();
+    selectAddressOnClick = false;
+  });
   var navigate = () => {
     if (!state || !address.value.trim()) return;
     const url = address.value.trim();
@@ -2482,6 +2492,7 @@ ${tab.url}`;
   });
   var applyCustomSize = () => {
     const current = selectedViewport();
+    for (const input of [widthInput, heightInput]) input.setCustomValidity(Number(input.value) > MAX_SIZE ? input.title : "");
     if (!current || !customSize.reportValidity()) return;
     customSize.hidden = true;
     omnibox.hidden = false;
