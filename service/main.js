@@ -4204,7 +4204,7 @@ var PRESETS = Object.freeze({
   desktop: Object.freeze({ width: 1440, height: 900, mobile: false })
 });
 var MAX_VIEWPORT_DIMENSION = 3840;
-var viewerScale = (ratio) => Number.isFinite(ratio) ? Math.min(3, Math.max(1, ratio)) : 1;
+var viewerScale = (ratio) => Number.isFinite(ratio) ? Math.min(3, Math.max(1, Math.round(ratio))) : 1;
 var presetViewport = (mode) => PRESETS[mode] ?? null;
 var viewportSummary = ({ width, height }) => {
   for (const [mode, preset] of Object.entries(PRESETS)) {

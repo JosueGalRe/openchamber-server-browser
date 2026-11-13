@@ -7,7 +7,9 @@ const PRESETS = Object.freeze({
 export const MAX_VIEWPORT_DIMENSION = 3840;
 
 // The viewer's pixel ratio, at which pages render; below 1 they would only blur.
-export const viewerScale = (ratio) => (Number.isFinite(ratio) ? Math.min(3, Math.max(1, ratio)) : 1);
+// Rounded, because Chrome's headless screen refuses a fractional ratio (2.25 on
+// many phones, 1.5 at 150% scaling) and would then stay at 1x.
+export const viewerScale = (ratio) => (Number.isFinite(ratio) ? Math.min(3, Math.max(1, Math.round(ratio))) : 1);
 
 export const presetViewport = (mode) => PRESETS[mode] ?? null;
 

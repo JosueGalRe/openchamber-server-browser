@@ -65,7 +65,7 @@ From OpenChamber 2.7.1 the phone shows the panel, with the picture, as a workspa
   - You can open, switch, and close them; closing a popup returns to the tab that opened it.
   - Titles, loading state, and history update live, and **Stop** interrupts a slow load.
   - Every tab the extension opens gets its own Chrome window, so a background tab keeps painting and the agent can capture it. A tab a page opens from a link shares its opener's window, as in Chrome.
-- **Sizes and sharpness.** Pages are sized in CSS pixels and drawn at your display's pixel ratio, so text stays sharp on high-density displays without changing the page's layout.
+- **Sizes and sharpness.** Pages are sized in CSS pixels and drawn at your display's pixel ratio, rounded to a whole number from 1 to 3 (Chrome takes no other), so text stays sharp on high-density displays without changing the page's layout.
   - **Fit panel** follows the panel.
   - A preset (mobile, tablet, desktop), a custom size, rotation, or mobile emulation fixes the size until someone picks another, and OpenChamber letterboxes it.
   - The picker says when the agent chose the current size.
