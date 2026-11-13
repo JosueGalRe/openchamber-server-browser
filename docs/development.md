@@ -57,9 +57,10 @@ Each [release](https://github.com/JosueGalRe/openchamber-server-browser/releases
 **Runs so far:**
 - Linux and macOS web hosts.
 - The macOS desktop app.
+- The OpenChamber Android app on a Pixel 9 Pro XL, and the mobile web UI with touch emulation.
 
 **Never run:**
-- Windows, Safari and Firefox as hosts, private relay, and mobile.
+- Windows, Safari and Firefox as hosts, private relay, iOS, and tablets.
 
 No cross-platform or long-running stability claim is made.
 
