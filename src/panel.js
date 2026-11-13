@@ -103,7 +103,12 @@ setIcon(devtoolsToggle, (svg) => {
 });
 
 const address = document.createElement('input');
-address.type = 'url';
+// A text field with the URL keyboard: Android's Chrome ignores enterkeyhint on
+// type="url" and offers Next, which moves focus on instead of sending Enter.
+address.type = 'text';
+address.inputMode = 'url';
+address.enterKeyHint = 'go';
+address.autocapitalize = 'off';
 address.placeholder = 'https://example.com';
 address.autocomplete = 'off';
 address.spellcheck = false;
