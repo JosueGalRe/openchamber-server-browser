@@ -47,6 +47,19 @@ const parseAllowedNetwork = (value, index) => {
   return Object.freeze({ cidr: value.cidr, address: cidr[1], prefix, ports: parsePorts(value.ports, label) });
 };
 
+// A day keeps a forgotten browser from holding its Chrome indefinitely.
+const MAX_IDLE_MINUTES = 24 * 60;
+// Each scope is a whole Chrome process.
+const MAX_SCOPES = 16;
+
+const parseBound = (value, label, max) => {
+  if (value === undefined) return null;
+  if (!Number.isInteger(value) || value < 1 || value > max) {
+    throw new Error(`${label} must be a whole number from 1 to ${max}`);
+  }
+  return value;
+};
+
 export const extensionRootFrom = (entryUrl) => path.resolve(path.dirname(fileURLToPath(entryUrl)), '..');
 
 export const parseConfig = (value) => {
@@ -66,12 +79,16 @@ export const parseConfig = (value) => {
   if (value.discoverDevServers !== undefined && typeof value.discoverDevServers !== 'boolean') {
     throw new Error('config.discoverDevServers must be true or false');
   }
+  const idleMinutes = parseBound(value.idleMinutes, 'config.idleMinutes', MAX_IDLE_MINUTES);
+  const maxScopes = parseBound(value.maxScopes, 'config.maxScopes', MAX_SCOPES);
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
   return Object.freeze({
     chromePath: chromePath?.trim() ?? null,
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
     allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),
     discoverDevServers: value.discoverDevServers === true,
+    idleMinutes,
+    maxScopes,
   });
 };
 

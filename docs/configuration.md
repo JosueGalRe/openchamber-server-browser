@@ -66,6 +66,20 @@ A blocked plain-HTTP address opens a page that:
 
 HTTPS navigations to a blocked address end in Chrome's own `ERR_TUNNEL_CONNECTION_FAILED`.
 
+## Browser lifetime and count
+
+A chat's browser closes after five minutes unused, and at most four chats have one at a time. To keep sign-ins longer, or to allow more chats, set:
+
+```json
+{
+  "idleMinutes": 60,
+  "maxScopes": 6
+}
+```
+
+- `idleMinutes` is a whole number from 1 to 1440. Closing a browser still removes its profile, cookies, and sign-ins.
+- `maxScopes` is a whole number from 1 to 16. Each browser is a Chrome process of its own, so each one adds Chrome's memory.
+
 ## Chrome
 
 The service looks for Chrome or Chromium 109 or newer in standard locations. If it finds none, or picks the wrong one, set the path:

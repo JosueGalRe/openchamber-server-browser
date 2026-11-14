@@ -78,8 +78,8 @@ Or add `"discoverDevServers": true` to allow any development server running on t
 
 ## Good to know
 
-- **Browsers are temporary.** A chat's browser closes after five minutes unused, and its cookies and sign-ins go with it. Restarting OpenChamber does the same.
-- **Up to four chats** can have a browser at once.
+- **Browsers are temporary.** A chat's browser closes after five minutes unused, and its cookies and sign-ins go with it. Restarting OpenChamber does the same. `idleMinutes` in `config.json` changes the five minutes.
+- **Up to four chats** can have a browser at once. `maxScopes` in `config.json` changes the four.
 - **The browser runs on the server.** So `localhost` means the server, not your laptop.
 - **Everyone with the panel sees the same browser.** It is not a privacy barrier between people sharing one OpenChamber.
 - **Sites see regular Chrome.** That is what lets Google sign-in work, and it also means sites cannot tell that an agent may be driving.

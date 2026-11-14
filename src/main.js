@@ -1,7 +1,9 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBrowserManager } from './browser-manager.js';
 import { createBrowserRuntime } from './browser-runtime.js';
+import { removeAbandonedProfiles } from './chrome-process.js';
 import { loadConfig } from './config.js';
 import { createDevServerScanner } from './dev-servers.js';
 import { createService } from './service.js';
@@ -26,10 +28,13 @@ export const startService = async ({
     throw new Error('OPENCHAMBER_SERVICE_TOKEN is required');
   }
   const config = loadConfig({ entryUrl: import.meta.url, configPath });
+  if (!runtime) await removeAbandonedProfiles();
   // One scanner serves every scope; it caches the listener table briefly.
   const devServers = config.discoverDevServers ? createDevServerScanner() : null;
   const browserRuntime = runtime ?? createBrowserManager({
     createRuntime: () => createBrowserRuntime({ ...config, devServers }),
+    ...(config.idleMinutes ? { idleMs: config.idleMinutes * 60_000 } : {}),
+    ...(config.maxScopes ? { maxScopes: config.maxScopes } : {}),
   });
   const service = createService({
     runtime: browserRuntime,
@@ -40,7 +45,21 @@ export const startService = async ({
   return service;
 };
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+// Windows paths differ in case (`c:` and `C:`) and in 8.3 short names, so the
+// two sides are compared by their real paths, and case-blind there.
+const samePath = (left, right) => {
+  const real = (value) => {
+    try {
+      return fs.realpathSync.native(value);
+    } catch {
+      return path.resolve(value);
+    }
+  };
+  const [a, b] = [real(left), real(right)];
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+};
+
+const isMain = Boolean(process.argv[1]) && samePath(process.argv[1], fileURLToPath(import.meta.url));
 
 if (isMain) {
   startService().then((service) => {

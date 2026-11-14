@@ -303,6 +303,19 @@ test('presents itself as regular Chrome, which Google sign-in requires', { skip:
   assert.equal(await evaluate('navigator.webdriver'), false);
 });
 
+// [pid, parent, resident bytes] for every process: the working set on Windows, RSS elsewhere.
+const residentTable = () => {
+  if (process.platform === 'win32') {
+    const query = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId,$_.ParentProcessId,$_.WorkingSetSize }";
+    return execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', query], { encoding: 'utf8' })
+      .trim().split(/\r?\n/).map((line) => line.trim().split(/\s+/).map(Number));
+  }
+  return execFileSync('ps', ['-A', '-o', 'pid=,ppid=,rss='], { encoding: 'utf8' }).trim().split('\n').map((line) => {
+    const [processId, parent, kib] = line.trim().split(/\s+/).map(Number);
+    return [processId, parent, kib * 1024];
+  });
+};
+
 test('measures a real Chrome for Work Status as the system counts it, and closes it from there', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {
   // Given a chat's browser on a page.
   const web = await startWebFixture();
@@ -316,10 +329,7 @@ test('measures a real Chrome for Work Status as the system counts it, and closes
   // When the section reads, then its figure stays under the resident sizes of
   // the same processes added up, which count shared Chromium code once per process.
   const [chrome, browser] = (await section.view('/repo')).rows;
-  const resident = new Map(execFileSync('ps', ['-A', '-o', 'pid=,ppid=,rss='], { encoding: 'utf8' }).trim().split('\n').map((line) => {
-    const [processId, parent, kib] = line.trim().split(/\s+/).map(Number);
-    return [processId, { parent, bytes: kib * 1024 }];
-  }));
+  const resident = new Map(residentTable().map(([processId, parent, bytes]) => [processId, { parent, bytes }]));
   const residentTotal = treeBytes(resident, [pid]).get(pid);
   assert.equal(chrome.id, 'chrome');
   assert.ok(chrome.content.values[0] > 0 && chrome.content.values[0] < 0.8 * residentTotal, `${chrome.content.values[0]} bytes counted, ${residentTotal} resident`);

@@ -5,8 +5,21 @@ import { networkGrants, originGrants, parseConfig } from '../src/config.js';
 test('defaults to no private origin grants', () => {
   const config = parseConfig({});
 
-  assert.deepEqual(config, { chromePath: null, allowedOrigins: [], allowedNetworks: [], discoverDevServers: false });
+  assert.deepEqual(config, { chromePath: null, allowedOrigins: [], allowedNetworks: [], discoverDevServers: false, idleMinutes: null, maxScopes: null });
   assert.deepEqual(originGrants(config.allowedOrigins), []);
+});
+
+test('accepts an idle limit and a browser count within their bounds', () => {
+  assert.deepEqual(
+    [parseConfig({ idleMinutes: 60, maxScopes: 6 })].map(({ idleMinutes, maxScopes }) => ({ idleMinutes, maxScopes })),
+    [{ idleMinutes: 60, maxScopes: 6 }],
+  );
+  for (const idleMinutes of [0, -5, 1.5, '30', 24 * 60 + 1]) {
+    assert.throws(() => parseConfig({ idleMinutes }), /config\.idleMinutes must be a whole number from 1 to 1440/);
+  }
+  for (const maxScopes of [0, 17, 2.5, null]) {
+    assert.throws(() => parseConfig({ maxScopes }), /config\.maxScopes must be a whole number from 1 to 16/);
+  }
 });
 
 test('normalizes explicit origins into exact host and port grants', () => {

@@ -33,9 +33,10 @@ The provider implements `browser.open`, `snapshot`, `click`, `type`, `select`, `
 Each authoritative `{ directory, sessionId }` pair gets its own Chrome process and temporary profile, with its own cookies, storage, form state, and history. Calls missing either field fail closed instead of reusing another chat's browser.
 
 - **At most four scopes.** At the limit, the scope unused for longest makes room once it has been idle for a minute. If every scope was active in the last minute, the new chat's action fails with an explanation.
-- **Idle expiry.** A scope closes after five minutes without agent actions, dock commands, input, or a viewer showing it. That removes its profile and sign-ins.
+- **Idle expiry.** A scope closes after five minutes without agent actions, dock commands, input, or a viewer showing it, or after `idleMinutes` from [Configuration](configuration.md). That removes its profile and sign-ins.
 - **Crashes.** If Chrome exits unexpectedly, the dock says so and the chat's next action starts a new browser.
 - **Stopping.** Stopping or restarting the service stops every Chrome first and then removes its profiles, within the five seconds OpenChamber waits before killing the service. OpenChamber stops an unattended browser provider after ten minutes without actions; an open panel keeps it running.
+- **Windows.** There OpenChamber's stop ends the service at once, before it can remove the profiles. Chrome exits with it, and the next start of the service removes each profile no running Chrome holds.
 - **Nothing persists.** There is no session restore or persistent profile. State survives a live handoff, not idle expiry or a restart.
 
 The first scope becomes visible automatically, and when the visible scope closes, expires, or crashes, the one used most recently takes its place. After that, the dock follows the chat you open in OpenChamber when that chat has a browser, and its session picker, shown once there are two or more, picks any live scope. Agent work in another chat continues in that chat's browser without moving the viewer.
@@ -123,8 +124,9 @@ How it behaves:
 - **Memory.** Resident sizes would count the Chromium code that all of Chrome's processes share once per process, about three times the real figure.
   - On macOS the service reads the physical footprint Activity Monitor shows, with `top`. That costs about half a second of CPU, so it samples every 30 seconds, and again when a browser opens or closes.
   - On Linux it reads each process's proportional size from `/proc`, which needs kernel 4.14 or newer.
+  - On Windows it reads each process's private bytes, the commit size Task Manager shows, with one `Win32_Process` query through `powershell`. That also takes about half a second.
   - Elsewhere the Chrome line is left out.
-- **Lifetimes.** Reading the section never keeps a browser alive: browsers still close after five minutes unused. A read does start the service process when it is not running, without starting Chrome, and that process stays up while Work Status is on screen.
+- **Lifetimes.** Reading the section never keeps a browser alive: browsers still close after five minutes unused, or after `idleMinutes`. A read does start the service process when it is not running, without starting Chrome, and that process stays up while Work Status is on screen.
 - **Older hosts.** OpenChamber 2.0.1 to 2.5.1 cannot draw the section and show a one-line note in its place.
 
 ## Native select menus
