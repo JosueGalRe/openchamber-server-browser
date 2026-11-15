@@ -5762,13 +5762,14 @@ var warnIfExtensionsIgnored = async (binary, log) => {
   } catch {
   }
 };
+var keyBytes = (key) => Buffer.from(key.startsWith("-----BEGIN") ? /^-----BEGIN[\s\S]*?KEY-----([\s\S]*)-----END/.exec(key)?.[1] ?? "" : key, "base64");
 var extensionId = (folder, manifest) => {
-  const source = typeof manifest.key === "string" ? Buffer.from(manifest.key, "base64") : process.platform === "win32" ? Buffer.from(folder.replace(/^[a-z]:/, (drive) => drive.toUpperCase()), "utf16le") : Buffer.from(folder);
+  const source = typeof manifest.key === "string" ? keyBytes(manifest.key) : process.platform === "win32" ? Buffer.from(folder.replace(/^[a-z]:/, (drive) => drive.toUpperCase()), "utf16le") : Buffer.from(folder);
   const hex = crypto2.createHash("sha256").update(source).digest("hex").slice(0, 32);
   return [...hex].map((digit) => String.fromCharCode(97 + Number.parseInt(digit, 16))).join("");
 };
 var readExtension = (entry) => {
-  if (!path.isAbsolute(entry)) return { problem: "it is not an absolute path" };
+  if (typeof entry !== "string" || !path.isAbsolute(entry)) return { problem: "it is not an absolute path" };
   let folder;
   try {
     folder = fs.realpathSync(entry);
@@ -5781,23 +5782,28 @@ var readExtension = (entry) => {
   try {
     manifest = JSON.parse(fs.readFileSync(path.join(folder, "manifest.json"), "utf8"));
   } catch (error) {
-    return { problem: error?.code === "ENOENT" ? "it has no manifest.json" : "its manifest.json is not valid JSON" };
+    if (error?.code === "ENOENT") return { problem: "it has no manifest.json" };
   }
-  if (manifest === null || typeof manifest !== "object") return { problem: "its manifest.json is not an object" };
+  if (manifest === null || typeof manifest !== "object") return { folder, id: null };
   return { folder, id: extensionId(folder, manifest) };
 };
 var extensionSetup = (entries, log = console.error) => {
   const extensions = entries.flatMap((entry) => {
     const { problem, ...extension } = readExtension(entry);
-    if (!problem) return [extension];
-    log(`Skipping extension ${entry} from config.extensions: ${problem}.`);
-    return [];
+    const name = typeof entry === "string" && entry ? entry : JSON.stringify(entry);
+    if (problem) {
+      log(`Skipping extension ${name} from config.extensions: ${problem}.`);
+      return [];
+    }
+    if (!extension.id) log(`Loading extension ${name} from config.extensions without allowing it in chat pages: the service cannot read its manifest.json as a JSON object.`);
+    return [extension];
   });
   if (extensions.length === 0) return { args: [], preferences: null };
   const folders = extensions.map(({ folder }) => folder).join(",");
+  const ids = extensions.flatMap(({ id }) => id ? [id] : []);
   return {
     args: [`--disable-extensions-except=${folders}`, `--load-extension=${folders}`],
-    preferences: { extensions: { settings: Object.fromEntries(extensions.map(({ id }) => [id, { incognito: true }])) } }
+    preferences: { extensions: { settings: Object.fromEntries(ids.map((id) => [id, { incognito: true }])) } }
   };
 };
 var probeVersion = async (endpoint) => {
@@ -6981,7 +6987,7 @@ var parseConfig = (value) => {
   if (value.discoverDevServers !== void 0 && typeof value.discoverDevServers !== "boolean") {
     throw new Error("config.discoverDevServers must be true or false");
   }
-  if (value.extensions !== void 0 && (!Array.isArray(value.extensions) || value.extensions.some((entry) => typeof entry !== "string" || entry.trim().length === 0))) {
+  if (value.extensions !== void 0 && !Array.isArray(value.extensions)) {
     throw new Error("config.extensions must be an array of extension folder paths");
   }
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
@@ -6990,7 +6996,7 @@ var parseConfig = (value) => {
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
     allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),
     discoverDevServers: value.discoverDevServers === true,
-    extensions: Object.freeze((value.extensions ?? []).map((entry) => entry.trim()))
+    extensions: Object.freeze((value.extensions ?? []).map((entry) => typeof entry === "string" ? entry.trim() : entry))
   });
 };
 var loadConfig = ({ entryUrl = import.meta.url, configPath } = {}) => {

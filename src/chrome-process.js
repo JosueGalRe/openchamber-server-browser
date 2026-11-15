@@ -112,8 +112,11 @@ const warnIfExtensionsIgnored = async (binary, log) => {
 };
 
 // Chrome names an unpacked extension after its manifest key, or else after its absolute folder path.
+// As Chromium's ParsePEMKeyBytes does, a key in PEM armor counts only what lies between its header and footer.
+const keyBytes = (key) => Buffer.from(key.startsWith('-----BEGIN') ? /^-----BEGIN[\s\S]*?KEY-----([\s\S]*)-----END/.exec(key)?.[1] ?? '' : key, 'base64');
+
 const extensionId = (folder, manifest) => {
-  const source = typeof manifest.key === 'string' ? Buffer.from(manifest.key, 'base64')
+  const source = typeof manifest.key === 'string' ? keyBytes(manifest.key)
     : process.platform === 'win32' ? Buffer.from(folder.replace(/^[a-z]:/, (drive) => drive.toUpperCase()), 'utf16le')
       : Buffer.from(folder);
   const hex = crypto.createHash('sha256').update(source).digest('hex').slice(0, 32);
@@ -121,7 +124,7 @@ const extensionId = (folder, manifest) => {
 };
 
 const readExtension = (entry) => {
-  if (!path.isAbsolute(entry)) return { problem: 'it is not an absolute path' };
+  if (typeof entry !== 'string' || !path.isAbsolute(entry)) return { problem: 'it is not an absolute path' };
   let folder;
   try {
     folder = fs.realpathSync(entry);
@@ -135,9 +138,10 @@ const readExtension = (entry) => {
   try {
     manifest = JSON.parse(fs.readFileSync(path.join(folder, 'manifest.json'), 'utf8'));
   } catch (error) {
-    return { problem: error?.code === 'ENOENT' ? 'it has no manifest.json' : 'its manifest.json is not valid JSON' };
+    if (error?.code === 'ENOENT') return { problem: 'it has no manifest.json' };
   }
-  if (manifest === null || typeof manifest !== 'object') return { problem: 'its manifest.json is not an object' };
+  // Chrome also reads manifests that JSON.parse rejects, such as ones with comments, so such a folder still loads; only its id is unknown.
+  if (manifest === null || typeof manifest !== 'object') return { folder, id: null };
   return { folder, id: extensionId(folder, manifest) };
 };
 
@@ -147,15 +151,20 @@ const readExtension = (entry) => {
 export const extensionSetup = (entries, log = console.error) => {
   const extensions = entries.flatMap((entry) => {
     const { problem, ...extension } = readExtension(entry);
-    if (!problem) return [extension];
-    log(`Skipping extension ${entry} from config.extensions: ${problem}.`);
-    return [];
+    const name = typeof entry === 'string' && entry ? entry : JSON.stringify(entry);
+    if (problem) {
+      log(`Skipping extension ${name} from config.extensions: ${problem}.`);
+      return [];
+    }
+    if (!extension.id) log(`Loading extension ${name} from config.extensions without allowing it in chat pages: the service cannot read its manifest.json as a JSON object.`);
+    return [extension];
   });
   if (extensions.length === 0) return { args: [], preferences: null };
   const folders = extensions.map(({ folder }) => folder).join(',');
+  const ids = extensions.flatMap(({ id }) => (id ? [id] : []));
   return {
     args: [`--disable-extensions-except=${folders}`, `--load-extension=${folders}`],
-    preferences: { extensions: { settings: Object.fromEntries(extensions.map(({ id }) => [id, { incognito: true }])) } },
+    preferences: { extensions: { settings: Object.fromEntries(ids.map((id) => [id, { incognito: true }])) } },
   };
 };
 

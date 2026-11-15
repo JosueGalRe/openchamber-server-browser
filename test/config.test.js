@@ -62,7 +62,9 @@ test('turns development-server discovery on only with an explicit boolean', () =
 
 test('reads extension folders as a list of paths, leaving the folders themselves to the launch', () => {
   assert.deepEqual(parseConfig({ extensions: [' /opt/ubol ', 'relative/one'] }).extensions, ['/opt/ubol', 'relative/one']);
-  for (const extensions of ['/opt/ubol', [''], ['/opt/ubol', 3], {}]) {
+  // A bad entry is kept for the launch to log and skip, so it cannot stop the service.
+  assert.deepEqual(parseConfig({ extensions: ['/opt/ubol', null, ' ', 3] }).extensions, ['/opt/ubol', null, '', 3]);
+  for (const extensions of ['/opt/ubol', {}]) {
     assert.throws(() => parseConfig({ extensions }), /config\.extensions must be an array of extension folder paths/);
   }
 });

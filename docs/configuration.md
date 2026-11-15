@@ -90,8 +90,14 @@ To run unpacked Chrome extensions in every browser the service starts, list thei
 ```
 
 - **Chromium only.** Google Chrome 137 and newer, and Microsoft Edge, ignore the flags that load unpacked extensions. Set `chromePath` to a Chromium or Chrome for Testing build, such as the one Playwright installs. When `chrome --version` names Google Chrome 137 or newer, the service logs once that the extensions are ignored. Windows is not checked.
-- **Folders.** Each entry is the absolute path of the folder that holds an extension's `manifest.json`. An entry that is not absolute, does not exist, has no valid `manifest.json`, or contains a comma is logged and left out, and the browser starts with the others.
-- **Every page.** Chrome treats the browser contexts that hold a chat's pages as incognito, so the service allows each extension there. Each browser gets a new profile, so an extension's settings and data last only as long as that browser.
+- **Folders.** Each entry is the absolute path of the folder that holds an extension's `manifest.json`. An entry that is not an absolute path, does not exist, has no `manifest.json`, or contains a comma is logged and left out, and the browser starts with the others.
+- **Every page.** Chrome treats the browser contexts that hold a chat's pages as incognito, so the service allows each extension there, except as listed under the limits below. Each browser gets a new profile, so an extension's settings and data last only as long as that browser.
+
+Limits:
+- The folder must be writable: Chromium writes an extension's indexed blocking rules into it.
+- An extension whose manifest sets `"incognito": "not_allowed"` loads but does not run in chat pages.
+- If the service cannot read `manifest.json` as a JSON object, for example because it contains comments, it logs this and passes the folder to Chrome without allowing the extension in chat pages.
+- Chrome's own load errors, for example a manifest that Chrome rejects, are not shown in the service log.
 
 For example, to block ads and trackers with uBlock Origin Lite, download `uBOLite_<version>.chromium.zip` from its [official releases](https://github.com/uBlockOrigin/uBOL-home/releases), unpack it into a folder, and list that folder.
 
