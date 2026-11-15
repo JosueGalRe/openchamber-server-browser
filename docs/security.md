@@ -8,6 +8,7 @@ The service uses OpenChamber's authenticated loopback protocol.
 
 - **It runs as the host user.** The host's service approval and declared executable names describe intent; they are not an operating-system sandbox.
 - **Egress policy.** Every scope's browser traffic goes through the service's egress policy (see [Configuration](configuration.md)).
+- **Extensions.** A loaded extension's own background worker is the exception: its traffic is not filtered, so loaded extensions are trusted code (see `extensions` in [Configuration](configuration.md#extensions)).
 - **Local-origin grants** belong to the installation, not to a project or chat. They apply until configuration changes and the service restarts.
 
 ## Scopes and viewers
