@@ -39,12 +39,13 @@ const isScopePage = (info, contextId) => info?.type === 'page'
 
 export const createBrowserRuntime = ({
   chromePath = null,
+  extensions = [],
   allowedOrigins = [],
   allowedNetworks = [],
   configPath = null,
   devServers = null,
 } = {}) => {
-  const chrome = createChromeProcess({ chromePath });
+  const chrome = createChromeProcess({ chromePath, extensions });
   const proxy = createPolicyProxy({
     grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)],
     configPath,

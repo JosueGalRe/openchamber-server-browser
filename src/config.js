@@ -66,12 +66,17 @@ export const parseConfig = (value) => {
   if (value.discoverDevServers !== undefined && typeof value.discoverDevServers !== 'boolean') {
     throw new Error('config.discoverDevServers must be true or false');
   }
+  if (value.extensions !== undefined && (!Array.isArray(value.extensions)
+    || value.extensions.some((entry) => typeof entry !== 'string' || entry.trim().length === 0))) {
+    throw new Error('config.extensions must be an array of extension folder paths');
+  }
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
   return Object.freeze({
     chromePath: chromePath?.trim() ?? null,
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
     allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),
     discoverDevServers: value.discoverDevServers === true,
+    extensions: Object.freeze((value.extensions ?? []).map((entry) => entry.trim())),
   });
 };
 
