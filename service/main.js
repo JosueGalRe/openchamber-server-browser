@@ -5784,7 +5784,7 @@ var readExtension = (entry) => {
   } catch (error) {
     if (error?.code === "ENOENT") return { problem: "it has no manifest.json" };
   }
-  if (manifest === null || typeof manifest !== "object") return { folder, id: null };
+  if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) return { folder, id: null };
   return { folder, id: extensionId(folder, manifest) };
 };
 var extensionSetup = (entries, log = console.error) => {

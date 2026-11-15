@@ -141,7 +141,7 @@ const readExtension = (entry) => {
     if (error?.code === 'ENOENT') return { problem: 'it has no manifest.json' };
   }
   // Chrome also reads manifests that JSON.parse rejects, such as ones with comments, so such a folder still loads; only its id is unknown.
-  if (manifest === null || typeof manifest !== 'object') return { folder, id: null };
+  if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return { folder, id: null };
   return { folder, id: extensionId(folder, manifest) };
 };
 

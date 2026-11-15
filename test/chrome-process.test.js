@@ -49,6 +49,8 @@ test('loads usable extension folders and allows them in the pages\' incognito co
   const empty = folder('empty');
   // Chromium accepts comments in a manifest; JSON.parse does not.
   const commented = folder('commented', '{ // a comment\n"manifest_version":3,"name":"Commented","version":"1"}');
+  // An array is valid JSON but not a manifest object.
+  const array = folder('array', '[]');
   const comma = folder('a,b', '{}');
   const file = path.join(root, 'manifest-file.json');
   fs.writeFileSync(file, '{}');
@@ -67,8 +69,8 @@ test('loads usable extension folders and allows them in the pages\' incognito co
 
   // When several are configured among unusable entries, then each unusable one is logged and the rest still load;
   // a manifest the service cannot parse still loads, without the incognito grant.
-  const many = extensionSetup([null, '', 'relative/ext', path.join(root, 'missing'), file, empty, commented, comma, first, second], log);
-  assert.deepEqual(many.args, [`--disable-extensions-except=${commented},${first},${second}`, `--load-extension=${commented},${first},${second}`]);
+  const many = extensionSetup([null, '', 'relative/ext', path.join(root, 'missing'), file, empty, commented, array, comma, first, second], log);
+  assert.deepEqual(many.args, [`--disable-extensions-except=${commented},${array},${first},${second}`, `--load-extension=${commented},${array},${first},${second}`]);
   assert.equal(Object.keys(many.preferences.extensions.settings).length, 2);
   assert.deepEqual(logged, [
     'Skipping extension null from config.extensions: it is not an absolute path.',
@@ -78,6 +80,7 @@ test('loads usable extension folders and allows them in the pages\' incognito co
     `Skipping extension ${file} from config.extensions: it is not a folder.`,
     `Skipping extension ${empty} from config.extensions: it has no manifest.json.`,
     `Loading extension ${commented} from config.extensions without allowing it in chat pages: the service cannot read its manifest.json as a JSON object.`,
+    `Loading extension ${array} from config.extensions without allowing it in chat pages: the service cannot read its manifest.json as a JSON object.`,
     `Skipping extension ${comma} from config.extensions: Chrome cannot load a path that contains a comma.`,
   ]);
 
