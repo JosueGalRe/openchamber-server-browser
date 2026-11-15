@@ -4699,7 +4699,7 @@ var createBrowserManager = ({
 };
 
 // src/browser-runtime.js
-import crypto4 from "node:crypto";
+import crypto5 from "node:crypto";
 
 // node_modules/@openchamber/sdk/dist/scrollbar-style.js
 var GUEST_SCROLLING_ATTRIBUTE = "data-oc-scrolling";
@@ -5675,6 +5675,7 @@ var connectCdp = async (webSocketDebuggerUrl, {
 
 // src/chrome-process.js
 import { execFile, spawn } from "node:child_process";
+import crypto2 from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -5749,6 +5750,62 @@ var userAgentArgs = async (binary) => {
     return [];
   }
 };
+var ignoresExtensionFlags = (versionText) => Number(/^Google Chrome (\d+)\./.exec(String(versionText).trim())?.[1]) >= 137;
+var warnedAboutBrandedChrome = false;
+var warnIfExtensionsIgnored = async (binary, log) => {
+  if (warnedAboutBrandedChrome || process.platform === "win32") return;
+  try {
+    const { stdout } = await promisify(execFile)(binary, ["--version"], { timeout: 5e3 });
+    if (!ignoresExtensionFlags(stdout)) return;
+    warnedAboutBrandedChrome = true;
+    log(`${stdout.trim()} ignores extensions loaded from config.extensions; set chromePath to a Chromium or Chrome for Testing build to use them.`);
+  } catch {
+  }
+};
+var keyBytes = (key) => Buffer.from(key.startsWith("-----BEGIN") ? /^-----BEGIN[\s\S]*?KEY-----([\s\S]*)-----END/.exec(key)?.[1] ?? "" : key, "base64");
+var extensionId = (folder, manifest) => {
+  const source = typeof manifest.key === "string" ? keyBytes(manifest.key) : process.platform === "win32" ? Buffer.from(folder.replace(/^[a-z]:/, (drive) => drive.toUpperCase()), "utf16le") : Buffer.from(folder);
+  const hex = crypto2.createHash("sha256").update(source).digest("hex").slice(0, 32);
+  return [...hex].map((digit) => String.fromCharCode(97 + Number.parseInt(digit, 16))).join("");
+};
+var readExtension = (entry) => {
+  if (typeof entry !== "string" || !path.isAbsolute(entry)) return { problem: "it is not an absolute path" };
+  let folder;
+  try {
+    folder = fs.realpathSync(entry);
+    if (!fs.statSync(folder).isDirectory()) return { problem: "it is not a folder" };
+  } catch {
+    return { problem: "it does not exist" };
+  }
+  if (folder.includes(",")) return { problem: "Chrome cannot load a path that contains a comma" };
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(folder, "manifest.json"), "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return { problem: "it has no manifest.json" };
+  }
+  if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) return { folder, id: null };
+  return { folder, id: extensionId(folder, manifest) };
+};
+var extensionSetup = (entries, log = console.error) => {
+  const extensions = entries.flatMap((entry) => {
+    const { problem, ...extension } = readExtension(entry);
+    const name = typeof entry === "string" && entry ? entry : JSON.stringify(entry);
+    if (problem) {
+      log(`Skipping extension ${name} from config.extensions: ${problem}.`);
+      return [];
+    }
+    if (!extension.id) log(`Loading extension ${name} from config.extensions without allowing it in chat pages: the service cannot read its manifest.json as a JSON object.`);
+    return [extension];
+  });
+  if (extensions.length === 0) return { args: [], preferences: null };
+  const folders = extensions.map(({ folder }) => folder).join(",");
+  const ids = extensions.flatMap(({ id }) => id ? [id] : []);
+  return {
+    args: [`--disable-extensions-except=${folders}`, `--load-extension=${folders}`],
+    preferences: { extensions: { settings: Object.fromEntries(ids.map((id) => [id, { incognito: true }])) } }
+  };
+};
 var probeVersion = async (endpoint) => {
   const cdp = await connectCdp(endpoint, { commandTimeoutMs: 5e3 });
   try {
@@ -5764,7 +5821,7 @@ var probeVersion = async (endpoint) => {
     cdp.close();
   }
 };
-var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) => {
+var createChromeProcess = ({ chromePath = null, extensions = [], startupTimeoutMs = 15e3 } = {}) => {
   let launchPromise = null;
   let child = null;
   let profileDir = null;
@@ -5799,6 +5856,12 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
     profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "openchamber-server-browser-"));
     await fs.promises.chmod(profileDir, 448);
     const userAgent = await userAgentArgs(binary);
+    const extension = extensionSetup(extensions);
+    if (extension.preferences) {
+      await fs.promises.mkdir(path.join(profileDir, "Default"));
+      await fs.promises.writeFile(path.join(profileDir, "Default", "Preferences"), JSON.stringify(extension.preferences));
+      await warnIfExtensionsIgnored(binary, console.error);
+    }
     if (closed) throw new Error("Chrome launch was cancelled");
     child = spawn(binary, [
       "--headless=new",
@@ -5815,6 +5878,7 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
       "--disable-component-update",
       "--disable-sync",
       "--password-store=basic",
+      ...extension.args,
       "about:blank"
     ], {
       env: { ...process.env },
@@ -5889,7 +5953,7 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
 };
 
 // src/context-menu.js
-import crypto2 from "node:crypto";
+import crypto3 from "node:crypto";
 var MENU_WORLD = "openchamber-menu";
 var MENU_BINDING = "openchamberMenu";
 var THEME_PROPERTIES = Object.freeze({
@@ -6055,7 +6119,7 @@ var createContextMenu = ({ navigationState, readSelection, onAction }) => {
       const result = (await call(page, current.contextId, settleContextMenu)).result?.value;
       if (!result || result.handled) return;
       const { canGoBack, canGoForward } = navigationState();
-      const token = crypto2.randomUUID();
+      const token = crypto3.randomUUID();
       await call(page, current.contextId, openContextMenu, {
         x: result.x,
         y: result.y,
@@ -6090,7 +6154,7 @@ var createContextMenu = ({ navigationState, readSelection, onAction }) => {
 };
 
 // src/devtools.js
-import crypto3 from "node:crypto";
+import crypto4 from "node:crypto";
 
 // src/devtools-policy.js
 var PAGE_DOMAINS = /* @__PURE__ */ new Set([
@@ -6440,7 +6504,7 @@ var createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId, onCopy }) =
     },
     async open(targetId, { size, colorScheme = null }) {
       await close();
-      const current = { targetId, token: crypto3.randomBytes(32).toString("hex"), created: null, frontendTargetId: null, page: null, link: null };
+      const current = { targetId, token: crypto4.randomBytes(32).toString("hex"), created: null, frontendTargetId: null, page: null, link: null };
       session = current;
       const stillOpening = () => {
         if (session !== current) throw new Error("DevTools closed while opening");
@@ -6923,12 +6987,16 @@ var parseConfig = (value) => {
   if (value.discoverDevServers !== void 0 && typeof value.discoverDevServers !== "boolean") {
     throw new Error("config.discoverDevServers must be true or false");
   }
+  if (value.extensions !== void 0 && !Array.isArray(value.extensions)) {
+    throw new Error("config.extensions must be an array of extension folder paths");
+  }
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
   return Object.freeze({
     chromePath: chromePath?.trim() ?? null,
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
     allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),
-    discoverDevServers: value.discoverDevServers === true
+    discoverDevServers: value.discoverDevServers === true,
+    extensions: Object.freeze((value.extensions ?? []).map((entry) => typeof entry === "string" ? entry.trim() : entry))
   });
 };
 var loadConfig = ({ entryUrl = import.meta.url, configPath } = {}) => {
@@ -7402,12 +7470,13 @@ var createTab = (targetId, sessionId, openerId) => ({
 var isScopePage = (info, contextId) => info?.type === "page" && info.browserContextId === contextId && info.subtype !== "prerender";
 var createBrowserRuntime = ({
   chromePath = null,
+  extensions = [],
   allowedOrigins = [],
   allowedNetworks = [],
   configPath = null,
   devServers = null
 } = {}) => {
-  const chrome = createChromeProcess({ chromePath });
+  const chrome = createChromeProcess({ chromePath, extensions });
   const proxy = createPolicyProxy({
     grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)],
     configPath,
@@ -7932,7 +8001,7 @@ var createBrowserRuntime = ({
   const surface = createSurface(runtime);
   let copyRequest = null;
   const offerCopy = (text2, { devtools: devtools2 = false } = {}) => {
-    copyRequest = { id: crypto4.randomUUID(), text: text2.length > GUEST_CLIPBOARD_TEXT_MAX ? null : text2, at: Date.now(), devtools: devtools2 };
+    copyRequest = { id: crypto5.randomUUID(), text: text2.length > GUEST_CLIPBOARD_TEXT_MAX ? null : text2, at: Date.now(), devtools: devtools2 };
   };
   const contextMenu = createContextMenu({
     navigationState: () => ({ canGoBack: runtime.canGoBack, canGoForward: runtime.canGoForward }),
@@ -8206,13 +8275,13 @@ var createDevServerScanner = ({
 };
 
 // src/service.js
-import crypto6 from "node:crypto";
+import crypto7 from "node:crypto";
 import http2 from "node:http";
 import net3 from "node:net";
 
 // src/status-section.js
 import { spawn as spawnProcess2 } from "node:child_process";
-import crypto5 from "node:crypto";
+import crypto6 from "node:crypto";
 import fs4 from "node:fs/promises";
 var STEP_SECONDS = 30;
 var CHART_POINTS = 60;
@@ -8220,7 +8289,7 @@ var CHART_GAP_MS = 3 * STEP_SECONDS * 1e3;
 var LABEL_MAX = 60;
 var TEXT_MAX = 200;
 var clip = (text2, max) => text2.length > max ? `${text2.slice(0, max - 1)}\u2026` : text2;
-var scopeKey = (id) => crypto5.createHash("sha256").update(id).digest("hex").slice(0, 16);
+var scopeKey = (id) => crypto6.createHash("sha256").update(id).digest("hex").slice(0, 16);
 var formatBytes = (bytes) => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
 var pageHost = (url) => {
   try {
@@ -8397,7 +8466,7 @@ var authorized = (request, token) => {
   if (typeof header !== "string" || !header.startsWith("Bearer ")) return false;
   const provided = Buffer.from(header.slice(7));
   const expected = Buffer.from(token);
-  return provided.length === expected.length && crypto6.timingSafeEqual(provided, expected);
+  return provided.length === expected.length && crypto7.timingSafeEqual(provided, expected);
 };
 var withScheme = (address) => {
   if (/^[a-z][a-z\d+.-]*:\/\//i.test(address)) return address;

@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -94,6 +95,79 @@ const userAgentArgs = async (binary) => {
   }
 };
 
+// Google Chrome 137 and newer ignore --load-extension; Chromium and Chrome for Testing still honor it.
+export const ignoresExtensionFlags = (versionText) => Number(/^Google Chrome (\d+)\./.exec(String(versionText).trim())?.[1]) >= 137;
+
+let warnedAboutBrandedChrome = false;
+
+const warnIfExtensionsIgnored = async (binary, log) => {
+  // chrome.exe ignores --version and opens a window, so Windows is not checked.
+  if (warnedAboutBrandedChrome || process.platform === 'win32') return;
+  try {
+    const { stdout } = await promisify(execFile)(binary, ['--version'], { timeout: 5_000 });
+    if (!ignoresExtensionFlags(stdout)) return;
+    warnedAboutBrandedChrome = true;
+    log(`${stdout.trim()} ignores extensions loaded from config.extensions; set chromePath to a Chromium or Chrome for Testing build to use them.`);
+  } catch {}
+};
+
+// Chrome names an unpacked extension after its manifest key, or else after its absolute folder path.
+// As Chromium's ParsePEMKeyBytes does, a key in PEM armor counts only what lies between its header and footer.
+const keyBytes = (key) => Buffer.from(key.startsWith('-----BEGIN') ? /^-----BEGIN[\s\S]*?KEY-----([\s\S]*)-----END/.exec(key)?.[1] ?? '' : key, 'base64');
+
+const extensionId = (folder, manifest) => {
+  const source = typeof manifest.key === 'string' ? keyBytes(manifest.key)
+    : process.platform === 'win32' ? Buffer.from(folder.replace(/^[a-z]:/, (drive) => drive.toUpperCase()), 'utf16le')
+      : Buffer.from(folder);
+  const hex = crypto.createHash('sha256').update(source).digest('hex').slice(0, 32);
+  return [...hex].map((digit) => String.fromCharCode(97 + Number.parseInt(digit, 16))).join('');
+};
+
+const readExtension = (entry) => {
+  if (typeof entry !== 'string' || !path.isAbsolute(entry)) return { problem: 'it is not an absolute path' };
+  let folder;
+  try {
+    folder = fs.realpathSync(entry);
+    if (!fs.statSync(folder).isDirectory()) return { problem: 'it is not a folder' };
+  } catch {
+    return { problem: 'it does not exist' };
+  }
+  // Chrome splits its extension list at commas.
+  if (folder.includes(',')) return { problem: 'Chrome cannot load a path that contains a comma' };
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(folder, 'manifest.json'), 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { problem: 'it has no manifest.json' };
+  }
+  // Chrome also reads manifests that JSON.parse rejects, such as ones with comments, so such a folder still loads; only its id is unknown.
+  if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return { folder, id: null };
+  return { folder, id: extensionId(folder, manifest) };
+};
+
+// Pages run in browser contexts the service creates, which Chrome treats as
+// incognito, so each extension is also allowed there through the new profile's
+// preferences. A folder that cannot be used is logged and left out.
+export const extensionSetup = (entries, log = console.error) => {
+  const extensions = entries.flatMap((entry) => {
+    const { problem, ...extension } = readExtension(entry);
+    const name = typeof entry === 'string' && entry ? entry : JSON.stringify(entry);
+    if (problem) {
+      log(`Skipping extension ${name} from config.extensions: ${problem}.`);
+      return [];
+    }
+    if (!extension.id) log(`Loading extension ${name} from config.extensions without allowing it in chat pages: the service cannot read its manifest.json as a JSON object.`);
+    return [extension];
+  });
+  if (extensions.length === 0) return { args: [], preferences: null };
+  const folders = extensions.map(({ folder }) => folder).join(',');
+  const ids = extensions.flatMap(({ id }) => (id ? [id] : []));
+  return {
+    args: [`--disable-extensions-except=${folders}`, `--load-extension=${folders}`],
+    preferences: { extensions: { settings: Object.fromEntries(ids.map((id) => [id, { incognito: true }])) } },
+  };
+};
+
 const probeVersion = async (endpoint) => {
   const cdp = await connectCdp(endpoint, { commandTimeoutMs: 5_000 });
   try {
@@ -110,7 +184,7 @@ const probeVersion = async (endpoint) => {
   }
 };
 
-export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_000 } = {}) => {
+export const createChromeProcess = ({ chromePath = null, extensions = [], startupTimeoutMs = 15_000 } = {}) => {
   let launchPromise = null;
   let child = null;
   let profileDir = null;
@@ -143,6 +217,12 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
     profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'openchamber-server-browser-'));
     await fs.promises.chmod(profileDir, 0o700);
     const userAgent = await userAgentArgs(binary);
+    const extension = extensionSetup(extensions);
+    if (extension.preferences) {
+      await fs.promises.mkdir(path.join(profileDir, 'Default'));
+      await fs.promises.writeFile(path.join(profileDir, 'Default', 'Preferences'), JSON.stringify(extension.preferences));
+      await warnIfExtensionsIgnored(binary, console.error);
+    }
     if (closed) throw new Error('Chrome launch was cancelled');
     child = spawn(binary, [
       '--headless=new',
@@ -159,6 +239,7 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
       '--disable-component-update',
       '--disable-sync',
       '--password-store=basic',
+      ...extension.args,
       'about:blank',
     ], {
       env: { ...process.env },

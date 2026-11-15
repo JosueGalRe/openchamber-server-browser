@@ -3,11 +3,13 @@ import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { WebSocket } from 'ws';
 import { createBrowserManager } from '../src/browser-manager.js';
 import { createBrowserRuntime } from '../src/browser-runtime.js';
-import { createChromeProcess, resolveChromePath } from '../src/chrome-process.js';
+import { createChromeProcess, ignoresExtensionFlags, resolveChromePath } from '../src/chrome-process.js';
 import { createStatusSection, treeBytes } from '../src/status-section.js';
 
 const modifiers = Object.freeze({ alt: false, ctrl: false, meta: false, shift: false });
@@ -277,6 +279,58 @@ test('removes the temporary Chrome profile on shutdown', { skip: chromePath ? fa
 
   assert.equal(fs.existsSync(profileDir), false);
   assert.notEqual(running.process.exitCode === null && running.process.signalCode === null, true);
+});
+
+// Branded Google Chrome ignores the extension flags, and chrome.exe opens a window for --version.
+let extensionsSkip = chromePath ? false : 'Chrome is unavailable';
+if (!extensionsSkip && process.platform === 'win32') extensionsSkip = 'the Chrome build cannot be told on Windows';
+if (!extensionsSkip && ignoresExtensionFlags(execFileSync(chromePath, ['--version'], { encoding: 'utf8', timeout: 5_000 }))) {
+  extensionsSkip = 'branded Google Chrome ignores extension flags';
+}
+
+test('runs a configured extension in the scope\'s pages and skips a missing one', { skip: extensionsSkip }, async (context) => {
+  // Given an extension that blocks one script, and a page that loads it.
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'server-browser-extension-')));
+  context.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(folder, 'manifest.json'), JSON.stringify({
+    manifest_version: 3,
+    name: 'Blocks blocked.js',
+    version: '1',
+    background: { service_worker: 'background.js' },
+    permissions: ['declarativeNetRequest'],
+    declarative_net_request: { rule_resources: [{ id: 'rules', enabled: true, path: 'rules.json' }] },
+  }));
+  fs.writeFileSync(path.join(folder, 'background.js'), '');
+  fs.writeFileSync(path.join(folder, 'rules.json'), JSON.stringify([
+    { id: 1, priority: 1, action: { type: 'block' }, condition: { urlFilter: '/blocked.js', resourceTypes: ['script'] } },
+  ]));
+  const requested = [];
+  const server = http.createServer((request, response) => {
+    requested.push(request.url);
+    if (request.url === '/blocked.js') {
+      response.setHeader('content-type', 'text/javascript');
+      response.end('window.scriptRan = true;');
+      return;
+    }
+    response.setHeader('content-type', 'text/html; charset=utf-8');
+    response.end(html('<script src="/blocked.js"></script>', 'Extension'));
+  });
+  const origin = `http://127.0.0.1:${await listen(server)}`;
+  context.after(() => close(server));
+  const runtime = createBrowserRuntime({ chromePath, extensions: [path.join(folder, 'missing'), folder], allowedOrigins: [origin] });
+  context.after(() => runtime.close());
+
+  // When the browser starts and the extension's worker is up, and the page opens.
+  const page = await runtime.ensurePage();
+  await waitFor(async () => (await page.cdp.send('Target.getTargets')).targetInfos
+    .some((info) => info.type === 'service_worker' && info.url.endsWith('/background.js')));
+  await runtime.perform('browser.open', { url: `${origin}/` });
+  const ran = await page.cdp.sendSession(page.sessionId, 'Runtime.evaluate', { expression: 'window.scriptRan === true', returnByValue: true });
+
+  // Then the page loaded but its script was blocked before it reached the server.
+  assert.equal(runtime.url, `${origin}/`);
+  assert.equal(ran.result.value, false);
+  assert.deepEqual(requested.filter((url) => url !== '/favicon.ico'), ['/']);
 });
 
 test('presents itself as regular Chrome, which Google sign-in requires', { skip: chromePath ? false : 'Chrome is unavailable' }, async (context) => {

@@ -5,7 +5,7 @@ import { networkGrants, originGrants, parseConfig } from '../src/config.js';
 test('defaults to no private origin grants', () => {
   const config = parseConfig({});
 
-  assert.deepEqual(config, { chromePath: null, allowedOrigins: [], allowedNetworks: [], discoverDevServers: false });
+  assert.deepEqual(config, { chromePath: null, allowedOrigins: [], allowedNetworks: [], discoverDevServers: false, extensions: [] });
   assert.deepEqual(originGrants(config.allowedOrigins), []);
 });
 
@@ -58,4 +58,13 @@ test('rejects network blocks that are public, too broad, or missing explicit por
 test('turns development-server discovery on only with an explicit boolean', () => {
   assert.equal(parseConfig({ discoverDevServers: true }).discoverDevServers, true);
   assert.throws(() => parseConfig({ discoverDevServers: 'yes' }), /discoverDevServers must be true or false/);
+});
+
+test('reads extension folders as a list of paths, leaving the folders themselves to the launch', () => {
+  assert.deepEqual(parseConfig({ extensions: [' /opt/ubol ', 'relative/one'] }).extensions, ['/opt/ubol', 'relative/one']);
+  // A bad entry is kept for the launch to log and skip, so it cannot stop the service.
+  assert.deepEqual(parseConfig({ extensions: ['/opt/ubol', null, ' ', 3] }).extensions, ['/opt/ubol', null, '', 3]);
+  for (const extensions of ['/opt/ubol', {}]) {
+    assert.throws(() => parseConfig({ extensions }), /config\.extensions must be an array of extension folder paths/);
+  }
 });

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
-import { windowsChromeMajor } from '../src/chrome-process.js';
+import { extensionSetup, ignoresExtensionFlags, windowsChromeMajor } from '../src/chrome-process.js';
 
 // A VS_VERSIONINFO resource as chrome.exe carries it: lengths and type, the key,
 // padding to a 32-bit boundary, then VS_FIXEDFILEINFO.
@@ -28,4 +31,80 @@ test('reads Chrome\'s major version from a Windows executable', () => {
   assert.equal(windowsChromeMajor(image), 156);
   assert.equal(windowsChromeMajor(Buffer.alloc(256)), null);
   assert.equal(windowsChromeMajor(versionResource(156, 0, 8078, 73).subarray(0, 50)), null);
+});
+
+test('loads usable extension folders and allows them in the pages\' incognito contexts', (context) => {
+  // Given two extension folders, and entries that cannot be loaded.
+  // Chrome is given resolved paths, and macOS's temporary folder is behind a symlink.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'server-browser-extensions-')));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const folder = (name, manifest) => {
+    const directory = path.join(root, name);
+    fs.mkdirSync(directory);
+    if (manifest !== undefined) fs.writeFileSync(path.join(directory, 'manifest.json'), manifest);
+    return directory;
+  };
+  const first = folder('first', '{"manifest_version":3,"name":"First","version":"1"}');
+  const second = folder('second', '{"manifest_version":3,"name":"Second","version":"1"}');
+  const empty = folder('empty');
+  // Chromium accepts comments in a manifest; JSON.parse does not.
+  const commented = folder('commented', '{ // a comment\n"manifest_version":3,"name":"Commented","version":"1"}');
+  // An array is valid JSON but not a manifest object.
+  const array = folder('array', '[]');
+  const comma = folder('a,b', '{}');
+  const file = path.join(root, 'manifest-file.json');
+  fs.writeFileSync(file, '{}');
+  const logged = [];
+  const log = (message) => logged.push(message);
+
+  // When none is configured, then Chrome gets no extension flags.
+  assert.deepEqual(extensionSetup([], log), { args: [], preferences: null });
+
+  // When one is configured, then Chrome loads only it and its id is allowed in incognito.
+  const one = extensionSetup([first], log);
+  assert.deepEqual(one.args, [`--disable-extensions-except=${first}`, `--load-extension=${first}`]);
+  const [id] = Object.keys(one.preferences.extensions.settings);
+  assert.match(id, /^[a-p]{32}$/);
+  assert.deepEqual(one.preferences.extensions.settings[id], { incognito: true });
+
+  // When several are configured among unusable entries, then each unusable one is logged and the rest still load;
+  // a manifest the service cannot parse still loads, without the incognito grant.
+  const many = extensionSetup([null, '', 'relative/ext', path.join(root, 'missing'), file, empty, commented, array, comma, first, second], log);
+  assert.deepEqual(many.args, [`--disable-extensions-except=${commented},${array},${first},${second}`, `--load-extension=${commented},${array},${first},${second}`]);
+  assert.equal(Object.keys(many.preferences.extensions.settings).length, 2);
+  assert.deepEqual(logged, [
+    'Skipping extension null from config.extensions: it is not an absolute path.',
+    'Skipping extension "" from config.extensions: it is not an absolute path.',
+    'Skipping extension relative/ext from config.extensions: it is not an absolute path.',
+    `Skipping extension ${path.join(root, 'missing')} from config.extensions: it does not exist.`,
+    `Skipping extension ${file} from config.extensions: it is not a folder.`,
+    `Skipping extension ${empty} from config.extensions: it has no manifest.json.`,
+    `Loading extension ${commented} from config.extensions without allowing it in chat pages: the service cannot read its manifest.json as a JSON object.`,
+    `Loading extension ${array} from config.extensions without allowing it in chat pages: the service cannot read its manifest.json as a JSON object.`,
+    `Skipping extension ${comma} from config.extensions: Chrome cannot load a path that contains a comma.`,
+  ]);
+
+  // When only unusable entries are configured, then Chrome starts without extension flags.
+  assert.deepEqual(extensionSetup([empty], () => {}), { args: [], preferences: null });
+});
+
+test('names an extension with a manifest key as Chromium does, with or without PEM armor', (context) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'server-browser-extensions-')));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const idFor = (name, key) => {
+    const directory = path.join(root, name);
+    fs.mkdirSync(directory);
+    fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify({ manifest_version: 3, name, version: '1', key }));
+    return Object.keys(extensionSetup([directory], assert.fail).preferences.extensions.settings);
+  };
+  // Chromium 156 installed the PEM-armored manifest under this id.
+  assert.deepEqual(idFor('armored', '-----BEGIN PUBLIC KEY-----\nAQIDBAUG\n-----END PUBLIC KEY-----'), ['hbjcdifmdmagafnofflljehgmobnjahe']);
+  assert.deepEqual(idFor('bare', 'AQIDBAUG'), ['hbjcdifmdmagafnofflljehgmobnjahe']);
+});
+
+test('tells branded Google Chrome, which ignores extension flags, from builds that honor them', () => {
+  assert.equal(ignoresExtensionFlags('Google Chrome 156.0.8078.73 \n'), true);
+  assert.equal(ignoresExtensionFlags('Google Chrome 136.0.7103.113'), false);
+  assert.equal(ignoresExtensionFlags('Google Chrome for Testing 156.0.8078.4 '), false);
+  assert.equal(ignoresExtensionFlags('Chromium 156.0.8078.4 snap'), false);
 });

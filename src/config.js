@@ -66,12 +66,17 @@ export const parseConfig = (value) => {
   if (value.discoverDevServers !== undefined && typeof value.discoverDevServers !== 'boolean') {
     throw new Error('config.discoverDevServers must be true or false');
   }
+  // A bad entry is logged and skipped at each launch, so one mistake does not stop the service.
+  if (value.extensions !== undefined && !Array.isArray(value.extensions)) {
+    throw new Error('config.extensions must be an array of extension folder paths');
+  }
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
   return Object.freeze({
     chromePath: chromePath?.trim() ?? null,
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
     allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),
     discoverDevServers: value.discoverDevServers === true,
+    extensions: Object.freeze((value.extensions ?? []).map((entry) => (typeof entry === 'string' ? entry.trim() : entry))),
   });
 };
 
