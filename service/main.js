@@ -5738,17 +5738,53 @@ var chromeMajorVersion = async (binary) => {
   const { stdout } = await promisify(execFile)(binary, ["--version"], { timeout: 5e3 });
   return Number.parseInt(stdout.match(/(\d+)\.\d+\.\d+\.\d+/)?.[1] ?? "", 10);
 };
+var userAgentString = (platform, major) => `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 var userAgentArgs = async (binary) => {
   const platform = USER_AGENT_PLATFORMS[process.platform];
   if (!platform) return [];
   try {
     const major = await chromeMajorVersion(binary);
     if (!(major >= MINIMUM_CHROME_MAJOR_VERSION)) return [];
-    return [`--user-agent=Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`];
+    return [`--user-agent=${userAgentString(platform, major)}`];
   } catch {
     return [];
   }
 };
+var CLIENT_HINT_PLATFORMS = Object.freeze({ darwin: "macOS", linux: "Linux", win32: "Windows" });
+var CLIENT_HINT_ARCHITECTURES = Object.freeze({
+  arm64: { architecture: "arm", bitness: "64" },
+  ia32: { architecture: "x86", bitness: "32" },
+  x64: { architecture: "x86", bitness: "64" }
+});
+var userAgentOverride = ({ product, branded = false, platform = process.platform, arch = process.arch }) => {
+  const userAgentPlatform = USER_AGENT_PLATFORMS[platform];
+  const hintPlatform = CLIENT_HINT_PLATFORMS[platform];
+  const fullVersion = String(product ?? "").match(/\/(\d+(?:\.\d+){3})$/)?.[1];
+  if (!userAgentPlatform || !hintPlatform || !fullVersion) return null;
+  const major = fullVersion.split(".")[0];
+  if (!(Number(major) >= MINIMUM_CHROME_MAJOR_VERSION)) return null;
+  const names = ["Chromium", ...branded ? ["Google Chrome"] : []];
+  const { architecture = "", bitness = "" } = CLIENT_HINT_ARCHITECTURES[arch] ?? {};
+  return {
+    userAgent: userAgentString(userAgentPlatform, major),
+    userAgentMetadata: {
+      brands: [{ brand: "Not-A.Brand", version: "99" }, ...names.map((brand) => ({ brand, version: major }))],
+      fullVersionList: [
+        { brand: "Not-A.Brand", version: "99.0.0.0" },
+        ...names.map((brand) => ({ brand, version: fullVersion }))
+      ],
+      fullVersion,
+      platform: hintPlatform,
+      platformVersion: "",
+      architecture,
+      bitness,
+      model: "",
+      mobile: false,
+      wow64: false
+    }
+  };
+};
+var isBrandedChrome = (binary) => /google[\\/ -]?chrome/i.test(binary);
 var probeVersion = async (endpoint) => {
   const cdp = await connectCdp(endpoint, { commandTimeoutMs: 5e3 });
   try {
@@ -5846,7 +5882,8 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
     if (!endpoint) throw new Error("Timed out waiting for Chrome DevTools readiness");
     const version = await probeVersion(endpoint);
     if (closed) throw new Error("Chrome launch was cancelled");
-    result = { endpoint, version, process: child, profileDir };
+    const override = userAgent.length ? userAgentOverride({ product: version.product, branded: isBrandedChrome(binary) }) : null;
+    result = { endpoint, version, userAgentOverride: override, process: child, profileDir };
     return result;
   };
   return {
@@ -7427,6 +7464,7 @@ var createBrowserRuntime = ({
   let nativeSelectEnabled = false;
   let cdp = null;
   let contextId = null;
+  let tabUserAgent = null;
   let devtools = null;
   let eventCleanup = null;
   let startupPromise = null;
@@ -7616,7 +7654,8 @@ var createBrowserRuntime = ({
         cdp.sendSession(sessionId, "Page.enable"),
         cdp.sendSession(sessionId, "Runtime.enable"),
         cdp.sendSession(sessionId, "Log.enable"),
-        cdp.sendSession(sessionId, "Runtime.addBinding", { name: MENU_BINDING, executionContextName: MENU_WORLD })
+        cdp.sendSession(sessionId, "Runtime.addBinding", { name: MENU_BINDING, executionContextName: MENU_WORLD }),
+        ...tabUserAgent ? [cdp.sendSession(sessionId, "Emulation.setUserAgentOverride", tabUserAgent)] : []
       ]);
       await applyViewport(cdp, sessionId, runtime.viewport);
       if (nativeSelectEnabled) await current.compatibility.setEnabled(true).catch(() => {
@@ -7715,6 +7754,7 @@ var createBrowserRuntime = ({
       if (closed) throw new Error("Browser runtime is closed");
       cdp = nextCdp;
       contextId = nextContextId;
+      tabUserAgent = processInfo.userAgentOverride ?? null;
       devtools = createDevTools({
         cdp,
         endpoint: processInfo.endpoint,

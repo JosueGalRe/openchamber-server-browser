@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { windowsChromeMajor } from '../src/chrome-process.js';
+import { userAgentOverride, windowsChromeMajor } from '../src/chrome-process.js';
 
 // A VS_VERSIONINFO resource as chrome.exe carries it: lengths and type, the key,
 // padding to a 32-bit boundary, then VS_FIXEDFILEINFO.
@@ -28,4 +28,33 @@ test('reads Chrome\'s major version from a Windows executable', () => {
   assert.equal(windowsChromeMajor(image), 156);
   assert.equal(windowsChromeMajor(Buffer.alloc(256)), null);
   assert.equal(windowsChromeMajor(versionResource(156, 0, 8078, 73).subarray(0, 50)), null);
+});
+
+test('fills the client hints that --user-agent leaves empty', () => {
+  // Given headless Chrome 157.0.8103.52 from the Google Chrome install on 64-bit Windows.
+  const override = userAgentOverride({ product: 'HeadlessChrome/157.0.8103.52', branded: true, platform: 'win32', arch: 'x64' });
+
+  // Then the tab override repeats the launch User-Agent and carries the full version.
+  assert.equal(override.userAgent,
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36');
+  const metadata = override.userAgentMetadata;
+  assert.equal(metadata.fullVersion, '157.0.8103.52');
+  assert.deepEqual(metadata.brands.map(({ brand }) => brand), ['Not-A.Brand', 'Chromium', 'Google Chrome']);
+  assert.deepEqual(metadata.fullVersionList.at(-1), { brand: 'Google Chrome', version: '157.0.8103.52' });
+  assert.equal(metadata.platform, 'Windows');
+  assert.equal(metadata.architecture, 'x86');
+  assert.equal(metadata.bitness, '64');
+  assert.equal(metadata.mobile, false);
+  assert.ok(!JSON.stringify(override).includes('Headless'));
+});
+
+test('names no Google Chrome brand for Chromium, and gives up on what it cannot read', () => {
+  const chromium = userAgentOverride({ product: 'HeadlessChrome/157.0.8103.52', platform: 'linux', arch: 'arm64' });
+  assert.deepEqual(chromium.userAgentMetadata.brands.map(({ brand }) => brand), ['Not-A.Brand', 'Chromium']);
+  assert.equal(chromium.userAgentMetadata.platform, 'Linux');
+  assert.equal(chromium.userAgentMetadata.architecture, 'arm');
+
+  assert.equal(userAgentOverride({ product: 'HeadlessChrome/157.0.8103.52', platform: 'freebsd' }), null);
+  assert.equal(userAgentOverride({ product: 'HeadlessChrome/108.0.5359.71', platform: 'win32' }), null);
+  assert.equal(userAgentOverride({ product: 'HeadlessChrome', platform: 'win32' }), null);
 });

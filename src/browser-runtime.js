@@ -65,6 +65,7 @@ export const createBrowserRuntime = ({
   let nativeSelectEnabled = false;
   let cdp = null;
   let contextId = null;
+  let tabUserAgent = null;
   let devtools = null;
   let eventCleanup = null;
   let startupPromise = null;
@@ -275,6 +276,7 @@ export const createBrowserRuntime = ({
         cdp.sendSession(sessionId, 'Runtime.enable'),
         cdp.sendSession(sessionId, 'Log.enable'),
         cdp.sendSession(sessionId, 'Runtime.addBinding', { name: MENU_BINDING, executionContextName: MENU_WORLD }),
+        ...(tabUserAgent ? [cdp.sendSession(sessionId, 'Emulation.setUserAgentOverride', tabUserAgent)] : []),
       ]);
       await applyViewport(cdp, sessionId, runtime.viewport);
       if (nativeSelectEnabled) await current.compatibility.setEnabled(true).catch(() => {});
@@ -379,6 +381,7 @@ export const createBrowserRuntime = ({
       if (closed) throw new Error('Browser runtime is closed');
       cdp = nextCdp;
       contextId = nextContextId;
+      tabUserAgent = processInfo.userAgentOverride ?? null;
       devtools = createDevTools({
         cdp,
         endpoint: processInfo.endpoint,
