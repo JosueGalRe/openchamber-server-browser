@@ -81,6 +81,9 @@ const chromeMajorVersion = async (binary) => {
   return Number.parseInt(stdout.match(/(\d+)\.\d+\.\d+\.\d+/)?.[1] ?? '', 10);
 };
 
+const userAgentString = (platform, major) =>
+  `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+
 const userAgentArgs = async (binary) => {
   const platform = USER_AGENT_PLATFORMS[process.platform];
   if (!platform) return [];
@@ -88,11 +91,55 @@ const userAgentArgs = async (binary) => {
     const major = await chromeMajorVersion(binary);
     // Also rejects a launcher shim's own version standing in for Chrome's.
     if (!(major >= MINIMUM_CHROME_MAJOR_VERSION)) return [];
-    return [`--user-agent=Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`];
+    return [`--user-agent=${userAgentString(platform, major)}`];
   } catch {
     return [];
   }
 };
+
+const CLIENT_HINT_PLATFORMS = Object.freeze({ darwin: 'macOS', linux: 'Linux', win32: 'Windows' });
+const CLIENT_HINT_ARCHITECTURES = Object.freeze({
+  arm64: { architecture: 'arm', bitness: '64' },
+  ia32: { architecture: 'x86', bitness: '32' },
+  x64: { architecture: 'x86', bitness: '64' },
+});
+
+// With --user-agent, Chrome sends the high-entropy client hints empty, so a site that asks
+// for them (Accept-CH) reads, for example, an empty Sec-CH-UA-Full-Version. SAP Web Dynpro
+// then takes the browser version as 0.0 and refuses the browser. Each tab therefore gets
+// the same User-Agent through Emulation.setUserAgentOverride, with the metadata filled in
+// from the version Chrome reports. The platform version stays empty: Chrome derives it from
+// OS internals that the service cannot read the same way.
+export const userAgentOverride = ({ product, branded = false, platform = process.platform, arch = process.arch }) => {
+  const userAgentPlatform = USER_AGENT_PLATFORMS[platform];
+  const hintPlatform = CLIENT_HINT_PLATFORMS[platform];
+  const fullVersion = String(product ?? '').match(/\/(\d+(?:\.\d+){3})$/)?.[1];
+  if (!userAgentPlatform || !hintPlatform || !fullVersion) return null;
+  const major = fullVersion.split('.')[0];
+  if (!(Number(major) >= MINIMUM_CHROME_MAJOR_VERSION)) return null;
+  const names = ['Chromium', ...(branded ? ['Google Chrome'] : [])];
+  const { architecture = '', bitness = '' } = CLIENT_HINT_ARCHITECTURES[arch] ?? {};
+  return {
+    userAgent: userAgentString(userAgentPlatform, major),
+    userAgentMetadata: {
+      brands: [{ brand: 'Not-A.Brand', version: '99' }, ...names.map((brand) => ({ brand, version: major }))],
+      fullVersionList: [
+        { brand: 'Not-A.Brand', version: '99.0.0.0' },
+        ...names.map((brand) => ({ brand, version: fullVersion })),
+      ],
+      fullVersion,
+      platform: hintPlatform,
+      platformVersion: '',
+      architecture,
+      bitness,
+      model: '',
+      mobile: false,
+      wow64: false,
+    },
+  };
+};
+
+const isBrandedChrome = (binary) => /google[\\/ -]?chrome/i.test(binary);
 
 const probeVersion = async (endpoint) => {
   const cdp = await connectCdp(endpoint, { commandTimeoutMs: 5_000 });
@@ -188,7 +235,8 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
     if (!endpoint) throw new Error('Timed out waiting for Chrome DevTools readiness');
     const version = await probeVersion(endpoint);
     if (closed) throw new Error('Chrome launch was cancelled');
-    result = { endpoint, version, process: child, profileDir };
+    const override = userAgent.length ? userAgentOverride({ product: version.product, branded: isBrandedChrome(binary) }) : null;
+    result = { endpoint, version, userAgentOverride: override, process: child, profileDir };
     return result;
   };
 

@@ -46,7 +46,7 @@ Discovery trusts process ownership, not intent. With it on, any page the agent o
 
 Chrome runs headless but presents itself as regular Chrome, because Google refuses sign-in from a browser that says it is automated.
 
-- **User-Agent.** It names `Chrome` instead of `HeadlessChrome`, with the major version that `chrome --version` reports. On Windows the version comes from `chrome.exe`'s version resource. If neither gives a version, Chrome keeps its `HeadlessChrome` User-Agent.
+- **User-Agent.** It names `Chrome` instead of `HeadlessChrome`, with the major version that `chrome --version` reports. On Windows the version comes from `chrome.exe`'s version resource. If neither gives a version, Chrome keeps its `HeadlessChrome` User-Agent. Each tab also gets the same User-Agent with its client hints (brands, full version, platform, architecture), because the flag alone makes Chrome send the high-entropy hints empty. The platform version stays empty.
 - **Automation flag.** `navigator.webdriver` is false.
 - **Pixel ratio.** While a viewer is attached, pages see the viewer's `devicePixelRatio`, as on that viewer's own display.
 
