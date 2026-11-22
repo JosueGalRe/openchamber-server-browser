@@ -66,6 +66,29 @@ A blocked plain-HTTP address opens a page that:
 
 HTTPS navigations to a blocked address end in Chrome's own `ERR_TUNNEL_CONNECTION_FAILED`.
 
+## HTTP authentication
+
+Headless Chrome shows no sign-in dialog, so a site that asks for HTTP authentication (Basic, Digest, NTLM) shows only its refusal page. The service answers the challenge itself when it has a username and password for the site's origin. It gets them in two ways.
+
+**From `config.json`**, for a site the browser should always sign in to:
+
+```json
+{
+  "basicAuth": [
+    { "origin": "https://intranet.example:8443", "username": "ada", "passwordFile": "/home/ada/.secrets/intranet" }
+  ]
+}
+```
+
+- `origin` is an http(s) origin without a path. `passwordFile` is an absolute path. The service reads the file at each challenge, so a changed password needs no restart. One trailing line break is dropped.
+- OpenChamber starts the service without the host's environment variables, so a password comes from a file, not from a variable.
+
+**From the user, through the agent.** When a page asks and the service has nothing for the origin, the agent finds a notice in `consoleProblems` of `browser.open` and `browser.snapshot`. The notice names a one-time address on the service and the command that hands credentials over: `node <extension>/service/main.js basic-auth <address>`, reading `SERVER_BROWSER_USERNAME` and `SERVER_BROWSER_PASSWORD`. The agent runs it with OpenChamber's `openchamber_secret` tool (`secret.run`), so the user types the password on a private card and the agent never sees it. The agent then opens the page again.
+
+- Credentials the user hands over stay in the service's memory for every chat's browser until the service stops. OpenChamber stops it after ten minutes without an action; the card can remember the fields, so asking again takes one click.
+- When the site refuses them, the service forgets them and the notice says so.
+- The one-time address works once, for 15 minutes, and only for the origin that asked.
+
 ## Chrome
 
 The service looks for Chrome or Chromium 109 or newer in standard locations. If it finds none, or picks the wrong one, set the path:

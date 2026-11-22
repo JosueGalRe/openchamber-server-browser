@@ -8,6 +8,7 @@ The service uses OpenChamber's authenticated loopback protocol.
 
 - **It runs as the host user.** The host's service approval and declared executable names describe intent; they are not an operating-system sandbox.
 - **Egress policy.** Every scope's browser traffic goes through the service's egress policy (see [Configuration](configuration.md)).
+- **HTTP authentication.** Credentials from `config.json` or handed over by the user stay in the service's memory and go only to the origin they were given for, as Chrome's answer to that origin's challenge. No route reads them back. The route that takes them, `POST /basic-auth/<id>`, is the one route without the bearer: its id is 256 random bits, works once, expires after 15 minutes, and a request that carries `Origin`, as every browser POST does, is refused there. A server's realm text reaches the agent only as a short label with quotes and line breaks removed.
 - **Local-origin grants** belong to the installation, not to a project or chat. They apply until configuration changes and the service restarts.
 
 ## Scopes and viewers

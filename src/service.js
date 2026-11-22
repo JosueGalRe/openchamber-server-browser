@@ -25,6 +25,7 @@ import {
   readSurfaceInputBatch,
   readSurfaceResizeRequest,
 } from '@openchamber/sdk';
+import { BASIC_AUTH_PATH_PREFIX } from './basic-auth.js';
 import { readMenuTheme } from './context-menu.js';
 import { InspectorError } from './inspector.js';
 import { createStatusSection } from './status-section.js';
@@ -197,7 +198,7 @@ const handleInspector = async (runtime, operation, request, url) => {
   return runtime.inspectorRequest(captureId, entryId, body.includeBody);
 };
 
-export const createService = ({ runtime, token, port = 0 }) => {
+export const createService = ({ runtime, token, port = 0, basicAuth = null }) => {
   if (!runtime?.perform || !runtime?.close) throw new Error('createService requires a browser runtime');
   if (typeof token !== 'string' || token.length === 0) throw new Error('createService requires a bearer token');
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new Error('Service port must be from 0 to 65535');
@@ -207,8 +208,18 @@ export const createService = ({ runtime, token, port = 0 }) => {
   let closePromise = null;
 
   const handle = async (request, response, signal) => {
-    if (!authorized(request, token)) return text(response, 401, 'Unauthorized\n');
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    // The one route without the bearer: the basic-auth command that secret.run
+    // starts has only the one-time address. A page cannot call it, since a
+    // browser always sends Origin on a POST.
+    if (basicAuth && request.method === 'POST' && url.pathname.startsWith(BASIC_AUTH_PATH_PREFIX)
+      && request.headers.origin === undefined) {
+      const id = url.pathname.slice(BASIC_AUTH_PATH_PREFIX.length);
+      const small = Number(request.headers['content-length']) <= 8_192;
+      const origin = small && /^[\w-]{43}$/.test(id) ? basicAuth.accept(id, await readObjectBody(request)) : null;
+      return origin ? json(response, 200, { ok: true, origin }) : text(response, 404, 'Not found\n');
+    }
+    if (!authorized(request, token)) return text(response, 401, 'Unauthorized\n');
 
     if (request.method === 'GET' && url.pathname === '/health') return json(response, 200, { ok: true });
 
