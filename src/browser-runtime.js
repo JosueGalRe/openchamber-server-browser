@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { GUEST_CLIPBOARD_TEXT_MAX } from '@openchamber/sdk';
+import { authNoticeText, safeRealm } from './basic-auth.js';
 import { createBrowserActions } from './browser-actions.js';
 import { connectCdp } from './cdp-client.js';
 import { createChromeProcess } from './chrome-process.js';
@@ -29,6 +30,10 @@ const createTab = (targetId, sessionId, openerId) => ({
   navigationStale: false,
   navigationTimer: null,
   problems: [],
+  // A sign-in the page asked for and the service could not give, for the agent.
+  authNotice: null,
+  // Requests that got stored credentials; a second challenge means they were refused.
+  authAnswered: new Set(),
   compatibility: null,
   lastActive: 0,
 });
@@ -43,6 +48,8 @@ export const createBrowserRuntime = ({
   allowedNetworks = [],
   configPath = null,
   devServers = null,
+  basicAuth = null,
+  authCommand = null,
 } = {}) => {
   const chrome = createChromeProcess({ chromePath });
   const proxy = createPolicyProxy({
@@ -97,6 +104,10 @@ export const createBrowserRuntime = ({
   chrome.onExit(markDead);
 
   const activeTab = () => tabs.get(activeTargetId) ?? null;
+  // The sign-in notice leads, and survives the navigation to the refusal page.
+  const problemsOf = (current) => (current
+    ? [...(current.authNotice ? [{ level: 'error', message: current.authNotice.message, source: 'http-auth' }] : []), ...current.problems]
+    : []);
 
   const runtime = {
     get viewport() {
@@ -154,14 +165,14 @@ export const createBrowserRuntime = ({
       return { id: copyRequest.id, text: copyRequest.text };
     },
     get problemCounts() {
-      const problems = activeTab()?.problems ?? [];
+      const problems = problemsOf(activeTab());
       return {
         errors: problems.filter((problem) => problem.level === 'error').length,
         warnings: problems.filter((problem) => problem.level === 'warning').length,
       };
     },
     consoleProblems(targetId = activeTargetId) {
-      return (tabs.get(targetId)?.problems ?? []).map((problem) => ({ ...problem }));
+      return problemsOf(tabs.get(targetId)).map((problem) => ({ ...problem }));
     },
     clearConsoleProblems(targetId = activeTargetId) {
       const current = tabs.get(targetId);
@@ -275,6 +286,12 @@ export const createBrowserRuntime = ({
         cdp.sendSession(sessionId, 'Runtime.enable'),
         cdp.sendSession(sessionId, 'Log.enable'),
         cdp.sendSession(sessionId, 'Runtime.addBinding', { name: MENU_BINDING, executionContextName: MENU_WORLD }),
+        // Chrome raises sign-in challenges only for requests it pauses. Pausing
+        // documents is enough: the page's other requests reuse the sign-in.
+        ...(basicAuth ? [cdp.sendSession(sessionId, 'Fetch.enable', {
+          handleAuthRequests: true,
+          patterns: [{ urlPattern: '*', resourceType: 'Document' }],
+        })] : []),
       ]);
       await applyViewport(cdp, sessionId, runtime.viewport);
       if (nativeSelectEnabled) await current.compatibility.setEnabled(true).catch(() => {});
@@ -314,6 +331,42 @@ export const createBrowserRuntime = ({
     }
   };
 
+  // Stored credentials answer the challenge once per request. Without them, or
+  // when the server refuses them, Chrome shows the server's refusal page and
+  // the agent reads how to get the user's credentials.
+  const answerAuth = (current, params) => {
+    const respond = (authChallengeResponse) => cdp.sendSession(current.sessionId, 'Fetch.continueWithAuth', {
+      requestId: params.requestId,
+      authChallengeResponse,
+    }).catch(() => {});
+    const challenge = params.authChallenge ?? {};
+    if (challenge.source !== 'Server' || !basicAuth) return void respond({ response: 'CancelAuth' });
+    const origin = challenge.origin;
+    const rejected = current.authAnswered.has(params.requestId);
+    if (rejected) basicAuth.reject(origin);
+    const credentials = rejected ? null : basicAuth.lookup(origin);
+    if (credentials) {
+      if (current.authAnswered.size > 100) current.authAnswered.clear();
+      current.authAnswered.add(params.requestId);
+      current.authNotice = null;
+      return void respond({ response: 'ProvideCredentials', username: credentials.username, password: credentials.password });
+    }
+    current.authAnswered.delete(params.requestId);
+    const intake = basicAuth.challenge(origin);
+    current.authNotice = {
+      origin,
+      message: authNoticeText({
+        origin,
+        realm: safeRealm(challenge.realm),
+        intakeUrl: intake?.url ?? null,
+        nodePath: authCommand?.nodePath ?? 'node',
+        entryPath: authCommand?.entryPath ?? 'service/main.js',
+        rejected,
+      }),
+    };
+    void respond({ response: 'CancelAuth' });
+  };
+
   const handleEvent = (event) => {
     if (!event.sessionId) {
       handleTargetEvent(event);
@@ -321,6 +374,14 @@ export const createBrowserRuntime = ({
     }
     const current = sessions.get(event.sessionId);
     if (!current) return;
+    if (event.method === 'Fetch.requestPaused') {
+      void cdp.sendSession(current.sessionId, 'Fetch.continueRequest', { requestId: event.params.requestId }).catch(() => {});
+      return;
+    }
+    if (event.method === 'Fetch.authRequired') {
+      answerAuth(current, event.params);
+      return;
+    }
     inspector.event(current.sessionId, event.method, event.params);
     if (event.method === 'Page.frameNavigated' && event.params.frame?.id) {
       if (!event.params.frame.parentId) {
@@ -329,6 +390,9 @@ export const createBrowserRuntime = ({
         current.problems.length = 0;
         contextMenu.forget(current.sessionId);
         current.url = event.params.frame.url;
+        let origin = null;
+        try { origin = new URL(current.url).origin; } catch {}
+        if (current.authNotice && current.authNotice.origin !== origin) current.authNotice = null;
         void refreshNavigation(current);
       }
       current.compatibility.frameNavigated(event.params.frame.id);

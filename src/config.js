@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseBasicAuthEntry } from './basic-auth.js';
 import { isPrivateAddress } from './policy-proxy.js';
 
 const HTTP_PROTOCOLS = new Set(['http:', 'https:']);
@@ -67,7 +68,11 @@ export const parseConfig = (value) => {
     throw new Error('config.discoverDevServers must be true or false');
   }
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
+  if (value.basicAuth !== undefined && !Array.isArray(value.basicAuth)) {
+    throw new Error('config.basicAuth must be an array');
+  }
   return Object.freeze({
+    basicAuth: Object.freeze((value.basicAuth ?? []).map(parseBasicAuthEntry)),
     chromePath: chromePath?.trim() ?? null,
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
     allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),

@@ -3640,11 +3640,152 @@ var require_websocket_server = __commonJS({
 });
 
 // src/main.js
-import path3 from "node:path";
+import path4 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
-// src/inspector.js
+// src/basic-auth.js
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+var BASIC_AUTH_PATH_PREFIX = "/basic-auth/";
+var BASIC_AUTH_USERNAME_ENV = "SERVER_BROWSER_USERNAME";
+var BASIC_AUTH_PASSWORD_ENV = "SERVER_BROWSER_PASSWORD";
+var CHALLENGE_TTL_MS = 15 * 6e4;
+var MAX_CHALLENGES = 32;
+var FIELD_MAX = 1024;
+var HTTP_PROTOCOLS = /* @__PURE__ */ new Set(["http:", "https:"]);
+var parseBasicAuthEntry = (value, index) => {
+  const label = `config.basicAuth[${index}]`;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object with origin, username and passwordFile`);
+  }
+  let url;
+  try {
+    url = new URL(value.origin);
+  } catch {
+    throw new Error(`${label}.origin is not a valid URL origin`);
+  }
+  if (!HTTP_PROTOCOLS.has(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error(`${label}.origin must be an http(s) origin without credentials, path, query, or hash`);
+  }
+  if (typeof value.username !== "string" || value.username.length === 0 || value.username.length > FIELD_MAX) {
+    throw new Error(`${label}.username must be a non-empty string`);
+  }
+  if (typeof value.passwordFile !== "string" || !path.isAbsolute(value.passwordFile)) {
+    throw new Error(`${label}.passwordFile must be an absolute path`);
+  }
+  return Object.freeze({ origin: url.origin, username: value.username, passwordFile: value.passwordFile });
+};
+var originOf = (value) => {
+  try {
+    const url = new URL(value);
+    return HTTP_PROTOCOLS.has(url.protocol) ? url.origin : null;
+  } catch {
+    return null;
+  }
+};
+var safeRealm = (value) => String(value ?? "").replace(/[^\p{L}\p{N} ._:@/-]/gu, "").trim().slice(0, 80);
+var readPasswordFile = (file) => {
+  try {
+    return fs.readFileSync(file, "utf8").replace(/\r?\n$/, "");
+  } catch {
+    return null;
+  }
+};
+var createBasicAuthStore = ({ entries = [], now = () => Date.now() } = {}) => {
+  const given = /* @__PURE__ */ new Map();
+  const challenges = /* @__PURE__ */ new Map();
+  let intakeBase = null;
+  const prune = () => {
+    const time = now();
+    for (const [id, challenge] of challenges) if (challenge.expires <= time) challenges.delete(id);
+  };
+  return {
+    // The service's own loopback address, once it listens.
+    setIntakeBase(base) {
+      intakeBase = base;
+    },
+    lookup(origin) {
+      const key = originOf(origin);
+      if (!key) return null;
+      const handed = given.get(key);
+      if (handed) return { ...handed, from: "user" };
+      const entry = entries.find((candidate) => candidate.origin === key);
+      if (!entry) return null;
+      const password = readPasswordFile(entry.passwordFile);
+      return password === null ? null : { username: entry.username, password, from: "config" };
+    },
+    // Chrome asked again after the stored credentials, so the server refused them.
+    reject(origin) {
+      const key = originOf(origin);
+      if (key) given.delete(key);
+    },
+    // A one-time address that takes credentials for this origin. Whoever knows
+    // it can only hand credentials over, never read any.
+    challenge(origin) {
+      const key = originOf(origin);
+      if (!key || !intakeBase) return null;
+      prune();
+      for (const [id2, challenge] of challenges) {
+        if (challenge.origin === key) return { id: id2, url: `${intakeBase}${BASIC_AUTH_PATH_PREFIX}${id2}` };
+      }
+      if (challenges.size >= MAX_CHALLENGES) challenges.delete(challenges.keys().next().value);
+      const id = crypto.randomBytes(32).toString("base64url");
+      challenges.set(id, { origin: key, expires: now() + CHALLENGE_TTL_MS });
+      return { id, url: `${intakeBase}${BASIC_AUTH_PATH_PREFIX}${id}` };
+    },
+    accept(id, body) {
+      prune();
+      const challenge = challenges.get(id);
+      if (!challenge) return null;
+      const { username, password } = body ?? {};
+      if (typeof username !== "string" || typeof password !== "string") return null;
+      if (username.length === 0 || username.length > FIELD_MAX || password.length > FIELD_MAX) return null;
+      challenges.delete(id);
+      given.set(challenge.origin, { username, password });
+      return challenge.origin;
+    }
+  };
+};
+var authNoticeText = ({ origin, realm, intakeUrl, nodePath, entryPath, rejected }) => {
+  const realmText = realm ? ` (realm "${realm}")` : "";
+  const first = rejected ? `${origin}${realmText} refused the username and password the browser had.` : `${origin}${realmText} asks for a username and password (HTTP authentication), and the browser has none for it.`;
+  if (!intakeUrl) return `${first} Add it to basicAuth in the extension's config.json.`;
+  return `${first} Ask the user for them with the openchamber_secret tool, action secret.run: program ${JSON.stringify(nodePath)}, args ${JSON.stringify([entryPath, "basic-auth", intakeUrl])}, inputs with env ${BASIC_AUTH_USERNAME_ENV} and ${BASIC_AUTH_PASSWORD_ENV}. Then open the page again. Never ask for the password in the chat.`;
+};
+var runBasicAuthCommand = async (args, env = process.env) => {
+  const [intakeUrl] = args;
+  let url;
+  try {
+    url = new URL(intakeUrl);
+  } catch {
+    url = null;
+  }
+  if (!url || url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.pathname.startsWith(BASIC_AUTH_PATH_PREFIX)) {
+    console.error("Usage: basic-auth <the http://127.0.0.1 address from the browser notice>");
+    return 2;
+  }
+  const username = env[BASIC_AUTH_USERNAME_ENV];
+  const password = env[BASIC_AUTH_PASSWORD_ENV] ?? "";
+  if (!username) {
+    console.error(`${BASIC_AUTH_USERNAME_ENV} is empty`);
+    return 2;
+  }
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password })
+  }).catch((error) => ({ ok: false, status: 0, error }));
+  if (response.ok) {
+    console.log("The browser has the credentials. Open the page again.");
+    return 0;
+  }
+  console.error(response.status === 404 ? "That address expired or was used. Open the page again for a new one." : `The browser service did not answer (${response.status || response.error?.message}).`);
+  return 1;
+};
+
+// src/inspector.js
+import crypto2 from "node:crypto";
 
 // src/inspector-format.js
 var REDACTED = "[REDACTED]";
@@ -4037,7 +4178,7 @@ var createInspector = ({ send }) => {
   return {
     async start(tab) {
       if (!tab) throw new InspectorError("UNAVAILABLE");
-      const capture = createCapture({ captureId: crypto.randomUUID(), tab, startedAt: Date.now() });
+      const capture = createCapture({ captureId: crypto2.randomUUID(), tab, startedAt: Date.now() });
       capture.navigationRevision = 0;
       capture.evaluating = false;
       capture.reading = false;
@@ -4089,7 +4230,7 @@ var createInspector = ({ send }) => {
       capture.evaluating = true;
       const navigationRevision = capture.navigationRevision;
       const { sessionId } = capture.tab;
-      const objectGroup = `openchamber-inspector-${crypto.randomUUID()}`;
+      const objectGroup = `openchamber-inspector-${crypto2.randomUUID()}`;
       const release = () => {
         void send(sessionId, "Runtime.releaseObjectGroup", { objectGroup }).catch(() => {
         });
@@ -4699,7 +4840,7 @@ var createBrowserManager = ({
 };
 
 // src/browser-runtime.js
-import crypto4 from "node:crypto";
+import crypto5 from "node:crypto";
 
 // node_modules/@openchamber/sdk/dist/scrollbar-style.js
 var GUEST_SCROLLING_ATTRIBUTE = "data-oc-scrolling";
@@ -5475,7 +5616,15 @@ var createBrowserActions = (runtime) => async (action, parameters, signal) => {
     }
     const settled = await load.promise && await waitForQuiet(page2, OPEN_QUIET_MAX_MS, signal);
     const info = await readPageInfo(page2, signal);
-    return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport), tabId: page2.targetId };
+    const signIn = runtime.consoleProblems(page2.targetId).filter((problem) => problem.source === "http-auth");
+    return {
+      ...info,
+      opened: true,
+      settled,
+      viewport: viewportSummary(runtime.viewport),
+      tabId: page2.targetId,
+      ...signIn.length > 0 ? { consoleProblems: signIn } : {}
+    };
   }
   if (action === "browser.close") return { closed: true, tabId: await runtime.agentCloseTab(parameters.tabId) };
   const page = await runtime.agentPage(parameters.tabId);
@@ -5675,9 +5824,9 @@ var connectCdp = async (webSocketDebuggerUrl, {
 
 // src/chrome-process.js
 import { execFile, spawn } from "node:child_process";
-import fs from "node:fs";
+import fs2 from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import path2 from "node:path";
 import { promisify } from "node:util";
 var MINIMUM_CHROME_MAJOR_VERSION = 109;
 var SYSTEM_NAMES = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
@@ -5690,7 +5839,7 @@ var VERSION_RESOURCE_KEY = Buffer.from("VS_VERSION_INFO\0", "utf16le");
 var FIXED_FILE_INFO_SIGNATURE = 4277077181;
 var executable = (candidate) => {
   try {
-    fs.accessSync(candidate, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+    fs2.accessSync(candidate, process.platform === "win32" ? fs2.constants.F_OK : fs2.constants.X_OK);
     return true;
   } catch {
     return false;
@@ -5702,10 +5851,10 @@ var systemCandidates = () => {
   }
   if (process.platform === "win32") {
     const roots = [process.env.PROGRAMFILES, process.env["PROGRAMFILES(X86)"], process.env.LOCALAPPDATA].filter(Boolean);
-    return roots.map((root) => path.join(root, "Google", "Chrome", "Application", "chrome.exe"));
+    return roots.map((root) => path2.join(root, "Google", "Chrome", "Application", "chrome.exe"));
   }
-  const entries = String(process.env.PATH || "").split(path.delimiter).filter(Boolean);
-  return [...entries, "/usr/bin", "/usr/sbin", "/usr/local/bin", "/snap/bin"].flatMap((entry) => SYSTEM_NAMES.map((name) => path.join(entry, name)));
+  const entries = String(process.env.PATH || "").split(path2.delimiter).filter(Boolean);
+  return [...entries, "/usr/bin", "/usr/sbin", "/usr/local/bin", "/snap/bin"].flatMap((entry) => SYSTEM_NAMES.map((name) => path2.join(entry, name)));
 };
 var resolveChromePath = (configuredPath) => {
   if (configuredPath) {
@@ -5734,7 +5883,7 @@ var windowsChromeMajor = (image) => {
   return null;
 };
 var chromeMajorVersion = async (binary) => {
-  if (process.platform === "win32") return windowsChromeMajor(await fs.promises.readFile(binary));
+  if (process.platform === "win32") return windowsChromeMajor(await fs2.promises.readFile(binary));
   const { stdout } = await promisify(execFile)(binary, ["--version"], { timeout: 5e3 });
   return Number.parseInt(stdout.match(/(\d+)\.\d+\.\d+\.\d+/)?.[1] ?? "", 10);
 };
@@ -5775,7 +5924,7 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
     if (!profileDir) return;
     const directory = profileDir;
     profileDir = null;
-    await fs.promises.rm(directory, { recursive: true, force: true });
+    await fs2.promises.rm(directory, { recursive: true, force: true });
   };
   const killChild = () => {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -5796,8 +5945,8 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
   };
   const launch = async () => {
     const binary = resolveChromePath(chromePath);
-    profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "openchamber-server-browser-"));
-    await fs.promises.chmod(profileDir, 448);
+    profileDir = await fs2.promises.mkdtemp(path2.join(os.tmpdir(), "openchamber-server-browser-"));
+    await fs2.promises.chmod(profileDir, 448);
     const userAgent = await userAgentArgs(binary);
     if (closed) throw new Error("Chrome launch was cancelled");
     child = spawn(binary, [
@@ -5832,13 +5981,13 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
       else for (const listener of exitListeners) listener({ code, signal });
     });
     const deadline = Date.now() + startupTimeoutMs;
-    const activePortPath = path.join(profileDir, "DevToolsActivePort");
+    const activePortPath = path2.join(profileDir, "DevToolsActivePort");
     let endpoint = null;
     while (!endpoint && Date.now() < deadline) {
       if (closed) throw new Error("Chrome launch was cancelled");
       if (exitError) throw exitError;
       try {
-        endpoint = parseEndpoint(await fs.promises.readFile(activePortPath, "utf8"));
+        endpoint = parseEndpoint(await fs2.promises.readFile(activePortPath, "utf8"));
       } catch {
       }
       if (!endpoint) await wait(40);
@@ -5889,7 +6038,7 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
 };
 
 // src/context-menu.js
-import crypto2 from "node:crypto";
+import crypto3 from "node:crypto";
 var MENU_WORLD = "openchamber-menu";
 var MENU_BINDING = "openchamberMenu";
 var THEME_PROPERTIES = Object.freeze({
@@ -6055,7 +6204,7 @@ var createContextMenu = ({ navigationState, readSelection, onAction }) => {
       const result = (await call(page, current.contextId, settleContextMenu)).result?.value;
       if (!result || result.handled) return;
       const { canGoBack, canGoForward } = navigationState();
-      const token = crypto2.randomUUID();
+      const token = crypto3.randomUUID();
       await call(page, current.contextId, openContextMenu, {
         x: result.x,
         y: result.y,
@@ -6090,7 +6239,7 @@ var createContextMenu = ({ navigationState, readSelection, onAction }) => {
 };
 
 // src/devtools.js
-import crypto3 from "node:crypto";
+import crypto4 from "node:crypto";
 
 // src/devtools-policy.js
 var PAGE_DOMAINS = /* @__PURE__ */ new Set([
@@ -6440,7 +6589,7 @@ var createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId, onCopy }) =
     },
     async open(targetId, { size, colorScheme = null }) {
       await close();
-      const current = { targetId, token: crypto3.randomBytes(32).toString("hex"), created: null, frontendTargetId: null, page: null, link: null };
+      const current = { targetId, token: crypto4.randomBytes(32).toString("hex"), created: null, frontendTargetId: null, page: null, link: null };
       session = current;
       const stillOpening = () => {
         if (session !== current) throw new Error("DevTools closed while opening");
@@ -6507,9 +6656,9 @@ var createDevTools = ({ cdp, endpoint, proxyAddress, scopeContextId, onCopy }) =
 };
 
 // src/config.js
-import fs2 from "node:fs";
+import fs3 from "node:fs";
 import net2 from "node:net";
-import path2 from "node:path";
+import path3 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/policy-proxy.js
@@ -6634,7 +6783,7 @@ var classifyProxyTarget = async (target, { grants = [], devServerGrants: devServ
   };
 };
 var escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
-var originOf = (target) => {
+var originOf2 = (target) => {
   try {
     const { origin } = new URL(target);
     return origin === "null" ? null : origin;
@@ -6739,7 +6888,7 @@ var createPolicyProxy = (policy = {}) => {
       if (closed) return denyHttp(response, "Browser proxy is closed");
       if (!decision.allowed) {
         return denyHttp(response, decision.reason, {
-          origin: originOf(request.url),
+          origin: originOf2(request.url),
           grantable: decision.grantable,
           configPath: policy.configPath,
           discoverDevServers: Boolean(policy.devServerGrants)
@@ -6866,7 +7015,7 @@ var createPolicyProxy = (policy = {}) => {
 };
 
 // src/config.js
-var HTTP_PROTOCOLS = /* @__PURE__ */ new Set(["http:", "https:"]);
+var HTTP_PROTOCOLS2 = /* @__PURE__ */ new Set(["http:", "https:"]);
 var parseAllowedOrigin = (value, index) => {
   if (typeof value !== "string" || value.trim() !== value || value.length === 0) {
     throw new Error(`config.allowedOrigins[${index}] must be a non-empty origin`);
@@ -6877,7 +7026,7 @@ var parseAllowedOrigin = (value, index) => {
   } catch {
     throw new Error(`config.allowedOrigins[${index}] is not a valid URL origin`);
   }
-  if (!HTTP_PROTOCOLS.has(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+  if (!HTTP_PROTOCOLS2.has(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
     throw new Error(`config.allowedOrigins[${index}] must be an http(s) origin without credentials, path, query, or hash`);
   }
   return url.origin;
@@ -6905,7 +7054,7 @@ var parseAllowedNetwork = (value, index) => {
   }
   return Object.freeze({ cidr: value.cidr, address: cidr[1], prefix, ports: parsePorts(value.ports, label) });
 };
-var extensionRootFrom = (entryUrl) => path2.resolve(path2.dirname(fileURLToPath(entryUrl)), "..");
+var extensionRootFrom = (entryUrl) => path3.resolve(path3.dirname(fileURLToPath(entryUrl)), "..");
 var parseConfig = (value) => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("config.json must contain an object");
@@ -6924,7 +7073,11 @@ var parseConfig = (value) => {
     throw new Error("config.discoverDevServers must be true or false");
   }
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
+  if (value.basicAuth !== void 0 && !Array.isArray(value.basicAuth)) {
+    throw new Error("config.basicAuth must be an array");
+  }
   return Object.freeze({
+    basicAuth: Object.freeze((value.basicAuth ?? []).map(parseBasicAuthEntry)),
     chromePath: chromePath?.trim() ?? null,
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
     allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),
@@ -6932,10 +7085,10 @@ var parseConfig = (value) => {
   });
 };
 var loadConfig = ({ entryUrl = import.meta.url, configPath } = {}) => {
-  const resolvedPath = configPath ?? path2.join(extensionRootFrom(entryUrl), "config.json");
+  const resolvedPath = configPath ?? path3.join(extensionRootFrom(entryUrl), "config.json");
   let value = {};
   try {
-    value = JSON.parse(fs2.readFileSync(resolvedPath, "utf8"));
+    value = JSON.parse(fs3.readFileSync(resolvedPath, "utf8"));
   } catch (error) {
     if (error instanceof SyntaxError) throw new Error(`Invalid JSON in ${resolvedPath}: ${error.message}`);
     if (error?.code !== "ENOENT") throw error;
@@ -7396,6 +7549,10 @@ var createTab = (targetId, sessionId, openerId) => ({
   navigationStale: false,
   navigationTimer: null,
   problems: [],
+  // A sign-in the page asked for and the service could not give, for the agent.
+  authNotice: null,
+  // Requests that got stored credentials; a second challenge means they were refused.
+  authAnswered: /* @__PURE__ */ new Set(),
   compatibility: null,
   lastActive: 0
 });
@@ -7405,7 +7562,9 @@ var createBrowserRuntime = ({
   allowedOrigins = [],
   allowedNetworks = [],
   configPath = null,
-  devServers = null
+  devServers = null,
+  basicAuth = null,
+  authCommand = null
 } = {}) => {
   const chrome = createChromeProcess({ chromePath });
   const proxy = createPolicyProxy({
@@ -7452,6 +7611,7 @@ var createBrowserRuntime = ({
   };
   chrome.onExit(markDead);
   const activeTab = () => tabs.get(activeTargetId) ?? null;
+  const problemsOf = (current) => current ? [...current.authNotice ? [{ level: "error", message: current.authNotice.message, source: "http-auth" }] : [], ...current.problems] : [];
   const runtime = {
     get viewport() {
       return effectiveViewport();
@@ -7508,14 +7668,14 @@ var createBrowserRuntime = ({
       return { id: copyRequest.id, text: copyRequest.text };
     },
     get problemCounts() {
-      const problems = activeTab()?.problems ?? [];
+      const problems = problemsOf(activeTab());
       return {
         errors: problems.filter((problem) => problem.level === "error").length,
         warnings: problems.filter((problem) => problem.level === "warning").length
       };
     },
     consoleProblems(targetId = activeTargetId) {
-      return (tabs.get(targetId)?.problems ?? []).map((problem) => ({ ...problem }));
+      return problemsOf(tabs.get(targetId)).map((problem) => ({ ...problem }));
     },
     clearConsoleProblems(targetId = activeTargetId) {
       const current = tabs.get(targetId);
@@ -7616,7 +7776,13 @@ var createBrowserRuntime = ({
         cdp.sendSession(sessionId, "Page.enable"),
         cdp.sendSession(sessionId, "Runtime.enable"),
         cdp.sendSession(sessionId, "Log.enable"),
-        cdp.sendSession(sessionId, "Runtime.addBinding", { name: MENU_BINDING, executionContextName: MENU_WORLD })
+        cdp.sendSession(sessionId, "Runtime.addBinding", { name: MENU_BINDING, executionContextName: MENU_WORLD }),
+        // Chrome raises sign-in challenges only for requests it pauses. Pausing
+        // documents is enough: the page's other requests reuse the sign-in.
+        ...basicAuth ? [cdp.sendSession(sessionId, "Fetch.enable", {
+          handleAuthRequests: true,
+          patterns: [{ urlPattern: "*", resourceType: "Document" }]
+        })] : []
       ]);
       await applyViewport(cdp, sessionId, runtime.viewport);
       if (nativeSelectEnabled) await current.compatibility.setEnabled(true).catch(() => {
@@ -7652,6 +7818,39 @@ var createBrowserRuntime = ({
       if (current) removeTab(current.targetId);
     }
   };
+  const answerAuth = (current, params) => {
+    const respond = (authChallengeResponse) => cdp.sendSession(current.sessionId, "Fetch.continueWithAuth", {
+      requestId: params.requestId,
+      authChallengeResponse
+    }).catch(() => {
+    });
+    const challenge = params.authChallenge ?? {};
+    if (challenge.source !== "Server" || !basicAuth) return void respond({ response: "CancelAuth" });
+    const origin = challenge.origin;
+    const rejected = current.authAnswered.has(params.requestId);
+    if (rejected) basicAuth.reject(origin);
+    const credentials = rejected ? null : basicAuth.lookup(origin);
+    if (credentials) {
+      if (current.authAnswered.size > 100) current.authAnswered.clear();
+      current.authAnswered.add(params.requestId);
+      current.authNotice = null;
+      return void respond({ response: "ProvideCredentials", username: credentials.username, password: credentials.password });
+    }
+    current.authAnswered.delete(params.requestId);
+    const intake = basicAuth.challenge(origin);
+    current.authNotice = {
+      origin,
+      message: authNoticeText({
+        origin,
+        realm: safeRealm(challenge.realm),
+        intakeUrl: intake?.url ?? null,
+        nodePath: authCommand?.nodePath ?? "node",
+        entryPath: authCommand?.entryPath ?? "service/main.js",
+        rejected
+      })
+    };
+    void respond({ response: "CancelAuth" });
+  };
   const handleEvent = (event) => {
     if (!event.sessionId) {
       handleTargetEvent(event);
@@ -7659,6 +7858,15 @@ var createBrowserRuntime = ({
     }
     const current = sessions.get(event.sessionId);
     if (!current) return;
+    if (event.method === "Fetch.requestPaused") {
+      void cdp.sendSession(current.sessionId, "Fetch.continueRequest", { requestId: event.params.requestId }).catch(() => {
+      });
+      return;
+    }
+    if (event.method === "Fetch.authRequired") {
+      answerAuth(current, event.params);
+      return;
+    }
     inspector.event(current.sessionId, event.method, event.params);
     if (event.method === "Page.frameNavigated" && event.params.frame?.id) {
       if (!event.params.frame.parentId) {
@@ -7666,6 +7874,12 @@ var createBrowserRuntime = ({
         current.problems.length = 0;
         contextMenu.forget(current.sessionId);
         current.url = event.params.frame.url;
+        let origin = null;
+        try {
+          origin = new URL(current.url).origin;
+        } catch {
+        }
+        if (current.authNotice && current.authNotice.origin !== origin) current.authNotice = null;
         void refreshNavigation(current);
       }
       current.compatibility.frameNavigated(event.params.frame.id);
@@ -7932,7 +8146,7 @@ var createBrowserRuntime = ({
   const surface = createSurface(runtime);
   let copyRequest = null;
   const offerCopy = (text2, { devtools: devtools2 = false } = {}) => {
-    copyRequest = { id: crypto4.randomUUID(), text: text2.length > GUEST_CLIPBOARD_TEXT_MAX ? null : text2, at: Date.now(), devtools: devtools2 };
+    copyRequest = { id: crypto5.randomUUID(), text: text2.length > GUEST_CLIPBOARD_TEXT_MAX ? null : text2, at: Date.now(), devtools: devtools2 };
   };
   const contextMenu = createContextMenu({
     navigationState: () => ({ canGoBack: runtime.canGoBack, canGoForward: runtime.canGoForward }),
@@ -8024,7 +8238,7 @@ var createBrowserRuntime = ({
 
 // src/dev-servers.js
 import { spawn as spawnProcess } from "node:child_process";
-import fs3 from "node:fs/promises";
+import fs4 from "node:fs/promises";
 var SCAN_TIMEOUT_MS = 2500;
 var CACHE_TTL_MS = 3e3;
 var IGNORED_PORTS = /* @__PURE__ */ new Set([22, 53, 445, 631, 3306, 5432, 6379, 9229, 27017]);
@@ -8136,7 +8350,7 @@ var runCommand = (spawn2, command, args) => new Promise((resolve) => {
 var createDevServerScanner = ({
   platform = process.platform,
   spawn: spawn2 = spawnProcess,
-  files = fs3,
+  files = fs4,
   selfPid = process.pid,
   hostPid = process.ppid,
   now = Date.now
@@ -8184,8 +8398,8 @@ var createDevServerScanner = ({
       return devServerGrants(listeners, (listener) => listener.pid === null || excluded.has(listener.pid));
     }
     if (platform !== "linux") return [];
-    const tables = await Promise.all([["/proc/net/tcp", 4], ["/proc/net/tcp6", 6]].map(async ([path4, family]) => {
-      const table = await files.readFile(path4, "utf8").catch(() => null);
+    const tables = await Promise.all([["/proc/net/tcp", 4], ["/proc/net/tcp6", 6]].map(async ([path5, family]) => {
+      const table = await files.readFile(path5, "utf8").catch(() => null);
       return table === null ? null : parseProcListeners(table, family);
     }));
     if (tables.every((table) => table === null)) return [];
@@ -8206,21 +8420,21 @@ var createDevServerScanner = ({
 };
 
 // src/service.js
-import crypto6 from "node:crypto";
+import crypto7 from "node:crypto";
 import http2 from "node:http";
 import net3 from "node:net";
 
 // src/status-section.js
 import { spawn as spawnProcess2 } from "node:child_process";
-import crypto5 from "node:crypto";
-import fs4 from "node:fs/promises";
+import crypto6 from "node:crypto";
+import fs5 from "node:fs/promises";
 var STEP_SECONDS = 30;
 var CHART_POINTS = 60;
 var CHART_GAP_MS = 3 * STEP_SECONDS * 1e3;
 var LABEL_MAX = 60;
 var TEXT_MAX = 200;
 var clip = (text2, max) => text2.length > max ? `${text2.slice(0, max - 1)}\u2026` : text2;
-var scopeKey = (id) => crypto5.createHash("sha256").update(id).digest("hex").slice(0, 16);
+var scopeKey = (id) => crypto6.createHash("sha256").update(id).digest("hex").slice(0, 16);
 var formatBytes = (bytes) => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
 var pageHost = (url) => {
   try {
@@ -8264,7 +8478,7 @@ var parsePs = (output) => {
   }
   return processes;
 };
-var createMemoryReader = ({ platform = process.platform, spawn: spawn2 = spawnProcess2, files = fs4 } = {}) => async (roots) => {
+var createMemoryReader = ({ platform = process.platform, spawn: spawn2 = spawnProcess2, files = fs5 } = {}) => async (roots) => {
   if (platform === "darwin") {
     const output2 = await runCommand(spawn2, "top", ["-l", "1", "-stats", "pid,ppid,mem"]);
     return output2 === null ? null : treeBytes(parseTop(output2), roots);
@@ -8397,7 +8611,7 @@ var authorized = (request, token) => {
   if (typeof header !== "string" || !header.startsWith("Bearer ")) return false;
   const provided = Buffer.from(header.slice(7));
   const expected = Buffer.from(token);
-  return provided.length === expected.length && crypto6.timingSafeEqual(provided, expected);
+  return provided.length === expected.length && crypto7.timingSafeEqual(provided, expected);
 };
 var withScheme = (address) => {
   if (/^[a-z][a-z\d+.-]*:\/\//i.test(address)) return address;
@@ -8514,7 +8728,7 @@ var handleInspector = async (runtime, operation, request, url) => {
   if (!entryId || typeof body.includeBody !== "boolean") return null;
   return runtime.inspectorRequest(captureId, entryId, body.includeBody);
 };
-var createService = ({ runtime, token, port = 0 }) => {
+var createService = ({ runtime, token, port = 0, basicAuth = null }) => {
   if (!runtime?.perform || !runtime?.close) throw new Error("createService requires a browser runtime");
   if (typeof token !== "string" || token.length === 0) throw new Error("createService requires a bearer token");
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Service port must be from 0 to 65535");
@@ -8523,8 +8737,14 @@ var createService = ({ runtime, token, port = 0 }) => {
   let listening = false;
   let closePromise = null;
   const handle = async (request, response, signal) => {
-    if (!authorized(request, token)) return text(response, 401, "Unauthorized\n");
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (basicAuth && request.method === "POST" && url.pathname.startsWith(BASIC_AUTH_PATH_PREFIX) && request.headers.origin === void 0) {
+      const id = url.pathname.slice(BASIC_AUTH_PATH_PREFIX.length);
+      const small = Number(request.headers["content-length"]) <= 8192;
+      const origin = small && /^[\w-]{43}$/.test(id) ? basicAuth.accept(id, await readObjectBody(request)) : null;
+      return origin ? json(response, 200, { ok: true, origin }) : text(response, 404, "Not found\n");
+    }
+    if (!authorized(request, token)) return text(response, 401, "Unauthorized\n");
     if (request.method === "GET" && url.pathname === "/health") return json(response, 200, { ok: true });
     if (request.method === "POST" && url.pathname === BROWSER_PROVIDER_PATH) {
       const parsed = readBrowserProviderRequest(await readBody(request));
@@ -8826,19 +9046,28 @@ var startService = async ({
   }
   const config = loadConfig({ entryUrl: import.meta.url, configPath });
   const devServers = config.discoverDevServers ? createDevServerScanner() : null;
+  const basicAuth = createBasicAuthStore({ entries: config.basicAuth });
+  const nodePath = /^node(\.exe)?$/i.test(path4.basename(process.execPath)) ? process.execPath : "node";
+  const authCommand = { nodePath, entryPath: fileURLToPath2(import.meta.url) };
   const browserRuntime = runtime ?? createBrowserManager({
-    createRuntime: () => createBrowserRuntime({ ...config, devServers })
+    createRuntime: () => createBrowserRuntime({ ...config, devServers, basicAuth, authCommand })
   });
   const service = createService({
     runtime: browserRuntime,
     token,
-    port: readPort(env.OPENCHAMBER_SERVICE_PORT)
+    port: readPort(env.OPENCHAMBER_SERVICE_PORT),
+    basicAuth
   });
-  await service.listen();
+  const address = await service.listen();
+  if (address) basicAuth.setIntakeBase(`http://${address.host}:${address.port}`);
   return service;
 };
-var isMain = process.argv[1] && path3.resolve(process.argv[1]) === fileURLToPath2(import.meta.url);
-if (isMain) {
+var isMain = process.argv[1] && path4.resolve(process.argv[1]) === fileURLToPath2(import.meta.url);
+if (isMain && process.argv[2] === "basic-auth") {
+  runBasicAuthCommand(process.argv.slice(3)).then((code) => {
+    process.exitCode = code;
+  });
+} else if (isMain) {
   startService().then((service) => {
     let stopping = false;
     const stop = () => {

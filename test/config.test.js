@@ -5,7 +5,7 @@ import { networkGrants, originGrants, parseConfig } from '../src/config.js';
 test('defaults to no private origin grants', () => {
   const config = parseConfig({});
 
-  assert.deepEqual(config, { chromePath: null, allowedOrigins: [], allowedNetworks: [], discoverDevServers: false });
+  assert.deepEqual(config, { basicAuth: [], chromePath: null, allowedOrigins: [], allowedNetworks: [], discoverDevServers: false });
   assert.deepEqual(originGrants(config.allowedOrigins), []);
 });
 

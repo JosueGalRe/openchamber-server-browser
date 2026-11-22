@@ -134,7 +134,16 @@ export const createBrowserActions = (runtime) => async (action, parameters, sign
     }
     const settled = await load.promise && await waitForQuiet(page, OPEN_QUIET_MAX_MS, signal);
     const info = await readPageInfo(page, signal);
-    return { ...info, opened: true, settled, viewport: viewportSummary(runtime.viewport), tabId: page.targetId };
+    // A page that asked for a sign-in says so at once, not only in the next snapshot.
+    const signIn = runtime.consoleProblems(page.targetId).filter((problem) => problem.source === 'http-auth');
+    return {
+      ...info,
+      opened: true,
+      settled,
+      viewport: viewportSummary(runtime.viewport),
+      tabId: page.targetId,
+      ...(signIn.length > 0 ? { consoleProblems: signIn } : {}),
+    };
   }
   if (action === 'browser.close') return { closed: true, tabId: await runtime.agentCloseTab(parameters.tabId) };
 
